@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+venv/
+
+# Credentials — never commit these
+.env
+*.pem
+*.key
+
+# Trained models — large files, regenerate by running features.py / kalshi_crypto.py --train
+*.joblib
+model_crypto_meta.json
+
+# Live trading state — personal data
+positions.json
+
+# Generated charts
+*.png
+
+# Generated outputs — can be recreated by running the scripts
+cv_results_*.csv
+feature_importances_*.csv
+feature_importance_*.csv
+walk_forward_cv.png
+ticker_comparison.png
