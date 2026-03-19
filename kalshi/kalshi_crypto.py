@@ -359,21 +359,65 @@ def compute_kelly(calibrated_prob: float, market_price_cents: int) -> float:
 def score_contract(market: dict, model: RandomForestClassifier,
                    feature_names: list[str], df_asset: pd.DataFrame,
                    training_base_rate: float) -> dict | None:
-    ticker  = market.get("ticker", "")
-    parsed  = parse_kalshi_ticker(ticker)
-    if parsed is None:
+    ticker = market.get("ticker", "")
+
+    # Determine asset from series prefix (KXBTCD → BTC, KXETHD → ETH)
+    series = ticker.split("-")[0].upper() if ticker else ""
+    if "BTC" in series:
+        asset = "BTC"
+    elif "ETH" in series:
+        asset = "ETH"
+    else:
         return None
 
-    expiry = parsed["expiry"]
-    strike = parsed["strike"]
-    if expiry <= date.today():
-        return None   # already expired
+    # --- Expiry: prefer close_time field, fall back to ticker parsing ---
+    close_time_str = market.get("close_time")
+    if close_time_str:
+        try:
+            expiry = datetime.fromisoformat(
+                close_time_str.replace("Z", "+00:00")
+            ).date()
+        except Exception:
+            expiry = None
+    else:
+        expiry = None
 
-    # Market price — use ask for EV (what you'd pay)
-    yes_ask = market.get("yes_ask") or market.get("last_price")
-    if yes_ask is None:
+    if expiry is None:
+        # Fall back to ticker parsing
+        parsed = parse_kalshi_ticker(ticker)
+        expiry = parsed["expiry"] if parsed else None
+
+    if expiry is None or expiry <= date.today():
         return None
-    market_price_cents = int(yes_ask)
+
+    # --- Strike: prefer floor_strike field, fall back to ticker parsing ---
+    strike = market.get("floor_strike")
+    if strike is None:
+        parsed = parse_kalshi_ticker(ticker)
+        strike = parsed["strike"] if parsed else None
+    if strike is None:
+        return None
+    strike = float(strike)
+
+    # --- Market price in cents: try dollars fields first, then fp, then cents ---
+    yes_ask_dollars = market.get("yes_ask_dollars")
+    if yes_ask_dollars is not None:
+        try:
+            market_price_cents = round(float(yes_ask_dollars) * 100)
+        except (ValueError, TypeError):
+            market_price_cents = None
+    else:
+        # Fixed-point (×100) → cents
+        yes_ask_fp = market.get("yes_ask_fp")
+        if yes_ask_fp is not None:
+            market_price_cents = round(yes_ask_fp / 100)
+        else:
+            # Already in cents
+            yes_ask = market.get("yes_ask") or market.get("last_price")
+            market_price_cents = int(yes_ask) if yes_ask is not None else None
+
+    if market_price_cents is None or market_price_cents <= 0:
+        return None
 
     # Technical features from latest close
     feat_df = compute_features(df_asset)
@@ -415,7 +459,7 @@ def score_contract(market: dict, model: RandomForestClassifier,
 
     return {
         "ticker"          : ticker,
-        "asset"           : parsed["asset"],
+        "asset"           : asset,
         "expiry"          : str(expiry),
         "strike"          : strike,
         "current_price"   : round(current_price, 2),

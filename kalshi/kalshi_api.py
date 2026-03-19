@@ -149,8 +149,9 @@ class KalshiClient:
         from cryptography.hazmat.primitives.asymmetric import padding
 
         timestamp = str(int(datetime.now(timezone.utc).timestamp() * 1000))
-        # Sign: timestamp + method + path (no query params)
-        message   = (timestamp + method.upper() + path).encode("utf-8")
+        # Sign: timestamp + method + FULL path (includes /trade-api/v2 prefix)
+        full_path = "/trade-api/v2" + path
+        message   = (timestamp + method.upper() + full_path).encode("utf-8")
         signature = self._private_key.sign(
             message,
             padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
