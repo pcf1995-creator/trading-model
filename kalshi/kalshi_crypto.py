@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 CRYPTO_ASSETS      = ["BTC-USD", "ETH-USD"]
 KALSHI_SERIES      = {"BTC-USD": "KXBTCD", "ETH-USD": "KXETHD"}
 STRIKE_OFFSETS     = [-0.15, -0.10, -0.05, -0.02, 0.02, 0.05, 0.10, 0.15]
-HORIZONS           = [5, 7, 10]          # trading days to simulate contracts
+HORIZONS           = [1, 5, 7, 10]       # trading days to simulate contracts
 HISTORY_PERIOD     = "5y"
 INFERENCE_PERIOD   = "2y"
 HIST_VOL_WINDOW    = 30                  # days for rolling volatility
@@ -325,11 +325,12 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
 # ── Contract features ─────────────────────────────────────────────────────────
 def contract_features(current_price: float, strike: float,
                        expiry: date, vol: float,
-                       as_of: date | None = None) -> dict:
+                       as_of: date | None = None,
+                       days_override: float | None = None) -> dict:
     as_of           = as_of or date.today()
-    days            = max(1, (expiry - as_of).days)
+    days            = days_override if days_override is not None else max(0, (expiry - as_of).days)
     strike_distance = (strike / current_price) - 1
-    denom           = vol * math.sqrt(days / 252)
+    denom           = vol * math.sqrt(max(days, 1/24) / 252)
     strike_z_score  = strike_distance / denom if denom > 0 else 0.0
     return {
         "days_to_expiry" : days,
@@ -370,25 +371,34 @@ def score_contract(market: dict, model: RandomForestClassifier,
     else:
         return None
 
-    # --- Expiry: prefer close_time field, fall back to ticker parsing ---
+    # --- Expiry: parse close_time as full datetime to get fractional days ---
     close_time_str = market.get("close_time")
+    close_datetime = None
     if close_time_str:
         try:
-            expiry = datetime.fromisoformat(
+            close_datetime = datetime.fromisoformat(
                 close_time_str.replace("Z", "+00:00")
-            ).date()
+            )
+            expiry = close_datetime.date()
         except Exception:
             expiry = None
     else:
         expiry = None
 
     if expiry is None:
-        # Fall back to ticker parsing
         parsed = parse_kalshi_ticker(ticker)
         expiry = parsed["expiry"] if parsed else None
 
-    if expiry is None or expiry <= date.today():
+    if expiry is None or expiry < date.today():
         return None
+
+    # Fractional days remaining (hours / 24), minimum 1 hour
+    if close_datetime is not None:
+        now_utc = datetime.now(tz=close_datetime.tzinfo)
+        hours_remaining = max(1.0, (close_datetime - now_utc).total_seconds() / 3600)
+        days_remaining = hours_remaining / 24
+    else:
+        days_remaining = max(1.0, (expiry - date.today()).days)
 
     # --- Strike: prefer floor_strike field, fall back to ticker parsing ---
     strike = market.get("floor_strike")
@@ -430,8 +440,9 @@ def score_contract(market: dict, model: RandomForestClassifier,
     if math.isnan(vol):
         vol = 0.5
 
-    # Contract-specific features
-    cf = contract_features(current_price, strike, expiry, vol)
+    # Contract-specific features (use fractional days for accuracy)
+    cf = contract_features(current_price, strike, expiry, vol,
+                           days_override=days_remaining)
 
     # Assemble feature vector
     row = last_row.copy()
@@ -445,9 +456,8 @@ def score_contract(market: dict, model: RandomForestClassifier,
     model_prob = float(model.predict_proba(row)[0][1])
 
     # Base rate (historical frequency of close > strike at this distance/horizon)
-    horizon_days    = max(1, (expiry - date.today()).days)
     strike_distance = cf["strike_distance"]
-    base_rate       = compute_base_rate(df_asset["Close"], strike_distance, horizon_days)
+    base_rate       = compute_base_rate(df_asset["Close"], strike_distance, max(1, int(round(days_remaining))))
 
     # Bayesian calibration
     cal_prob = calibrate_probability(model_prob, training_base_rate, base_rate)
@@ -457,14 +467,17 @@ def score_contract(market: dict, model: RandomForestClassifier,
     kelly = compute_kelly(cal_prob, market_price_cents)
     edge  = cal_prob - market_price_cents / 100
 
+    hours_left = round(days_remaining * 24, 1)
     return {
         "ticker"          : ticker,
         "asset"           : asset,
         "expiry"          : str(expiry),
+        "close_time"      : close_time_str or "",
+        "hours_left"      : hours_left,
         "strike"          : strike,
         "current_price"   : round(current_price, 2),
         "strike_distance" : round(strike_distance * 100, 1),   # as %
-        "days_to_expiry"  : horizon_days,
+        "days_to_expiry"  : round(days_remaining, 2),
         "market_price"    : market_price_cents,                 # cents
         "model_prob"      : round(model_prob, 4),
         "base_rate"       : round(base_rate, 4),
@@ -547,31 +560,51 @@ def main():
               f"{r['ev']:>+.3f}  "
               f"{r['kelly_pct']:>5.1f}%")
 
-    # ── Recommendations ──
+    # ── Recommendations grouped by expiry ──
     print(f"\n[RECOMMENDATIONS]  (EV ≥ {args.min_ev}, edge ≥ {args.min_edge*100:.0f}pp)")
     if not recommendations:
         print("  No contracts meet the threshold today.")
     else:
-        recommendations.sort(key=lambda x: x["ev"], reverse=True)
+        # Group by expiry date, sorted soonest first
+        from itertools import groupby
+        recommendations.sort(key=lambda x: (x["expiry"], -x["ev"]))
+        groups = {}
         for r in recommendations:
+            groups.setdefault(r["expiry"], []).append(r)
+
+        def print_contract(r):
             contracts  = max(1, int(bankroll * (r["kelly_pct"] / 100)))
-            cost_cents = contracts * r["market_price"]
-            cost_usd   = cost_cents / 100
-            print(f"\n  {r['ticker']}")
-            print(f"    Strike      : ${r['strike']:,.0f}  "
-                  f"({r['strike_distance']:+.1f}% from current ${r['current_price']:,.0f})")
-            print(f"    Expiry      : {r['expiry']}  ({r['days_to_expiry']} days)")
-            print(f"    Market price: {r['market_price']}¢  "
+            cost_usd   = contracts * r["market_price"] / 100
+            print(f"\n    {r['ticker']}")
+            print(f"      Strike      : ${r['strike']:,.2f}  "
+                  f"({r['strike_distance']:+.1f}% from current ${r['current_price']:,.2f})")
+            print(f"      Market price: {r['market_price']}¢  "
                   f"(implied prob {r['market_price']}%)")
-            print(f"    Base rate   : {r['base_rate']*100:.1f}%")
-            print(f"    Model prob  : {r['model_prob']*100:.1f}%")
-            print(f"    Calibrated  : {r['calibrated_prob']*100:.1f}%  ← your true edge")
-            print(f"    Edge        : {r['edge']*100:+.1f}pp")
-            print(f"    EV          : {r['ev']:+.3f} per $1 risked")
-            print(f"    Half-Kelly  : {r['kelly_pct']:.1f}% of bankroll")
-            print(f"    Order       : BUY {contracts} YES contract(s) "
-                  f"@ {r['market_price']}¢  (cost ~${cost_usd:.2f})")
-            print(f"    → PLACE LIMIT BUY YES ORDER @ {r['market_price']} cents")
+            print(f"      Base rate   : {r['base_rate']*100:.1f}%")
+            print(f"      Model prob  : {r['model_prob']*100:.1f}%")
+            print(f"      Calibrated  : {r['calibrated_prob']*100:.1f}%  ← your true edge")
+            print(f"      Edge        : {r['edge']*100:+.1f}pp")
+            print(f"      EV          : {r['ev']:+.3f} per $1 risked")
+            print(f"      Half-Kelly  : {r['kelly_pct']:.1f}% of bankroll")
+            print(f"      Order       : BUY {contracts} YES @ {r['market_price']}¢  "
+                  f"(cost ~${cost_usd:.2f})")
+
+        for expiry_date, group in sorted(groups.items()):
+            hours = group[0]["hours_left"]
+            print(f"\n  ── Expires {expiry_date}  ({hours}h remaining) ──")
+
+            high  = sorted([r for r in group if r["market_price"] >= 50], key=lambda x: -x["ev"])
+            shots = sorted([r for r in group if r["market_price"] <  50], key=lambda x: -x["ev"])
+
+            if high:
+                print(f"\n  [High Confidence >50¢]")
+                for r in high:
+                    print_contract(r)
+
+            if shots:
+                print(f"\n  [Long Shots <50¢]")
+                for r in shots:
+                    print_contract(r)
 
     print()
 

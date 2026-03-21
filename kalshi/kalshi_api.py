@@ -253,6 +253,12 @@ class KalshiClient:
             return {"balance": 100_000}   # $1,000 in cents
         return self._request("GET", "/portfolio/balance")
 
+    def get_positions(self) -> list[dict]:
+        """Return all open positions from the portfolio."""
+        if self.dry_run:
+            return []
+        return self._request("GET", "/portfolio/positions").get("market_positions", [])
+
     def place_order(self, ticker: str, side: str, count: int,
                     limit_price_cents: int) -> dict:
         """
