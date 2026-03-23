@@ -6,13 +6,13 @@ Usage:
   python3 monitor.py check                  # check all open positions, trigger stops
   python3 monitor.py list                   # show all open positions
 
-Stop-loss logic:
-  If current ask price drops more than STOP_LOSS_PCT below your entry price,
-  the monitor flags it (and optionally places a sell order when auto-trading is enabled).
+Alert logic:
+  If current bid price drops 50% or more below your entry price,
+  the monitor flags it as a manual review alert.
 
 Config:
-  STOP_LOSS_PCT = 0.50  → exit if contract loses 50% of entry value
-                           e.g. entered at 58¢, exit if price drops to 29¢
+  STOP_LOSS_PCT = 0.50  → alert if contract loses 50% of entry value
+                           e.g. entered at 58¢, alert if price drops to 29¢
 """
 
 import argparse
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = Path("positions_kalshi.json")
-STOP_LOSS_PCT  = 0.70   # exit if price drops 70% from entry
+STOP_LOSS_PCT  = 0.50   # alert if price drops 50% from entry
 
 
 # ── Positions file helpers ─────────────────────────────────────────────────────
@@ -212,17 +212,12 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
             continue
 
         if current_cents <= stop:
-            print(f"\n  *** STOP-LOSS TRIGGERED: {ticker}")
+            print(f"\n  *** ALERT — DOWN 50%+: {ticker}")
             print(f"      Current bid : {current_cents}¢")
             print(f"      Entry       : {entry}¢")
-            print(f"      Stop level  : {stop}¢")
             print(f"      P&L         : {pnl_pct:+.1f}%")
-            if dry_run_sell:
-                print(f"      ACTION      : Manual sell needed — "
-                      f"sell {p['contracts']} YES contracts on Kalshi")
-            else:
-                # Auto-sell placeholder (enable when fully integrated)
-                logger.info(f"Auto-sell not yet enabled — manual sell required for {ticker}")
+            print(f"      ACTION      : Review manually — consider selling "
+                  f"{p['contracts']} YES contracts on Kalshi")
             p["status"]     = "stop_triggered"
             p["closed_at"]  = datetime.now(timezone.utc).isoformat()
             p["exit_cents"] = current_cents

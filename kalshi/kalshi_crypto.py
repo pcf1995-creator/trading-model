@@ -23,7 +23,7 @@ import logging
 import math
 import sys
 import warnings
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 # Allow importing features.py from the stocks/ sibling directory
@@ -56,6 +56,7 @@ BASE_RATE_LOOKBACK = 3                   # years for base-rate estimation
 MODEL_PATH         = "model_crypto.joblib"
 FEATURES_PATH      = "features_crypto.csv"
 METADATA_PATH      = "model_crypto_meta.json"
+PREDICTIONS_LOG    = "predictions_log.jsonl"
 RF_TREES           = 300
 RF_MAX_DEPTH       = 12
 RF_MIN_LEAF        = 5
@@ -65,7 +66,7 @@ MIN_TRAIN_FRAC     = 0.5
 MIN_EV             = 0.05   # minimum EV per dollar to recommend
 MIN_EDGE           = 0.05   # minimum (calibrated_prob - market_price)
 MAX_KELLY          = 0.25   # cap half-Kelly at 25% of bankroll
-DEFAULT_BANKROLL   = 1_000
+DEFAULT_BANKROLL   = 200
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -341,9 +342,16 @@ def contract_features(current_price: float, strike: float,
 
 # ── EV and Kelly ──────────────────────────────────────────────────────────────
 def compute_ev(calibrated_prob: float, market_price_cents: int) -> float:
-    """EV per dollar staked on the yes side."""
+    """
+    True EV per dollar staked on the yes side.
+    EV = (calibrated_prob - market_price) / market_price
+    e.g. 35% cal prob at 20¢ market → EV = 0.75 (75c profit per $1 risked)
+         95% cal prob at 80¢ market → EV = 0.19 (19c profit per $1 risked)
+    """
     mp = market_price_cents / 100
-    return calibrated_prob * (1 - mp) - (1 - calibrated_prob) * mp
+    if mp <= 0:
+        return 0.0
+    return (calibrated_prob - mp) / mp
 
 
 def compute_kelly(calibrated_prob: float, market_price_cents: int) -> float:
@@ -359,7 +367,8 @@ def compute_kelly(calibrated_prob: float, market_price_cents: int) -> float:
 # ── Score a single contract ───────────────────────────────────────────────────
 def score_contract(market: dict, model: RandomForestClassifier,
                    feature_names: list[str], df_asset: pd.DataFrame,
-                   training_base_rate: float) -> dict | None:
+                   training_base_rate: float,
+                   feat_cache: dict | None = None) -> dict | None:
     ticker = market.get("ticker", "")
 
     # Determine asset from series prefix (KXBTCD → BTC, KXETHD → ETH)
@@ -429,16 +438,21 @@ def score_contract(market: dict, model: RandomForestClassifier,
     if market_price_cents is None or market_price_cents <= 0:
         return None
 
-    # Technical features from latest close
-    feat_df = compute_features(df_asset)
-    last_row = feat_df.iloc[[-1]]
-    if last_row.isnull().any(axis=1).values[0]:
-        return None
+    # Technical features from latest close (use cache if provided)
+    if feat_cache is not None and id(df_asset) in feat_cache:
+        last_row, current_price, vol = feat_cache[id(df_asset)]
+    else:
+        feat_df = compute_features(df_asset)
+        last_row = feat_df.iloc[[-1]]
+        if last_row.isnull().any(axis=1).values[0]:
+            return None
+        current_price = float(df_asset["Close"].iloc[-1])
+        vol           = float(hist_vol(df_asset["Close"]).iloc[-1])
+        if math.isnan(vol):
+            vol = 0.5
+        if feat_cache is not None:
+            feat_cache[id(df_asset)] = (last_row, current_price, vol)
 
-    current_price = float(df_asset["Close"].iloc[-1])
-    vol           = float(hist_vol(df_asset["Close"]).iloc[-1])
-    if math.isnan(vol):
-        vol = 0.5
 
     # Contract-specific features (use fractional days for accuracy)
     cf = contract_features(current_price, strike, expiry, vol,
@@ -467,13 +481,15 @@ def score_contract(market: dict, model: RandomForestClassifier,
     kelly = compute_kelly(cal_prob, market_price_cents)
     edge  = cal_prob - market_price_cents / 100
 
-    hours_left = round(days_remaining * 24, 1)
+    hours_left  = round(days_remaining * 24, 1)
+    ev_per_day  = round(ev / max(days_remaining, 1/24), 4)
     return {
         "ticker"          : ticker,
         "asset"           : asset,
         "expiry"          : str(expiry),
         "close_time"      : close_time_str or "",
         "hours_left"      : hours_left,
+        "ev_per_day"      : ev_per_day,
         "strike"          : strike,
         "current_price"   : round(current_price, 2),
         "strike_distance" : round(strike_distance * 100, 1),   # as %
@@ -488,27 +504,65 @@ def score_contract(market: dict, model: RandomForestClassifier,
     }
 
 
+# ── Prediction logging ────────────────────────────────────────────────────────
+def log_predictions(results: list[dict], recommended_tickers: set[str]) -> None:
+    """Append scored contracts to predictions_log.jsonl for later back-testing."""
+    run_ts = datetime.now(timezone.utc).isoformat()
+    path   = Path(PREDICTIONS_LOG)
+    with open(path, "a") as f:
+        for r in results:
+            entry = {
+                "run_ts"          : run_ts,
+                "ticker"          : r["ticker"],
+                "asset"           : r["asset"],
+                "expiry"          : r["expiry"],
+                "hours_left"      : r["hours_left"],
+                "strike"          : r["strike"],
+                "current_price"   : r["current_price"],
+                "strike_distance" : r["strike_distance"],
+                "market_price"    : r["market_price"],
+                "model_prob"      : r["model_prob"],
+                "base_rate"       : r["base_rate"],
+                "calibrated_prob" : r["calibrated_prob"],
+                "edge"            : r["edge"],
+                "ev"              : r["ev"],
+                "ev_per_day"      : r["ev_per_day"],
+                "kelly_pct"       : r["kelly_pct"],
+                "recommended"     : r["ticker"] in recommended_tickers,
+            }
+            f.write(json.dumps(entry) + "\n")
+    logger.info(f"Logged {len(results)} predictions → {path}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train",     action="store_true",
+    parser.add_argument("--train",            action="store_true",
                         help="Retrain model before scoring")
-    parser.add_argument("--bankroll",  type=float, default=DEFAULT_BANKROLL)
-    parser.add_argument("--min-ev",    type=float, default=MIN_EV)
-    parser.add_argument("--min-edge",  type=float, default=MIN_EDGE)
+    parser.add_argument("--bankroll",         type=float, default=DEFAULT_BANKROLL)
+    parser.add_argument("--bankroll-daily",   type=float, default=None,
+                        help="Bankroll allocation for <24h contracts")
+    parser.add_argument("--bankroll-weekly",  type=float, default=None,
+                        help="Bankroll allocation for 5+ day contracts")
+    parser.add_argument("--min-ev",           type=float, default=MIN_EV)
+    parser.add_argument("--min-edge",         type=float, default=MIN_EDGE)
     args = parser.parse_args()
+
 
     # ── Kalshi client ──
     client = KalshiClient()
     if not client.dry_run:
         client.login()
-    balance_cents = client.get_balance().get("balance", 0)
-    bankroll      = args.bankroll or balance_cents / 100
-    mode          = "DRY RUN" if client.dry_run else "LIVE"
+    balance_cents   = client.get_balance().get("balance", 0)
+    total_bankroll  = args.bankroll or balance_cents / 100
+    bankroll_daily  = args.bankroll_daily  or total_bankroll * 0.40
+    bankroll_weekly = args.bankroll_weekly or total_bankroll * 0.60
+    mode            = "DRY RUN" if client.dry_run else "LIVE"
 
     print(f"\n{'='*65}")
     print(f"  Kalshi Crypto Signal Report  [{mode}]  —  {date.today()}")
-    print(f"  Bankroll: ${bankroll:,.2f}")
+    print(f"  Bankroll: ${total_bankroll:,.2f}  "
+          f"(Daily: ${bankroll_daily:,.2f}  |  Weekly: ${bankroll_weekly:,.2f})")
     print(f"{'='*65}")
 
     # ── Model ──
@@ -529,6 +583,7 @@ def main():
     # ── Score contracts ──
     recommendations = []
     all_results     = []
+    feat_cache      = {}   # cache compute_features per asset — big speedup
 
     for symbol, series in KALSHI_SERIES.items():
         markets = client.get_markets(series_ticker=series, status="open")
@@ -537,7 +592,8 @@ def main():
 
         for market in markets:
             result = score_contract(
-                market, model, feature_names, df_asset, training_base_rate
+                market, model, feature_names, df_asset, training_base_rate,
+                feat_cache=feat_cache
             )
             if result is None:
                 continue
@@ -560,52 +616,83 @@ def main():
               f"{r['ev']:>+.3f}  "
               f"{r['kelly_pct']:>5.1f}%")
 
-    # ── Recommendations grouped by expiry ──
+    # ── Recommendations: two sections (<24h and 5+ days) ──
     print(f"\n[RECOMMENDATIONS]  (EV ≥ {args.min_ev}, edge ≥ {args.min_edge*100:.0f}pp)")
+
+    def print_table(contracts_list):
+        if not contracts_list:
+            print("  None")
+            return
+        hdr = f"  {'Ticker':<38} {'Strike':>10} {'Dist':>6} {'Mkt':>4} {'Cal':>5} {'Edge':>6} {'EV':>6} {'Bet$':>6}"
+        print(hdr)
+        print("  " + "-" * (len(hdr) - 2))
+        for r in contracts_list:
+            br       = bankroll_daily if r["hours_left"] <= 24 else bankroll_weekly
+            n        = max(1, int(br * (r["kelly_pct"] / 100)))
+            cost_usd = n * r["market_price"] / 100
+            print(f"  {r['ticker']:<38} "
+                  f"${r['strike']:>9,.0f} "
+                  f"{r['strike_distance']:>+5.1f}% "
+                  f"{r['market_price']:>3}¢ "
+                  f"{r['calibrated_prob']*100:>4.0f}% "
+                  f"{r['edge']*100:>+5.1f}% "
+                  f"{r['ev']:>+.2f} "
+                  f"${cost_usd:>5.2f}")
+
     if not recommendations:
         print("  No contracts meet the threshold today.")
     else:
-        # Group by expiry date, sorted soonest first
-        from itertools import groupby
-        recommendations.sort(key=lambda x: (x["expiry"], -x["ev"]))
-        groups = {}
-        for r in recommendations:
-            groups.setdefault(r["expiry"], []).append(r)
+        short = [r for r in recommendations if r["hours_left"] <= 24]
+        long_ = [r for r in recommendations if r["hours_left"] >  24]
 
-        def print_contract(r):
-            contracts  = max(1, int(bankroll * (r["kelly_pct"] / 100)))
-            cost_usd   = contracts * r["market_price"] / 100
-            print(f"\n    {r['ticker']}")
-            print(f"      Strike      : ${r['strike']:,.2f}  "
-                  f"({r['strike_distance']:+.1f}% from current ${r['current_price']:,.2f})")
-            print(f"      Market price: {r['market_price']}¢  "
-                  f"(implied prob {r['market_price']}%)")
-            print(f"      Base rate   : {r['base_rate']*100:.1f}%")
-            print(f"      Model prob  : {r['model_prob']*100:.1f}%")
-            print(f"      Calibrated  : {r['calibrated_prob']*100:.1f}%  ← your true edge")
-            print(f"      Edge        : {r['edge']*100:+.1f}pp")
-            print(f"      EV          : {r['ev']:+.3f} per $1 risked")
-            print(f"      Half-Kelly  : {r['kelly_pct']:.1f}% of bankroll")
-            print(f"      Order       : BUY {contracts} YES @ {r['market_price']}¢  "
-                  f"(cost ~${cost_usd:.2f})")
-
-        for expiry_date, group in sorted(groups.items()):
-            hours = group[0]["hours_left"]
-            print(f"\n  ── Expires {expiry_date}  ({hours}h remaining) ──")
-
-            high  = sorted([r for r in group if r["market_price"] >= 50], key=lambda x: -x["ev"])
-            shots = sorted([r for r in group if r["market_price"] <  50], key=lambda x: -x["ev"])
-
+        for label, group in [("< 24 HOURS", short), ("> 24 HOURS", long_)]:
+            high  = sorted([r for r in group if r["market_price"] >= 50], key=lambda x: -x["kelly_pct"])
+            shots = sorted([r for r in group if r["market_price"] <  50], key=lambda x: -x["kelly_pct"])
+            if not high and not shots:
+                continue
+            print(f"\n  {'─'*10} {label} {'─'*10}")
             if high:
                 print(f"\n  [High Confidence >50¢]")
-                for r in high:
-                    print_contract(r)
-
+                print_table(high)
             if shots:
                 print(f"\n  [Long Shots <50¢]")
-                for r in shots:
-                    print_contract(r)
+                print_table(shots)
 
+    # ── Top 5 Summaries ──
+    def print_top5(label, pool, br, key="ev"):
+        print(f"\n{'='*65}")
+        print(f"  {label}  (≥20¢)  —  Pool: ${br:,.2f}")
+        print(f"{'='*65}")
+        picks = sorted(
+            [r for r in pool if r["market_price"] >= 20],
+            key=lambda x: -x[key]
+        )[:5]
+        if not picks:
+            print("  None meet the ≥20¢ filter.")
+            return
+        total_cost = 0
+        for i, r in enumerate(picks, 1):
+            n        = max(1, int(br * (r["kelly_pct"] / 100)))
+            cost_usd = n * r["market_price"] / 100
+            total_cost += cost_usd
+            print(f"\n  #{i}  {r['ticker']}")
+            print(f"      Strike {r['strike_distance']:+.1f}% away  |  "
+                  f"Mkt {r['market_price']}¢ → Cal {r['calibrated_prob']*100:.0f}%  |  "
+                  f"Edge {r['edge']*100:+.1f}pp  |  EV {r['ev']:+.2f}  |  EV/day {r['ev_per_day']:+.2f}  |  Kelly {r['kelly_pct']:.1f}%")
+            print(f"      BUY {n} YES @ {r['market_price']}¢  (~${cost_usd:.2f})  |  "
+                  f"Expires in {r['hours_left']:.0f}h")
+        print(f"\n  Total cost if all placed: ~${total_cost:.2f} of ${br:,.2f} pool")
+
+    # ── Log predictions for back-testing ──
+    recommended_tickers = {r["ticker"] for r in recommendations}
+    log_predictions(all_results, recommended_tickers)
+
+    short_rec = [r for r in recommendations if r["hours_left"] <= 24]
+    long_rec  = [r for r in recommendations if r["hours_left"] >  24]
+
+    print_top5("TOP 5 OVERALL  (ranked by EV/day)", recommendations, total_bankroll, key="ev_per_day")
+    print_top5("TOP 5  —  < 24 HOURS", short_rec, bankroll_daily, key="ev")
+    print_top5("TOP 5  —  > 24 HOURS", long_rec, bankroll_weekly, key="ev")
     print()
 
 
