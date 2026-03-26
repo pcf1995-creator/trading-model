@@ -295,10 +295,68 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         ):
                             all_results.append(r)
 
+            def build_portfolio(results: list, bankroll: float) -> list:
+                """
+                Portfolio construction:
+                - Pick best signal (highest EV) per (asset, expiry) group
+                - If a group has a second signal with EV >= 80% of the best, include it at half Kelly
+                - Cap at 5 total positions
+                - Return portfolio with dollar sizing
+                """
+                # Only consider positive EV + positive edge signals
+                valid = [r for r in results if r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE]
+                valid.sort(key=lambda x: x["ev"], reverse=True)
+
+                # Group by (asset, expiry)
+                groups: dict[tuple, list] = {}
+                for r in valid:
+                    key = (r["asset"], r["expiry"])
+                    groups.setdefault(key, []).append(r)
+
+                portfolio = []
+                for key, group in sorted(groups.items(),
+                                         key=lambda kv: kv[1][0]["ev"], reverse=True):
+                    if len(portfolio) >= 5:
+                        break
+                    best = group[0]
+                    kelly_mult = 1.0
+                    portfolio.append({**best, "kelly_mult": kelly_mult})
+
+                    # Add second signal in same group at half Kelly if EV is strong
+                    if len(group) > 1 and len(portfolio) < 5:
+                        second = group[1]
+                        if second["ev"] >= best["ev"] * 0.80:
+                            portfolio.append({**second, "kelly_mult": 0.5})
+
+                # Assign dollar amounts
+                for p in portfolio:
+                    p["kelly_dollars"] = round(bankroll * (p["kelly_pct"] / 100) * p["kelly_mult"], 2)
+                    p["contracts_suggested"] = max(1, int(p["kelly_dollars"] / (p["price"] / 100) / 100))
+
+                return portfolio
+
+            def make_portfolio_table(portfolio: list) -> pd.DataFrame:
+                rows = []
+                for p in portfolio:
+                    corr_note = "½ Kelly (correlated)" if p["kelly_mult"] < 1 else ""
+                    rows.append({
+                        "Asset"      : p["asset"],
+                        "Side"       : p["side"],
+                        "Strike"     : f"${p['strike']:,.0f}",
+                        "Expiry"     : p["expiry"],
+                        "Hrs Left"   : f"{p['hours_to_expiry']:.0f}h",
+                        "Price"      : f"{p['price']}¢",
+                        "Cal Prob"   : f"{p['calibrated_prob']*100:.1f}%",
+                        "EV"         : f"{p['ev']:+.3f}",
+                        "Kelly $"    : f"${p['kelly_dollars']:.0f}",
+                        "Contracts"  : p["contracts_suggested"],
+                        "Note"       : corr_note,
+                    })
+                return pd.DataFrame(rows)
+
             def make_scan_table(results: list) -> pd.DataFrame:
                 rows = []
                 for r in results:
-                    rec = r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE
                     rows.append({
                         "Asset"    : r["asset"],
                         "Side"     : r["side"],
@@ -309,24 +367,37 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         "Edge"     : f"{r['edge']*100:+.1f}pp",
                         "EV"       : f"{r['ev']:+.3f}",
                         "Kelly"    : f"{r['kelly_pct']:.1f}%",
-                        "Signal"   : "✓ BUY" if rec else "—",
                     })
                 return pd.DataFrame(rows)
 
-            over24  = sorted([r for r in all_results if r["hours_to_expiry"] > 24],
-                             key=lambda x: x["ev"], reverse=True)[:5]
-            under24 = sorted([r for r in all_results if r["hours_to_expiry"] <= 24],
-                             key=lambda x: x["ev"], reverse=True)[:5]
+            # Get bankroll from Kalshi API
+            balance_cents = client.get_balance().get("balance", 0)
+            bankroll = balance_cents / 100 if balance_cents else 1000.0
 
-            if over24:
-                st.subheader("More than 24h to expiry")
-                st.dataframe(make_scan_table(over24), width="stretch", hide_index=True)
+            under24 = [r for r in all_results if r["hours_to_expiry"] <= 24]
+            over24  = [r for r in all_results if r["hours_to_expiry"] > 24]
 
-            st.subheader("24h or less to expiry")
-            if under24:
-                st.dataframe(make_scan_table(under24), width="stretch", hide_index=True)
+            # ── Portfolio recommendation ──
+            all_portfolio = build_portfolio(all_results, bankroll)
+            if all_portfolio:
+                st.subheader("Suggested Portfolio")
+                st.caption(f"Bankroll: ${bankroll:,.0f}  ·  "
+                           f"Total deployed: ${sum(p['kelly_dollars'] for p in all_portfolio):,.0f}")
+                st.dataframe(make_portfolio_table(all_portfolio),
+                             width="stretch", hide_index=True)
             else:
-                st.info("No contracts found.")
+                st.info("No positions meet the EV and edge thresholds today.")
+
+            # ── Full scan results ──
+            with st.expander("All scored contracts"):
+                top_under24 = sorted(under24, key=lambda x: x["ev"], reverse=True)[:10]
+                top_over24  = sorted(over24,  key=lambda x: x["ev"], reverse=True)[:10]
+                if top_under24:
+                    st.markdown("**≤ 24h to expiry**")
+                    st.dataframe(make_scan_table(top_under24), width="stretch", hide_index=True)
+                if top_over24:
+                    st.markdown("**> 24h to expiry**")
+                    st.dataframe(make_scan_table(top_over24), width="stretch", hide_index=True)
 
             st.caption(f"Scanned {len(all_results)//2} contracts · "
                        f"{len(all_results)} sides scored")
