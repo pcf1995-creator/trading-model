@@ -22,7 +22,7 @@ import json
 import logging
 import math
 import warnings
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import joblib
@@ -405,17 +405,35 @@ def score_contract(market: dict, model: RandomForestClassifier,
 
     expiry = parsed["expiry"]
     strike = parsed["strike"]
-    if expiry <= date.today():
+
+    # Filter out already-expired contracts using close_time if available,
+    # otherwise fall back to expiry date (allow same-day contracts)
+    close_time_str = market.get("close_time", "")
+    if close_time_str:
+        try:
+            close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+            if close_dt <= datetime.now(timezone.utc):
+                return []
+        except Exception:
+            if expiry < date.today():
+                return []
+    elif expiry < date.today():
         return []
 
     # YES ask = what you pay to buy YES
-    # NO ask  = what you pay to buy NO ≈ 100 - YES bid
+    # NO ask  = what you pay to buy NO (use direct no_ask if available, else 100 - yes_bid)
     yes_ask = market.get("yes_ask") or market.get("last_price")
-    yes_bid = market.get("yes_bid") or market.get("last_price")
+    yes_bid = market.get("yes_bid")
+    no_ask  = market.get("no_ask")
     if yes_ask is None:
         return []
     yes_ask_cents = int(yes_ask)
-    no_ask_cents  = 100 - int(yes_bid) if yes_bid is not None else 100 - yes_ask_cents
+    if no_ask is not None:
+        no_ask_cents = int(no_ask)
+    elif yes_bid is not None:
+        no_ask_cents = 100 - int(yes_bid)
+    else:
+        no_ask_cents = 100 - yes_ask_cents
 
     # Guard against degenerate prices
     if not (1 <= yes_ask_cents <= 99) or not (1 <= no_ask_cents <= 99):
@@ -446,6 +464,16 @@ def score_contract(market: dict, model: RandomForestClassifier,
     base_rate       = compute_base_rate(df_asset["Close"], strike_distance, horizon_days)
     cal_prob        = calibrate_probability(model_prob, training_base_rate, base_rate)
 
+    # Compute actual hours to close_time (more accurate than calendar days)
+    close_time_str = market.get("close_time", "")
+    hours_to_close = None
+    if close_time_str:
+        try:
+            close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+            hours_to_close = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+        except Exception:
+            pass
+
     base = {
         "ticker"         : ticker,
         "asset"          : parsed["asset"],
@@ -454,6 +482,7 @@ def score_contract(market: dict, model: RandomForestClassifier,
         "current_price"  : round(current_price, 2),
         "strike_distance": round(strike_distance * 100, 1),
         "days_to_expiry" : horizon_days,
+        "hours_to_expiry": round(hours_to_close, 1) if hours_to_close is not None else horizon_days * 24,
         "model_prob"     : round(model_prob, 4),
         "base_rate"      : round(base_rate, 4),
         "calibrated_prob": round(cal_prob, 4),

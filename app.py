@@ -20,7 +20,22 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "kalshi"))
 sys.path.insert(0, str(ROOT))
 
-from kalshi_api import KalshiClient  # noqa: E402
+from kalshi_api import KalshiClient, KALSHI_CONFIG  # noqa: E402
+
+
+def make_kalshi_client() -> KalshiClient:
+    """Build KalshiClient from st.secrets (Streamlit Cloud) or env vars (local)."""
+    try:
+        key_id      = st.secrets.get("KALSHI_KEY_ID")
+        key_content = st.secrets.get("KALSHI_KEY_CONTENT")  # full PEM string
+        key_path    = st.secrets.get("KALSHI_KEY_PATH")     # fallback path
+        if key_id and (key_content or key_path):
+            cfg = {**KALSHI_CONFIG, "key_id": key_id,
+                   "key_content": key_content, "key_path": key_path}
+            return KalshiClient(config=cfg)
+    except Exception:
+        pass
+    return KalshiClient()  # falls back to env vars
 
 POSITIONS_KALSHI = ROOT / "kalshi" / "positions_kalshi.json"
 POSITIONS_STOCKS = ROOT / "positions.json"
@@ -81,7 +96,7 @@ def get_bid_cents(market: dict) -> int | None:
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_live_prices(tickers: tuple) -> dict[str, int | None]:
     """Live yes_bid for each ticker. Auto-refreshes every 60s."""
-    client = KalshiClient()
+    client = make_kalshi_client()
     if client.dry_run:
         return {}
     prices = {}
@@ -96,7 +111,7 @@ def fetch_live_prices(tickers: tuple) -> dict[str, int | None]:
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_settlements(tickers: tuple) -> dict[str, str | None]:
     """Actual settlement result ('yes'/'no'/None) for expired contracts. Cached 1h."""
-    client = KalshiClient()
+    client = make_kalshi_client()
     if client.dry_run:
         return {}
     results = {}
@@ -259,7 +274,7 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
         if model is None:
             st.error("No trained model. Run `python kalshi_crypto.py --train` first.")
         else:
-            client = KalshiClient()
+            client = make_kalshi_client()
             if client.dry_run:
                 st.warning("Running in dry-run mode — set KALSHI_KEY_ID and KALSHI_KEY_PATH "
                            "to scan live contracts.")
@@ -298,16 +313,14 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                     })
                 return pd.DataFrame(rows)
 
-            over24  = sorted([r for r in all_results if r["days_to_expiry"] >= 2],
+            over24  = sorted([r for r in all_results if r["hours_to_expiry"] > 24],
                              key=lambda x: x["ev"], reverse=True)[:5]
-            under24 = sorted([r for r in all_results if r["days_to_expiry"] < 2],
+            under24 = sorted([r for r in all_results if r["hours_to_expiry"] <= 24],
                              key=lambda x: x["ev"], reverse=True)[:5]
 
-            st.subheader("More than 24h to expiry")
             if over24:
+                st.subheader("More than 24h to expiry")
                 st.dataframe(make_scan_table(over24), width="stretch", hide_index=True)
-            else:
-                st.info("No contracts found.")
 
             st.subheader("24h or less to expiry")
             if under24:

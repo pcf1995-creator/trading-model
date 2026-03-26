@@ -9,6 +9,7 @@ venv/
 .env
 *.pem
 *.key
+.streamlit/secrets.toml
 
 # Trained models — large files, regenerate by running features.py / kalshi_crypto.py --train
 *.joblib
