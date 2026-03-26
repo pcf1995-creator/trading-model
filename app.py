@@ -271,11 +271,11 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                     markets  = client.get_markets(series_ticker=series, status="open")
                     df_asset = asset_data[symbol]
                     for market in markets:
-                        r = score_contract(
+                        for r in score_contract(
                             market, model, feature_names, df_asset, training_base_rate
-                        )
-                        if r and r["days_to_expiry"] >= 1:
-                            all_results.append(r)
+                        ):
+                            if r["days_to_expiry"] >= 1:
+                                all_results.append(r)
 
             top5 = sorted(all_results, key=lambda x: x["ev"], reverse=True)[:5]
 
@@ -287,10 +287,11 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                     rec = r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE
                     scan_rows.append({
                         "Asset"    : r["asset"],
+                        "Side"     : r["side"],
                         "Strike"   : f"${r['strike']:,.0f}",
                         "Expiry"   : r["expiry"],
                         "Days Left": r["days_to_expiry"],
-                        "Mkt"      : f"{r['market_price']}¢",
+                        "Price"    : f"{r['price']}¢",
                         "Cal Prob" : f"{r['calibrated_prob']*100:.1f}%",
                         "Edge"     : f"{r['edge']*100:+.1f}pp",
                         "EV"       : f"{r['ev']:+.3f}",
