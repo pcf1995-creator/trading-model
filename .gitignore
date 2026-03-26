@@ -11,9 +11,47 @@ venv/
 *.key
 .streamlit/secrets.toml
 
-# Trained models — large files, regenerate by running features.py / kalshi_crypto.py --train
-*.joblib
-model_crypto_meta.json
+# Stock models — gitignored, regenerate by running features.py
+model_AAPL.joblib
+model_ABBV.joblib
+model_ADBE.joblib
+model_AMD.joblib
+model_AMGN.joblib
+model_AMZN.joblib
+model_BA.joblib
+model_BAC.joblib
+model_CAT.joblib
+model_COP.joblib
+model_COST.joblib
+model_CRM.joblib
+model_CVX.joblib
+model_GE.joblib
+model_GLD.joblib
+model_GOOGL.joblib
+model_GS.joblib
+model_HD.joblib
+model_HON.joblib
+model_IWM.joblib
+model_JNJ.joblib
+model_JPM.joblib
+model_MA.joblib
+model_MCD.joblib
+model_META.joblib
+model_MSFT.joblib
+model_NFLX.joblib
+model_NKE.joblib
+model_NVDA.joblib
+model_ORCL.joblib
+model_PFE.joblib
+model_QCOM.joblib
+model_QQQ.joblib
+model_SPY.joblib
+model_TLT.joblib
+model_TSLA.joblib
+model_UNH.joblib
+model_V.joblib
+model_WMT.joblib
+model_XOM.joblib
 
 # Live trading state — personal data
 positions.json
