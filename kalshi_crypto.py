@@ -288,9 +288,14 @@ def calibrate_probability(model_prob: float, training_base_rate: float,
 # ── Ticker parsing ────────────────────────────────────────────────────────────
 def parse_kalshi_ticker(ticker: str) -> dict | None:
     """
-    Parse e.g. 'KXBTCD-26MAR2026-T85000' into:
-      {"asset": "BTC", "symbol": "BTC-USD", "expiry": date, "strike": 85000.0}
+    Parse Kalshi crypto tickers into expiry date + strike.
+
+    Two formats observed:
+      - "KXBTCD-27MAR2026-T85000"  → standard DDMONYYYY
+      - "KXBTCD-26MAR2717-T68400"  → Kalshi API format YYMONDDH H
+          YY=26 (2026), MON=MAR, DD=27, HH=17 (settlement hour, ignored)
     """
+    import re
     try:
         parts = ticker.split("-")
         if len(parts) < 3:
@@ -304,7 +309,24 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
         else:
             return None
 
-        expiry = datetime.strptime(parts[1].upper(), "%d%b%Y").date()
+        date_str = parts[1].upper()
+        # Detect format by whether the last 4 chars are a plausible year (2020-2099)
+        try:
+            year_suffix = int(date_str[-4:])
+        except ValueError:
+            return None
+        if 2020 <= year_suffix <= 2099:
+            # Standard format: DDMONYYYY e.g. "27MAR2026"
+            expiry = datetime.strptime(date_str, "%d%b%Y").date()
+        else:
+            # Kalshi API compact format: YYMONDDH H e.g. "26MAR2717"
+            # YY=year suffix, MON=month, DD=expiry day, HH=settlement hour
+            m = re.match(r'^(\d{2})([A-Z]{3})(\d{2})(\d{2})$', date_str)
+            if not m:
+                return None
+            year   = 2000 + int(m.group(1))
+            day    = int(m.group(3))
+            expiry = datetime.strptime(f"{day:02d}{m.group(2)}{year}", "%d%b%Y").date()
 
         strike_str = parts[2]
         if not strike_str.startswith("T"):

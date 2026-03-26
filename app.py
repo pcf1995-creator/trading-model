@@ -244,7 +244,7 @@ st.divider()
 # KALSHI — SCAN OPPORTUNITIES
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("Kalshi — Scan Opportunities")
-st.caption("Top 5 contracts by EV with >24h to expiry.")
+st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry.")
 
 if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
     try:
@@ -260,6 +260,10 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
             st.error("No trained model. Run `python kalshi_crypto.py --train` first.")
         else:
             client = KalshiClient()
+            if client.dry_run:
+                st.warning("Running in dry-run mode — set KALSHI_KEY_ID and KALSHI_KEY_PATH "
+                           "to scan live contracts.")
+
             asset_data = {}
             with st.spinner("Fetching crypto prices..."):
                 for symbol in CRYPTO_ASSETS:
@@ -274,23 +278,17 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         for r in score_contract(
                             market, model, feature_names, df_asset, training_base_rate
                         ):
-                            if r["days_to_expiry"] >= 1:
-                                all_results.append(r)
+                            all_results.append(r)
 
-            top5 = sorted(all_results, key=lambda x: x["ev"], reverse=True)[:5]
-
-            if not top5:
-                st.info("No contracts with >24h remaining found.")
-            else:
-                scan_rows = []
-                for r in top5:
+            def make_scan_table(results: list) -> pd.DataFrame:
+                rows = []
+                for r in results:
                     rec = r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE
-                    scan_rows.append({
+                    rows.append({
                         "Asset"    : r["asset"],
                         "Side"     : r["side"],
                         "Strike"   : f"${r['strike']:,.0f}",
                         "Expiry"   : r["expiry"],
-                        "Days Left": r["days_to_expiry"],
                         "Price"    : f"{r['price']}¢",
                         "Cal Prob" : f"{r['calibrated_prob']*100:.1f}%",
                         "Edge"     : f"{r['edge']*100:+.1f}pp",
@@ -298,7 +296,27 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         "Kelly"    : f"{r['kelly_pct']:.1f}%",
                         "Signal"   : "✓ BUY" if rec else "—",
                     })
-                st.dataframe(pd.DataFrame(scan_rows), width="stretch", hide_index=True)
+                return pd.DataFrame(rows)
+
+            over24  = sorted([r for r in all_results if r["days_to_expiry"] >= 2],
+                             key=lambda x: x["ev"], reverse=True)[:5]
+            under24 = sorted([r for r in all_results if r["days_to_expiry"] < 2],
+                             key=lambda x: x["ev"], reverse=True)[:5]
+
+            st.subheader("More than 24h to expiry")
+            if over24:
+                st.dataframe(make_scan_table(over24), width="stretch", hide_index=True)
+            else:
+                st.info("No contracts found.")
+
+            st.subheader("24h or less to expiry")
+            if under24:
+                st.dataframe(make_scan_table(under24), width="stretch", hide_index=True)
+            else:
+                st.info("No contracts found.")
+
+            st.caption(f"Scanned {len(all_results)//2} contracts · "
+                       f"{len(all_results)} sides scored")
 
     except Exception as e:
         st.error(f"Scan error: {e}")

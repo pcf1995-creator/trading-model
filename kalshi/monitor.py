@@ -218,10 +218,7 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
             print(f"      P&L         : {pnl_pct:+.1f}%")
             print(f"      ACTION      : Review manually — consider selling "
                   f"{p['contracts']} YES contracts on Kalshi")
-            p["status"]     = "stop_triggered"
-            p["closed_at"]  = datetime.now(timezone.utc).isoformat()
-            p["exit_cents"] = current_cents
-            changed = True
+            # Do NOT auto-close — user decides whether to sell
         else:
             print(f"  OK  {ticker:<42} {status_str}")
 

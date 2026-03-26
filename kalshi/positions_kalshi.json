@@ -51,10 +51,8 @@
     "stop_cents": 33,
     "close_time": "2026-03-27T21:00:00Z",
     "entered_at": "2026-03-23T21:30:00.311827+00:00",
-    "status": "stop_triggered",
-    "synced": true,
-    "closed_at": "2026-03-26T18:00:03.580250+00:00",
-    "exit_cents": 29
+    "status": "open",
+    "synced": true
   },
   {
     "ticker": "KXBTCD-26MAR2717-T69899.99",
@@ -63,10 +61,8 @@
     "stop_cents": 31,
     "close_time": "2026-03-27T21:00:00Z",
     "entered_at": "2026-03-23T21:30:00.461330+00:00",
-    "status": "stop_triggered",
-    "synced": true,
-    "closed_at": "2026-03-26T15:31:20.833119+00:00",
-    "exit_cents": 31
+    "status": "open",
+    "synced": true
   },
   {
     "ticker": "KXETHD-26MAR2717-T2069.99",
@@ -75,10 +71,8 @@
     "stop_cents": 36,
     "close_time": "2026-03-27T21:00:00Z",
     "entered_at": "2026-03-23T21:30:00.542292+00:00",
-    "status": "stop_triggered",
-    "synced": true,
-    "closed_at": "2026-03-26T18:00:03.678875+00:00",
-    "exit_cents": 36
+    "status": "open",
+    "synced": true
   },
   {
     "ticker": "KXETHD-26MAR2717-T2109.99",
@@ -87,10 +81,8 @@
     "stop_cents": 31,
     "close_time": "2026-03-27T21:00:00Z",
     "entered_at": "2026-03-23T21:30:00.627389+00:00",
-    "status": "stop_triggered",
-    "synced": true,
-    "closed_at": "2026-03-26T13:35:52.416661+00:00",
-    "exit_cents": 30
+    "status": "open",
+    "synced": true
   },
   {
     "ticker": "KXETHD-26MAR2717-T2149.99",
