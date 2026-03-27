@@ -248,8 +248,17 @@ def fetch_closed_positions() -> list[dict]:
         return []
     try:
         fills = client.get_fills(limit=500)
-    except Exception:
+    except Exception as e:
+        st.warning(f"Fills API error: {e}")
         return []
+
+    if not fills:
+        st.caption("Fills API returned 0 results.")
+        return []
+
+    # Debug: show first fill's keys so we can verify field names
+    with st.expander("🔍 Debug: raw fill fields (remove after fix)"):
+        st.json(fills[0] if fills else {})
 
     # Group fills by ticker
     from collections import defaultdict
