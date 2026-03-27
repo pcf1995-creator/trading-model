@@ -144,14 +144,15 @@ _local_by_ticker = {p["ticker"]: p for p in all_kalshi}
 if not _client.dry_run:
     try:
         _api_positions = _client.get_positions()
-        open_kalshi = []
+        _all_api = []
         for _pos in _api_positions:
             _tkr = _pos.get("ticker", "")
             if not _tkr:
                 continue
             _local = _local_by_ticker.get(_tkr, {})
             _mkt   = _client.get_market(_tkr)
-            open_kalshi.append({
+            _hrs   = hours_left(_mkt.get("close_time", ""))
+            _all_api.append({
                 "ticker"      : _tkr,
                 "status"      : "open",
                 "side"        : "yes" if _pos.get("position", 0) > 0 else "no",
@@ -159,12 +160,18 @@ if not _client.dry_run:
                 "entry_cents" : _local.get("entry_cents", 0),
                 "stop_cents"  : _local.get("stop_cents", 0),
                 "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
+                "_hrs"        : _hrs,
             })
+        # Separate truly open from expired-awaiting-settlement
+        open_kalshi    = [p for p in _all_api if p["_hrs"] is None or p["_hrs"] >= 0]
+        settling_kalshi = [p for p in _all_api if p["_hrs"] is not None and p["_hrs"] < 0]
     except Exception as e:
         st.warning(f"Could not fetch live positions from Kalshi: {e}")
-        open_kalshi = [p for p in all_kalshi if p["status"] == "open"]
+        open_kalshi     = [p for p in all_kalshi if p["status"] == "open"]
+        settling_kalshi = []
 else:
-    open_kalshi = [p for p in all_kalshi if p["status"] == "open"]
+    open_kalshi     = [p for p in all_kalshi if p["status"] == "open"]
+    settling_kalshi = []
 
 if open_kalshi:
     open_tickers = tuple(p["ticker"] for p in open_kalshi)
@@ -231,75 +238,82 @@ if open_kalshi:
 else:
     st.info("No open Kalshi positions.")
 
+# Awaiting settlement (expired but not yet settled by Kalshi)
+if settling_kalshi:
+    with st.expander(f"⏳ Awaiting Settlement ({len(settling_kalshi)})"):
+        st.caption("These contracts have expired but Kalshi hasn't settled them yet.")
+        settle_rows = []
+        for p in settling_kalshi:
+            asset, expiry, strike = parse_ticker(p["ticker"])
+            settle_rows.append({
+                "Asset"    : asset,
+                "Strike"   : f"${float(strike):,.0f}" if strike else "",
+                "Expiry"   : expiry,
+                "Contracts": p["contracts"],
+                "Entry"    : f"{p['entry_cents']}¢",
+            })
+        st.dataframe(pd.DataFrame(settle_rows), hide_index=True, use_container_width=True)
+
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # KALSHI — CLOSED POSITIONS
 # ══════════════════════════════════════════════════════════════════════════════
-# Build closed positions from API fills, supplemented by local JSON entry prices
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_closed_positions() -> list[dict]:
-    """
-    Pull fills from Kalshi API, group by ticker, and reconstruct closed positions.
-    Returns list of dicts with ticker, contracts, entry_cents, exit_cents, side.
-    """
-    client = make_kalshi_client()
-    if client.dry_run:
-        return []
+from collections import defaultdict
+
+_fills      = []
+_fills_err  = None
+_raw_sample = None
+if not _client.dry_run:
     try:
-        fills = client.get_fills(limit=500)
+        _fills      = _client.get_fills(limit=500)
+        _raw_sample = _fills[0] if _fills else None
     except Exception as e:
-        st.warning(f"Fills API error: {e}")
-        return []
+        _fills_err = str(e)
 
-    if not fills:
-        st.caption("Fills API returned 0 results.")
-        return []
+# Group fills by ticker → reconstruct closed positions
+_open_tickers = {p["ticker"] for p in open_kalshi} | {p["ticker"] for p in settling_kalshi}
+_by_ticker: dict[str, list] = defaultdict(list)
+for _f in _fills:
+    _tkr = _f.get("market_ticker") or _f.get("ticker", "")
+    if _tkr and _tkr not in _open_tickers:
+        _by_ticker[_tkr].append(_f)
 
-    # Debug: show first fill's keys so we can verify field names
-    with st.expander("🔍 Debug: raw fill fields (remove after fix)"):
-        st.json(fills[0] if fills else {})
+api_closed = []
+for _tkr, _tkr_fills in _by_ticker.items():
+    _total = sum(abs(_f.get("count", 0)) for _f in _tkr_fills)
+    if _total == 0:
+        continue
+    # Try common price field names
+    def _price(_f):
+        for field in ("yes_price", "no_price", "price"):
+            v = _f.get(field)
+            if v is not None:
+                return v
+        return 0
+    _avg = sum(abs(_f.get("count", 0)) * _price(_f) for _f in _tkr_fills) / _total
+    # Kalshi prices may be in fixed-point (×100) or cents — normalise
+    _cents = round(_avg / 100) if _avg > 100 else round(_avg)
+    _local = _local_by_ticker.get(_tkr, {})
+    api_closed.append({
+        "ticker"      : _tkr,
+        "contracts"   : _total,
+        "entry_cents" : _local.get("entry_cents", _cents),
+        "exit_cents"  : _local.get("exit_cents", 0),
+        "side"        : _tkr_fills[0].get("side", "yes"),
+        "status"      : "settled",
+    })
 
-    # Group fills by ticker
-    from collections import defaultdict
-    by_ticker: dict[str, list] = defaultdict(list)
-    for f in fills:
-        tkr = f.get("market_ticker") or f.get("ticker", "")
-        if tkr:
-            by_ticker[tkr].append(f)
-
-    # Open tickers to exclude
-    open_tickers = {p["ticker"] for p in open_kalshi}
-
-    results = []
-    for tkr, tkr_fills in by_ticker.items():
-        if tkr in open_tickers:
-            continue
-        # avg fill price weighted by count
-        total_count = sum(abs(f.get("count", 0)) for f in tkr_fills)
-        if total_count == 0:
-            continue
-        avg_price = sum(
-            abs(f.get("count", 0)) * (f.get("yes_price") or f.get("no_price") or 0)
-            for f in tkr_fills
-        ) / total_count
-        side = "yes" if (tkr_fills[0].get("side", "yes") == "yes") else "no"
-        results.append({
-            "ticker"      : tkr,
-            "contracts"   : total_count,
-            "entry_cents" : round(avg_price / 100) if avg_price > 100 else round(avg_price),
-            "side"        : side,
-            "status"      : "settled",
-        })
-    return results
-
-api_closed   = fetch_closed_positions() if not _client.dry_run else []
-local_closed = [p for p in all_kalshi
-                if p["status"] not in ("open",) and p.get("entry_cents", 0) > 0]
-
-# Merge: prefer API fills, fall back to local JSON
+local_closed  = [p for p in all_kalshi
+                 if p["status"] not in ("open",) and p.get("entry_cents", 0) > 0]
 api_tickers   = {p["ticker"] for p in api_closed}
 closed_kalshi = api_closed + [p for p in local_closed if p["ticker"] not in api_tickers]
+
+if _fills_err:
+    st.warning(f"Fills API error: {_fills_err}")
+if _raw_sample:
+    with st.expander("🔍 Debug: raw fill fields"):
+        st.json(_raw_sample)
 
 if closed_kalshi:
     with st.expander(f"Closed / Settled Positions ({len(closed_kalshi)})"):
