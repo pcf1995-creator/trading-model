@@ -133,6 +133,34 @@ c1, c2 = st.columns([1, 8])
 with c1:
     if st.button("↻ Refresh", type="primary"):
         st.cache_data.clear()
+        # Sync open positions from Kalshi API into local JSON
+        try:
+            _client = make_kalshi_client()
+            if not _client.dry_run:
+                _api_positions = _client.get_positions()
+                _local         = load_json(POSITIONS_KALSHI)
+                _local_open    = {p["ticker"]: p for p in _local if p["status"] == "open"}
+                # Add any API positions not already tracked locally
+                _tickers_added = set()
+                for _pos in _api_positions:
+                    _tkr = _pos.get("ticker", "")
+                    if _tkr and _tkr not in _local_open and _tkr not in _tickers_added:
+                        _mkt = _client.get_market(_tkr)
+                        _local.append({
+                            "ticker"      : _tkr,
+                            "status"      : "open",
+                            "side"        : "yes" if _pos.get("position", 0) > 0 else "no",
+                            "contracts"   : abs(_pos.get("position", 1)),
+                            "entry_cents" : 0,
+                            "stop_cents"  : 0,
+                            "close_time"  : _mkt.get("close_time", ""),
+                        })
+                        _tickers_added.add(_tkr)
+                import json as _json
+                with open(POSITIONS_KALSHI, "w") as _f:
+                    _json.dump(_local, _f, indent=2)
+        except Exception:
+            pass
         st.rerun()
 
 all_kalshi   = load_json(POSITIONS_KALSHI)
@@ -159,7 +187,8 @@ if open_kalshi:
             "Asset"    : asset,
             "Strike"   : f"${float(strike):,.0f}" if strike else "",
             "Expiry"   : expiry,
-            "Hrs Left" : f"{hrs:.1f}h" if hrs is not None else "—",
+            "Hrs Left" : (f"{int(hrs * 60)}m" if hrs is not None and hrs < 1
+                          else f"{hrs:.0f}h" if hrs is not None else "—"),
             "Contracts": contracts,
             "Entry"    : f"{entry}¢",
             "Stop"     : f"{stop}¢",
@@ -334,7 +363,7 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                 portfolio = []
                 for r, weight in picks:
                     dollars   = round(budget * (weight / total_weight), 2)
-                    contracts = max(1, int(dollars / (r["price"] / 100) / 100))
+                    contracts = max(1, int(dollars / (r["price"] / 100)))
                     portfolio.append({
                         **r,
                         "kelly_dollars"      : dollars,
