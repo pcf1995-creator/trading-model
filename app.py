@@ -264,35 +264,37 @@ st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry.")
 if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
     try:
         from kalshi_crypto import (
-            load_crypto_model, score_contract, download_crypto,
+            load_crypto_models, score_contract,
+            download_crypto, download_crypto_hourly,
             CRYPTO_ASSETS, KALSHI_SERIES, INFERENCE_PERIOD, MIN_EV, MIN_EDGE,
         )
 
         with st.spinner("Loading model..."):
-            model, feature_names, training_base_rate = load_crypto_model()
+            models = load_crypto_models()
 
-        if model is None:
+        if models.get("daily") is None:
             st.error("No trained model. Run `python kalshi_crypto.py --train` first.")
         else:
+            has_intraday = models.get("intraday") is not None
             client = make_kalshi_client()
             if client.dry_run:
                 st.warning("Running in dry-run mode — set KALSHI_KEY_ID and KALSHI_KEY_PATH "
                            "to scan live contracts.")
 
-            asset_data = {}
+            asset_dfs_by_symbol = {}
             with st.spinner("Fetching crypto prices..."):
                 for symbol in CRYPTO_ASSETS:
-                    asset_data[symbol] = download_crypto(symbol, INFERENCE_PERIOD)
+                    daily_df  = download_crypto(symbol, INFERENCE_PERIOD)
+                    hourly_df = download_crypto_hourly(symbol) if has_intraday else None
+                    asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df}
 
             all_results = []
             with st.spinner("Scoring contracts..."):
                 for symbol, series in KALSHI_SERIES.items():
-                    markets  = client.get_markets(series_ticker=series, status="open")
-                    df_asset = asset_data[symbol]
+                    markets   = client.get_markets(series_ticker=series, status="open")
+                    asset_dfs = asset_dfs_by_symbol[symbol]
                     for market in markets:
-                        for r in score_contract(
-                            market, model, feature_names, df_asset, training_base_rate
-                        ):
+                        for r in score_contract(market, models, asset_dfs):
                             all_results.append(r)
 
             DAILY_BUDGET  = 50.0
@@ -346,6 +348,7 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         "EV"       : f"{p['ev']:+.3f}",
                         "Bet $"    : f"${p['kelly_dollars']:.0f}",
                         "Contracts": p["contracts_suggested"],
+                        "Model"    : p.get("model_type", "daily"),
                     })
                 return pd.DataFrame(rows)
 

@@ -1,20 +1,25 @@
 """
 kalshi_crypto.py — Crypto prediction pipeline for Kalshi markets
 
+Two separate models based on contract time-to-expiry:
+  - Daily model   (>24h):  trained on daily OHLC, horizons 1/3/5/7/10 days
+  - Intraday model (≤24h): trained on hourly OHLC, horizons 1/2/3/4/8/12/24 hours
+
 Full pipeline:
-  1. Train a Random Forest on BTC-USD + ETH-USD data with contract-specific features
+  1. Train model(s) on BTC-USD + ETH-USD data
   2. For each open Kalshi crypto contract:
-       a. Compute base rate (historical frequency of hitting the strike)
-       b. Get model probability
-       c. Bayesian calibration (log-odds update: swap training prior for actual prior)
-       d. Compute EV
-       e. Compute half-Kelly position size
+       a. Select daily or intraday model based on hours_to_expiry
+       b. Compute base rate (historical frequency of hitting the strike)
+       c. Get model probability
+       d. Bayesian calibration (log-odds update: swap training prior for actual prior)
+       e. Compute EV
+       f. Compute half-Kelly position size
   3. Print ranked recommendations
 
 Usage:
   python kalshi_crypto.py              # score live contracts (dry-run if no creds)
-  python kalshi_crypto.py --train      # retrain model then score
-  python kalshi_crypto.py --bankroll 1000
+  python kalshi_crypto.py --train      # retrain daily model then score
+  python kalshi_crypto.py --train-all  # retrain both daily + intraday models
 """
 
 import argparse
@@ -43,23 +48,38 @@ logger = logging.getLogger(__name__)
 CRYPTO_ASSETS      = ["BTC-USD", "ETH-USD"]
 KALSHI_SERIES      = {"BTC-USD": "KXBTCD", "ETH-USD": "KXETHD"}
 STRIKE_OFFSETS     = [-0.15, -0.10, -0.05, -0.02, 0.02, 0.05, 0.10, 0.15]
-HORIZONS           = [5, 7, 10]          # trading days to simulate contracts
+
+# Daily model
+HORIZONS           = [1, 3, 5, 7, 10]   # trading days
 HISTORY_PERIOD     = "5y"
 INFERENCE_PERIOD   = "2y"
-HIST_VOL_WINDOW    = 30                  # days for rolling volatility
+
+# Intraday model
+HOURLY_HISTORY     = "730d"             # max for yfinance hourly data
+HOURLY_HORIZONS    = [1, 2, 3, 4, 8, 12, 24]  # hours
+
+HIST_VOL_WINDOW    = 30                  # days for rolling daily vol
 BASE_RATE_LOOKBACK = 3                   # years for base-rate estimation
+
+# Daily model paths (backward-compatible names)
 MODEL_PATH         = "model_crypto.joblib"
 FEATURES_PATH      = "features_crypto.csv"
 METADATA_PATH      = "model_crypto_meta.json"
+
+# Intraday model paths
+MODEL_INTRADAY_PATH    = "model_crypto_intraday.joblib"
+FEATURES_INTRADAY_PATH = "features_crypto_intraday.csv"
+METADATA_INTRADAY_PATH = "model_crypto_intraday_meta.json"
+
 RF_TREES           = 300
 RF_MAX_DEPTH       = 12
 RF_MIN_LEAF        = 5
 RANDOM_STATE       = 42
 N_FOLDS            = 5
 MIN_TRAIN_FRAC     = 0.5
-MIN_EV             = 0.05   # minimum EV per dollar to recommend
-MIN_EDGE           = 0.05   # minimum (calibrated_prob - market_price)
-MAX_KELLY          = 0.25   # cap half-Kelly at 25% of bankroll
+MIN_EV             = 0.05
+MIN_EDGE           = 0.05
+MAX_KELLY          = 0.25
 DEFAULT_BANKROLL   = 500
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -72,21 +92,79 @@ def download_crypto(symbol: str, period: str = HISTORY_PERIOD) -> pd.DataFrame:
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
 
+def download_crypto_hourly(symbol: str) -> pd.DataFrame:
+    """Download hourly OHLC (up to 730 days, yfinance limit)."""
+    df = yf.download(symbol, period=HOURLY_HISTORY, interval="1h",
+                     auto_adjust=True, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+
 def hist_vol(close: pd.Series, window: int = HIST_VOL_WINDOW) -> pd.Series:
-    """Annualised rolling volatility from log returns."""
+    """Annualised rolling volatility from log returns (daily)."""
     return close.pct_change().apply(np.log1p).rolling(window).std() * math.sqrt(252)
+
+
+# ── Hourly feature engineering ────────────────────────────────────────────────
+def compute_features_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute features from hourly OHLC data.
+    Returns DataFrame with same index as df.
+    """
+    close  = df["Close"]
+    volume = df["Volume"]
+    feats  = pd.DataFrame(index=df.index)
+
+    # Returns at multiple timeframes
+    for h in [1, 4, 8, 24, 48, 168]:
+        feats[f"ret_{h}h"] = close.pct_change(h)
+
+    # Rolling annualised vol (8760 trading hours/year for crypto)
+    log_ret = close.pct_change().apply(np.log1p)
+    feats["vol_24h"]  = log_ret.rolling(24).std()  * math.sqrt(8760)
+    feats["vol_168h"] = log_ret.rolling(168).std() * math.sqrt(8760)
+
+    # RSI 14-period on hourly candles
+    delta = close.diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rs    = gain / loss.replace(0, np.nan)
+    feats["rsi_14h"] = 100 - 100 / (1 + rs)
+
+    # MACD (12/26/9) normalized by price
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd  = (ema12 - ema26) / close
+    sig   = macd.ewm(span=9, adjust=False).mean()
+    feats["macd_h"]      = macd
+    feats["macd_hist_h"] = macd - sig
+
+    # Bollinger band position (0 = at lower band, 0.5 = at mean, 1 = at upper)
+    sma20 = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+    feats["bb_pct_h"] = (close - sma20) / (2 * std20 + 1e-10)
+
+    # Volume ratio vs 24h rolling average
+    feats["vol_ratio_24h"] = volume / (volume.rolling(24).mean() + 1e-10)
+
+    # Time-of-day cyclical encoding (crypto trades 24/7 — intraday patterns exist)
+    hour_utc = pd.DatetimeIndex(df.index).hour
+    feats["hour_sin"] = np.sin(2 * np.pi * hour_utc / 24)
+    feats["hour_cos"] = np.cos(2 * np.pi * hour_utc / 24)
+
+    return feats
 
 
 # ── Training data generation ──────────────────────────────────────────────────
 def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """
-    For each date t, strike offset, and horizon:
-      - tech features from compute_features(df).iloc[t]  (114 cols)
+    Daily training samples. For each date t, strike offset, and horizon:
+      - tech features from compute_features(df).iloc[t]
       - contract features: days_to_expiry, strike_distance, strike_z_score
-      - label: 1 if close[t+horizon] > close[t]*(1+offset), else 0
-    Returns a DataFrame sorted by date index.
+      - label: 1 if close[t+horizon] > close[t]*(1+offset)
     """
-    logger.info(f"  Generating training samples for {symbol} ...")
+    logger.info(f"  Generating daily training samples for {symbol} ...")
 
     feat_df = compute_features(df).dropna(how="all")
     vol_s   = hist_vol(df["Close"])
@@ -96,7 +174,6 @@ def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     rows = []
 
     valid_idx = feat_df.dropna().index
-    # Need at least max_horizon future days
     valid_idx = valid_idx[valid_idx <= close.index[-max_horizon - 1]]
 
     for dt in valid_idx:
@@ -108,7 +185,6 @@ def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         vol = float(vol_s.loc[dt]) if not pd.isna(vol_s.loc[dt]) else 0.5
 
         for horizon in HORIZONS:
-            # Find close price horizon trading-days ahead
             future_idx = close.index.get_loc(dt) + horizon
             if future_idx >= len(close):
                 continue
@@ -118,14 +194,12 @@ def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
                 strike = c0 * (1 + offset)
                 label  = int(c_future > strike)
 
-                days_to_expiry = horizon
-                strike_distance = offset
-                denom = vol * math.sqrt(horizon / 252)
+                denom         = vol * math.sqrt(horizon / 252)
                 strike_z_score = offset / denom if denom > 0 else 0.0
 
                 row = feat_row.to_dict()
-                row["days_to_expiry"]  = days_to_expiry
-                row["strike_distance"] = strike_distance
+                row["days_to_expiry"]  = horizon
+                row["strike_distance"] = offset
                 row["strike_z_score"]  = strike_z_score
                 row["label"]           = label
                 row["_date"]           = dt
@@ -136,7 +210,70 @@ def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return result
 
 
+def generate_training_samples_hourly(df: pd.DataFrame, symbol: str,
+                                      horizons: list[int]) -> pd.DataFrame:
+    """
+    Hourly training samples. For each hourly bar t, strike offset, and horizon (hours):
+      - hourly tech features from compute_features_hourly(df).iloc[t]
+      - contract features: hours_to_expiry, strike_distance, strike_z_score
+      - label: 1 if close[t+horizon_hours] > close[t]*(1+offset)
+    """
+    logger.info(f"  Generating hourly training samples for {symbol} ...")
+
+    feat_df = compute_features_hourly(df).dropna(how="all")
+    close   = df["Close"]
+
+    max_horizon = max(horizons)
+    rows = []
+
+    valid_idx = feat_df.dropna().index
+    valid_idx = valid_idx[valid_idx <= close.index[-max_horizon - 1]]
+
+    for dt in valid_idx:
+        feat_row = feat_df.loc[dt]
+        if feat_row.isnull().any():
+            continue
+
+        c0  = float(close.loc[dt])
+        vol = float(feat_df.loc[dt, "vol_24h"])
+        if pd.isna(vol):
+            vol = 0.5
+
+        for horizon_h in horizons:
+            future_loc = close.index.get_loc(dt) + horizon_h
+            if future_loc >= len(close):
+                continue
+            c_future = float(close.iloc[future_loc])
+
+            for offset in STRIKE_OFFSETS:
+                strike   = c0 * (1 + offset)
+                label    = int(c_future > strike)
+                denom    = vol * math.sqrt(horizon_h / 8760)
+                z_score  = offset / denom if denom > 0 else 0.0
+
+                row = feat_row.to_dict()
+                row["hours_to_expiry"] = horizon_h
+                row["strike_distance"] = offset
+                row["strike_z_score"]  = z_score
+                row["label"]           = label
+                row["_date"]           = dt
+                rows.append(row)
+
+    result = pd.DataFrame(rows).sort_values("_date").reset_index(drop=True)
+    logger.info(f"    {len(result):,} hourly samples, label mean = {result['label'].mean():.3f}")
+    return result
+
+
 # ── Model ─────────────────────────────────────────────────────────────────────
+def _time_decay_weights(dates: pd.Series, half_life: int = 180) -> np.ndarray:
+    """Exponential decay weights so recent data has more influence."""
+    today_ts = pd.Timestamp(datetime.now(timezone.utc).date())
+    days_old = (today_ts - pd.to_datetime(dates).dt.tz_localize(None)).dt.days.clip(lower=0)
+    weights  = np.exp(-np.log(2) * days_old / half_life).values
+    weights /= weights.mean()
+    return weights
+
+
 def _walk_forward_cv(X: pd.DataFrame, y: pd.Series,
                      dates: pd.Series) -> float:
     """Expanding-window CV split on date; returns mean ROC-AUC."""
@@ -174,8 +311,9 @@ def _walk_forward_cv(X: pd.DataFrame, y: pd.Series,
 
 
 def build_crypto_model() -> tuple[RandomForestClassifier, list[str], float]:
-    """Train on BTC + ETH, run walk-forward CV, save model and metadata."""
-    logger.info("Building crypto model ...")
+    """Train daily model on BTC + ETH, run walk-forward CV, save model."""
+    logger.info("Building daily crypto model ...")
+    half_life = 180
 
     all_samples = []
     for symbol in CRYPTO_ASSETS:
@@ -193,14 +331,7 @@ def build_crypto_model() -> tuple[RandomForestClassifier, list[str], float]:
     X      = data.drop(columns=["label", "_date"])
     feature_names = X.columns.tolist()
 
-    # Time-decay sample weights: exponential decay so recent data dominates
-    # Half-life = 180 days → data from 6mo ago has 50% weight, 1yr ago ~25%, 2yr ago ~6%
-    today_ts   = pd.Timestamp(date.today())
-    days_old   = (today_ts - pd.to_datetime(dates)).dt.days.clip(lower=0)
-    half_life  = 180
-    weights    = np.exp(-np.log(2) * days_old / half_life).values
-    weights   /= weights.mean()  # normalise so mean weight = 1
-
+    weights = _time_decay_weights(dates, half_life)
     training_base_rate = float(np.average(y, weights=weights))
     logger.info(f"  Combined: {len(X):,} samples, "
                 f"weighted base rate = {training_base_rate:.3f}  "
@@ -218,26 +349,83 @@ def build_crypto_model() -> tuple[RandomForestClassifier, list[str], float]:
     )
     rf.fit(X, y, sample_weight=weights)
 
-    # Save
     joblib.dump(rf, MODEL_PATH)
     pd.Series(feature_names).to_csv(FEATURES_PATH, index=False, header=False)
     meta = {
-        "training_base_rate"  : training_base_rate,
-        "trained_on"          : str(date.today()),
-        "n_samples"           : len(X),
-        "cv_roc_auc"          : round(cv_roc_auc, 4),
+        "training_base_rate"   : training_base_rate,
+        "trained_on"           : str(date.today()),
+        "n_samples"            : len(X),
+        "cv_roc_auc"           : round(cv_roc_auc, 4),
         "weight_half_life_days": half_life,
-        "feature_names"       : feature_names,
+        "feature_names"        : feature_names,
+        "model_type"           : "daily",
+        "horizons_days"        : HORIZONS,
     }
     with open(METADATA_PATH, "w") as f:
         json.dump(meta, f, indent=2)
-    logger.info(f"  Model saved → {MODEL_PATH}")
+    logger.info(f"  Daily model saved → {MODEL_PATH}")
+
+    return rf, feature_names, training_base_rate
+
+
+def build_intraday_model() -> tuple[RandomForestClassifier, list[str], float]:
+    """Train intraday model on BTC + ETH hourly data."""
+    logger.info("Building intraday crypto model (hourly data) ...")
+    half_life = 180
+
+    all_samples = []
+    for symbol in CRYPTO_ASSETS:
+        df = download_crypto_hourly(symbol)
+        logger.info(f"  {symbol}: {len(df)} hourly bars, "
+                    f"{df.index[0]} → {df.index[-1]}")
+        samples = generate_training_samples_hourly(df, symbol, HOURLY_HORIZONS)
+        all_samples.append(samples)
+
+    data = pd.concat(all_samples, ignore_index=True).sort_values("_date").reset_index(drop=True)
+
+    dates = data["_date"]
+    y     = data["label"]
+    X     = data.drop(columns=["label", "_date"])
+    feature_names = X.columns.tolist()
+
+    weights = _time_decay_weights(dates, half_life)
+    training_base_rate = float(np.average(y, weights=weights))
+    logger.info(f"  Combined: {len(X):,} hourly samples, "
+                f"weighted base rate = {training_base_rate:.3f}")
+
+    logger.info("  Running walk-forward CV ...")
+    cv_roc_auc = _walk_forward_cv(X, y, dates)
+    logger.info(f"  Intraday CV ROC-AUC = {cv_roc_auc:.4f}")
+
+    logger.info("  Training final intraday model on all data ...")
+    rf = RandomForestClassifier(
+        n_estimators=RF_TREES, max_depth=RF_MAX_DEPTH,
+        min_samples_leaf=RF_MIN_LEAF, class_weight="balanced",
+        random_state=RANDOM_STATE, n_jobs=-1,
+    )
+    rf.fit(X, y, sample_weight=weights)
+
+    joblib.dump(rf, MODEL_INTRADAY_PATH)
+    pd.Series(feature_names).to_csv(FEATURES_INTRADAY_PATH, index=False, header=False)
+    meta = {
+        "training_base_rate"   : training_base_rate,
+        "trained_on"           : str(date.today()),
+        "n_samples"            : len(X),
+        "cv_roc_auc"           : round(cv_roc_auc, 4),
+        "weight_half_life_days": half_life,
+        "feature_names"        : feature_names,
+        "model_type"           : "intraday_hourly",
+        "horizons_hours"       : HOURLY_HORIZONS,
+    }
+    with open(METADATA_INTRADAY_PATH, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info(f"  Intraday model saved → {MODEL_INTRADAY_PATH}")
 
     return rf, feature_names, training_base_rate
 
 
 def load_crypto_model() -> tuple:
-    """Load saved model + metadata. Returns (None, None, None) if missing."""
+    """Load daily model. Returns (None, None, None) if missing."""
     if not Path(MODEL_PATH).exists() or not Path(METADATA_PATH).exists():
         return None, None, None
     rf            = joblib.load(MODEL_PATH)
@@ -245,18 +433,50 @@ def load_crypto_model() -> tuple:
     with open(METADATA_PATH) as f:
         meta = json.load(f)
     training_base_rate = meta["training_base_rate"]
-    logger.info(f"Loaded model trained on {meta['trained_on']} "
-                f"({meta['n_samples']:,} samples, "
-                f"CV ROC-AUC={meta['cv_roc_auc']})")
+    logger.info(f"Loaded daily model trained on {meta['trained_on']} "
+                f"({meta['n_samples']:,} samples, CV ROC-AUC={meta['cv_roc_auc']})")
     return rf, feature_names, training_base_rate
+
+
+def load_crypto_models() -> dict:
+    """
+    Load all available models.
+    Returns: {
+        "daily":    (model, feature_names, training_base_rate) or None,
+        "intraday": (model, feature_names, training_base_rate) or None,
+    }
+    """
+    models = {}
+
+    # Daily model
+    daily = load_crypto_model()
+    models["daily"] = daily if daily[0] is not None else None
+
+    # Intraday model
+    if (Path(MODEL_INTRADAY_PATH).exists()
+            and Path(METADATA_INTRADAY_PATH).exists()
+            and Path(FEATURES_INTRADAY_PATH).exists()):
+        rf            = joblib.load(MODEL_INTRADAY_PATH)
+        feature_names = pd.read_csv(FEATURES_INTRADAY_PATH, header=None)[0].tolist()
+        with open(METADATA_INTRADAY_PATH) as f:
+            meta = json.load(f)
+        tbr = meta["training_base_rate"]
+        logger.info(f"Loaded intraday model trained on {meta['trained_on']} "
+                    f"({meta['n_samples']:,} samples, CV ROC-AUC={meta['cv_roc_auc']})")
+        models["intraday"] = (rf, feature_names, tbr)
+    else:
+        models["intraday"] = None
+        logger.info("No intraday model found — run --train-all to build it.")
+
+    return models
 
 
 # ── Base rate ─────────────────────────────────────────────────────────────────
 def compute_base_rate(close: pd.Series, strike_distance: float,
                       horizon: int) -> float:
     """
-    Fraction of historical days where close[t+horizon] > close[t]*(1+strike_distance)
-    using the last BASE_RATE_LOOKBACK years of data.
+    Fraction of historical days where close[t+horizon] > close[t]*(1+strike_distance).
+    Always uses daily close data regardless of model type.
     """
     cutoff = close.index[-1] - pd.DateOffset(years=BASE_RATE_LOOKBACK)
     recent = close[close.index >= cutoff]
@@ -279,9 +499,7 @@ def calibrate_probability(model_prob: float, training_base_rate: float,
     """
     Log-odds Bayesian update:
       calibrated_log_odds = model_log_odds - training_log_odds + actual_log_odds
-
-    This removes the training prior and replaces it with the actual prior,
-    preserving the model's discriminative signal.
+    Removes the training prior and replaces with the actual prior.
     """
     p   = float(np.clip(model_prob,        0.001, 0.999))
     tbr = float(np.clip(training_base_rate, 0.001, 0.999))
@@ -302,8 +520,7 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
 
     Two formats observed:
       - "KXBTCD-27MAR2026-T85000"  → standard DDMONYYYY
-      - "KXBTCD-26MAR2717-T68400"  → Kalshi API format YYMONDDH H
-          YY=26 (2026), MON=MAR, DD=27, HH=17 (settlement hour, ignored)
+      - "KXBTCD-26MAR2717-T68400"  → Kalshi compact YYMONDDH H
     """
     import re
     try:
@@ -320,17 +537,13 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
             return None
 
         date_str = parts[1].upper()
-        # Detect format by whether the last 4 chars are a plausible year (2020-2099)
         try:
             year_suffix = int(date_str[-4:])
         except ValueError:
             return None
         if 2020 <= year_suffix <= 2099:
-            # Standard format: DDMONYYYY e.g. "27MAR2026"
             expiry = datetime.strptime(date_str, "%d%b%Y").date()
         else:
-            # Kalshi API compact format: YYMONDDH H e.g. "26MAR2717"
-            # YY=year suffix, MON=month, DD=expiry day, HH=settlement hour
             m = re.match(r'^(\d{2})([A-Z]{3})(\d{2})(\d{2})$', date_str)
             if not m:
                 return None
@@ -349,7 +562,7 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
         return None
 
 
-# ── Contract features ─────────────────────────────────────────────────────────
+# ── Contract features (daily model) ───────────────────────────────────────────
 def contract_features(current_price: float, strike: float,
                        expiry: date, vol: float,
                        as_of: date | None = None) -> dict:
@@ -367,46 +580,44 @@ def contract_features(current_price: float, strike: float,
 
 # ── EV and Kelly ──────────────────────────────────────────────────────────────
 def compute_ev(calibrated_prob: float, market_price_cents: int) -> float:
-    """EV per dollar staked on the yes side."""
     mp = market_price_cents / 100
     return calibrated_prob * (1 - mp) - (1 - calibrated_prob) * mp
 
 
 def compute_kelly(calibrated_prob: float, market_price_cents: int) -> float:
-    """Half-Kelly fraction, capped at MAX_KELLY."""
     mp = market_price_cents / 100
     if mp <= 0 or mp >= 1:
         return 0.0
-    b = (1 - mp) / mp           # net odds on a $1 yes bet
+    b = (1 - mp) / mp
     f = (calibrated_prob * b - (1 - calibrated_prob)) / b
     return float(np.clip(f / 2, 0.0, MAX_KELLY))
 
 
 def compute_ev_no(calibrated_prob: float, no_price_cents: int) -> float:
-    """EV per dollar staked on the no side."""
     np_ = no_price_cents / 100
     p_no = 1 - calibrated_prob
     return p_no * (1 - np_) - calibrated_prob * np_
 
 
 def compute_kelly_no(calibrated_prob: float, no_price_cents: int) -> float:
-    """Half-Kelly fraction for NO side, capped at MAX_KELLY."""
     np_ = no_price_cents / 100
     if np_ <= 0 or np_ >= 1:
         return 0.0
     p_no = 1 - calibrated_prob
-    b    = (1 - np_) / np_      # net odds on a $1 no bet
+    b    = (1 - np_) / np_
     f    = (p_no * b - calibrated_prob) / b
     return float(np.clip(f / 2, 0.0, MAX_KELLY))
 
 
 # ── Score a single contract ───────────────────────────────────────────────────
-def score_contract(market: dict, model: RandomForestClassifier,
-                   feature_names: list[str], df_asset: pd.DataFrame,
-                   training_base_rate: float) -> list[dict]:
+def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
     """
-    Score both YES and NO sides of a contract.
-    Returns a list of 0–2 result dicts (one per side with computable prices).
+    Score both YES and NO sides of a contract using the appropriate time-bucket model.
+
+    models:    {"daily": (rf, features, tbr) or None,
+                "intraday": (rf, features, tbr) or None}
+    asset_dfs: {"daily": pd.DataFrame,          # daily OHLC for base rate + daily model
+                "hourly": pd.DataFrame or None}  # hourly OHLC for intraday model
     """
     ticker = market.get("ticker", "")
     parsed = parse_kalshi_ticker(ticker)
@@ -416,22 +627,24 @@ def score_contract(market: dict, model: RandomForestClassifier,
     expiry = parsed["expiry"]
     strike = parsed["strike"]
 
-    # Filter out already-expired contracts using close_time if available,
-    # otherwise fall back to expiry date (allow same-day contracts)
+    # Compute hours to expiry and filter expired contracts
     close_time_str = market.get("close_time", "")
+    hours_to_close = None
     if close_time_str:
         try:
             close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
             if close_dt <= datetime.now(timezone.utc):
                 return []
+            hours_to_close = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
         except Exception:
             if expiry < date.today():
                 return []
     elif expiry < date.today():
         return []
 
-    # YES ask = what you pay to buy YES
-    # NO ask  = what you pay to buy NO (use direct no_ask if available, else 100 - yes_bid)
+    hours_left = hours_to_close if hours_to_close is not None else max(1, (expiry - date.today()).days) * 24
+
+    # Get prices
     yes_ask = market.get("yes_ask") or market.get("last_price")
     yes_bid = market.get("yes_bid")
     no_ask  = market.get("no_ask")
@@ -444,45 +657,80 @@ def score_contract(market: dict, model: RandomForestClassifier,
         no_ask_cents = 100 - int(yes_bid)
     else:
         no_ask_cents = 100 - yes_ask_cents
-
-    # Guard against degenerate prices
     if not (1 <= yes_ask_cents <= 99) or not (1 <= no_ask_cents <= 99):
         return []
 
-    # Technical features from latest close
-    feat_df  = compute_features(df_asset)
-    last_row = feat_df.iloc[[-1]]
-    if last_row.isnull().any(axis=1).values[0]:
+    # Select model based on time to expiry
+    use_intraday = (
+        hours_left <= 24
+        and models.get("intraday") is not None
+        and asset_dfs.get("hourly") is not None
+    )
+
+    if use_intraday:
+        model, feature_names, training_base_rate = models["intraday"]
+        df_hourly = asset_dfs["hourly"]
+
+        feat_df  = compute_features_hourly(df_hourly)
+        last_row = feat_df.iloc[[-1]]
+        if last_row.isnull().any(axis=1).values[0]:
+            return []
+
+        current_price   = float(df_hourly["Close"].iloc[-1])
+        vol             = float(feat_df["vol_24h"].iloc[-1])
+        if math.isnan(vol):
+            vol = 0.5
+
+        strike_distance = (strike / current_price) - 1
+        denom           = vol * math.sqrt(max(hours_left, 0.5) / 8760)
+        z_score         = strike_distance / denom if denom > 0 else 0.0
+
+        row = last_row.copy()
+        row["hours_to_expiry"] = hours_left
+        row["strike_distance"] = strike_distance
+        row["strike_z_score"]  = z_score
+        model_type = "intraday"
+
+    else:
+        daily_tuple = models.get("daily")
+        if daily_tuple is None:
+            return []
+        model, feature_names, training_base_rate = daily_tuple
+        df_daily = asset_dfs["daily"]
+
+        feat_df  = compute_features(df_daily)
+        last_row = feat_df.iloc[[-1]]
+        if last_row.isnull().any(axis=1).values[0]:
+            return []
+
+        current_price = float(df_daily["Close"].iloc[-1])
+        vol           = float(hist_vol(df_daily["Close"]).iloc[-1])
+        if math.isnan(vol):
+            vol = 0.5
+
+        cf  = contract_features(current_price, strike, expiry, vol)
+        row = last_row.copy()
+        for k, v in cf.items():
+            row[k] = v
+        strike_distance = cf["strike_distance"]
+        model_type = "daily"
+
+    # Align feature columns
+    try:
+        row = row[feature_names]
+    except KeyError:
         return []
-
-    current_price = float(df_asset["Close"].iloc[-1])
-    vol           = float(hist_vol(df_asset["Close"]).iloc[-1])
-    if math.isnan(vol):
-        vol = 0.5
-
-    cf  = contract_features(current_price, strike, expiry, vol)
-    row = last_row.copy()
-    for k, v in cf.items():
-        row[k] = v
-    row = row[feature_names]
     if row.isnull().any(axis=1).values[0]:
         return []
 
-    model_prob      = float(model.predict_proba(row)[0][1])
-    horizon_days    = max(1, (expiry - date.today()).days)
-    strike_distance = cf["strike_distance"]
-    base_rate       = compute_base_rate(df_asset["Close"], strike_distance, horizon_days)
-    cal_prob        = calibrate_probability(model_prob, training_base_rate, base_rate)
+    model_prob   = float(model.predict_proba(row)[0][1])
+    horizon_days = max(1, (expiry - date.today()).days)
+    strike_distance = (strike / current_price) - 1
 
-    # Compute actual hours to close_time (more accurate than calendar days)
-    close_time_str = market.get("close_time", "")
-    hours_to_close = None
-    if close_time_str:
-        try:
-            close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-            hours_to_close = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
-        except Exception:
-            pass
+    # Base rate always computed on daily data (historical frequency)
+    daily_close = asset_dfs["daily"]["Close"]
+    base_rate   = compute_base_rate(daily_close, strike_distance, horizon_days)
+    cal_prob    = calibrate_probability(model_prob, training_base_rate, base_rate)
 
     base = {
         "ticker"         : ticker,
@@ -492,15 +740,15 @@ def score_contract(market: dict, model: RandomForestClassifier,
         "current_price"  : round(current_price, 2),
         "strike_distance": round(strike_distance * 100, 1),
         "days_to_expiry" : horizon_days,
-        "hours_to_expiry": round(hours_to_close, 1) if hours_to_close is not None else horizon_days * 24,
+        "hours_to_expiry": round(hours_left, 1),
         "model_prob"     : round(model_prob, 4),
         "base_rate"      : round(base_rate, 4),
         "calibrated_prob": round(cal_prob, 4),
+        "model_type"     : model_type,
     }
 
     results = []
 
-    # YES side
     ev_yes    = compute_ev(cal_prob, yes_ask_cents)
     kelly_yes = compute_kelly(cal_prob, yes_ask_cents)
     edge_yes  = cal_prob - yes_ask_cents / 100
@@ -512,7 +760,6 @@ def score_contract(market: dict, model: RandomForestClassifier,
         "kelly_pct" : round(kelly_yes * 100, 1),
     })
 
-    # NO side
     ev_no    = compute_ev_no(cal_prob, no_ask_cents)
     kelly_no = compute_kelly_no(cal_prob, no_ask_cents)
     edge_no  = (1 - cal_prob) - no_ask_cents / 100
@@ -530,11 +777,15 @@ def score_contract(market: dict, model: RandomForestClassifier,
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train",     action="store_true",
-                        help="Retrain model before scoring")
-    parser.add_argument("--bankroll",  type=float, default=DEFAULT_BANKROLL)
-    parser.add_argument("--min-ev",    type=float, default=MIN_EV)
-    parser.add_argument("--min-edge",  type=float, default=MIN_EDGE)
+    parser.add_argument("--train",        action="store_true",
+                        help="Retrain daily model before scoring")
+    parser.add_argument("--train-all",    action="store_true",
+                        help="Retrain both daily + intraday models")
+    parser.add_argument("--train-intraday", action="store_true",
+                        help="Retrain intraday model only")
+    parser.add_argument("--bankroll",     type=float, default=DEFAULT_BANKROLL)
+    parser.add_argument("--min-ev",       type=float, default=MIN_EV)
+    parser.add_argument("--min-edge",     type=float, default=MIN_EDGE)
     args = parser.parse_args()
 
     # ── Kalshi client ──
@@ -546,27 +797,41 @@ def main():
     except Exception:
         balance_cents = 0
     bankroll = args.bankroll or balance_cents / 100 or DEFAULT_BANKROLL
-    mode          = "DRY RUN" if client.dry_run else "LIVE"
+    mode     = "DRY RUN" if client.dry_run else "LIVE"
 
     print(f"\n{'='*65}")
     print(f"  Kalshi Crypto Signal Report  [{mode}]  —  {date.today()}")
     print(f"  Bankroll: ${bankroll:,.2f}")
     print(f"{'='*65}")
 
-    # ── Model ──
-    if args.train or not Path(MODEL_PATH).exists():
-        model, feature_names, training_base_rate = build_crypto_model()
-    else:
-        model, feature_names, training_base_rate = load_crypto_model()
-        if model is None:
-            logger.error("No model found. Run with --train first.")
-            return
+    # ── Train ──
+    if args.train_all:
+        build_crypto_model()
+        build_intraday_model()
+    elif args.train:
+        build_crypto_model()
+    elif args.train_intraday:
+        build_intraday_model()
+
+    # ── Load models ──
+    models = load_crypto_models()
+    if models.get("daily") is None:
+        logger.error("No daily model found. Run with --train or --train-all first.")
+        return
+
+    has_intraday = models.get("intraday") is not None
+    logger.info(f"Models loaded — daily: yes, intraday: {'yes' if has_intraday else 'no'}")
 
     # ── Asset data ──
-    asset_data = {}
+    asset_dfs_by_symbol: dict[str, dict] = {}
     for symbol in CRYPTO_ASSETS:
-        logger.info(f"Fetching {symbol} ...")
-        asset_data[symbol] = download_crypto(symbol, INFERENCE_PERIOD)
+        logger.info(f"Fetching {symbol} daily data ...")
+        daily_df = download_crypto(symbol, INFERENCE_PERIOD)
+        hourly_df = None
+        if has_intraday:
+            logger.info(f"Fetching {symbol} hourly data ...")
+            hourly_df = download_crypto_hourly(symbol)
+        asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df}
 
     # ── Score contracts ──
     recommendations = []
@@ -575,25 +840,24 @@ def main():
     for symbol, series in KALSHI_SERIES.items():
         markets = client.get_markets(series_ticker=series, status="open")
         logger.info(f"{series}: {len(markets)} open contracts")
-        df_asset = asset_data[symbol]
+        asset_dfs = asset_dfs_by_symbol[symbol]
 
         for market in markets:
-            for result in score_contract(
-                market, model, feature_names, df_asset, training_base_rate
-            ):
+            for result in score_contract(market, models, asset_dfs):
                 all_results.append(result)
                 if result["ev"] >= args.min_ev and result["edge"] >= args.min_edge:
                     recommendations.append(result)
 
     # ── All contracts scanned ──
     print(f"\n[ALL CONTRACTS SCANNED]")
-    print(f"  {'Ticker':<35} {'Side':>4} {'Price':>6} {'Cal%':>6} "
+    print(f"  {'Ticker':<35} {'Side':>4} {'Mdl':>7} {'Price':>6} {'Cal%':>6} "
           f"{'Edge':>6} {'EV':>6} {'Kelly':>6}")
-    print(f"  {'-'*80}")
+    print(f"  {'-'*90}")
     for r in sorted(all_results, key=lambda x: x["ev"], reverse=True):
         flag = " **" if (r["ev"] >= args.min_ev and r["edge"] >= args.min_edge) else "   "
         print(f"{flag} {r['ticker']:<35} "
               f"{r['side']:>4}  "
+              f"{'intra' if r['model_type']=='intraday' else 'daily':>5}  "
               f"{r['price']:>4}¢  "
               f"{r['calibrated_prob']*100:>5.1f}%  "
               f"{r['edge']*100:>+5.1f}%  "
@@ -610,10 +874,11 @@ def main():
             contracts = max(1, int(bankroll * (r["kelly_pct"] / 100)))
             cost_usd  = contracts * r["price"] / 100
             side      = r["side"]
-            print(f"\n  {r['ticker']}  [{side}]")
+            print(f"\n  {r['ticker']}  [{side}]  [{r['model_type']} model]")
             print(f"    Strike      : ${r['strike']:,.0f}  "
                   f"({r['strike_distance']:+.1f}% from current ${r['current_price']:,.0f})")
-            print(f"    Expiry      : {r['expiry']}  ({r['days_to_expiry']} days)")
+            print(f"    Expires     : {r['expiry']}  "
+                  f"({r['hours_to_expiry']:.1f}h)")
             print(f"    Price       : {r['price']}¢  "
                   f"(market implies {r['price'] if side=='YES' else 100-r['price']}% YES)")
             print(f"    Base rate   : {r['base_rate']*100:.1f}%")
@@ -624,7 +889,6 @@ def main():
             print(f"    Half-Kelly  : {r['kelly_pct']:.1f}% of bankroll")
             print(f"    Order       : BUY {contracts} {side} contract(s) "
                   f"@ {r['price']}¢  (cost ~${cost_usd:.2f})")
-            print(f"    → PLACE LIMIT BUY {side} ORDER @ {r['price']} cents")
 
     print()
 

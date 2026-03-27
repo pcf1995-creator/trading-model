@@ -1,0 +1,37 @@
+{
+  "training_base_rate": 0.4987859543859486,
+  "trained_on": "2026-03-26",
+  "n_samples": 1920632,
+  "cv_roc_auc": 0.996,
+  "weight_half_life_days": 180,
+  "feature_names": [
+    "ret_1h",
+    "ret_4h",
+    "ret_8h",
+    "ret_24h",
+    "ret_48h",
+    "ret_168h",
+    "vol_24h",
+    "vol_168h",
+    "rsi_14h",
+    "macd_h",
+    "macd_hist_h",
+    "bb_pct_h",
+    "vol_ratio_24h",
+    "hour_sin",
+    "hour_cos",
+    "hours_to_expiry",
+    "strike_distance",
+    "strike_z_score"
+  ],
+  "model_type": "intraday_hourly",
+  "horizons_hours": [
+    1,
+    2,
+    3,
+    4,
+    8,
+    12,
+    24
+  ]
+}
