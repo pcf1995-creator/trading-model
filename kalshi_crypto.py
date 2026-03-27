@@ -543,15 +543,17 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
             year_suffix = int(date_str[-4:])
         except ValueError:
             return None
+        settlement_hour = None
         if 2020 <= year_suffix <= 2099:
             expiry = datetime.strptime(date_str, "%d%b%Y").date()
         else:
             m = re.match(r'^(\d{2})([A-Z]{3})(\d{2})(\d{2})$', date_str)
             if not m:
                 return None
-            year   = 2000 + int(m.group(1))
-            day    = int(m.group(3))
-            expiry = datetime.strptime(f"{day:02d}{m.group(2)}{year}", "%d%b%Y").date()
+            year            = 2000 + int(m.group(1))
+            day             = int(m.group(3))
+            settlement_hour = int(m.group(4))   # UTC hour encoded in ticker
+            expiry          = datetime.strptime(f"{day:02d}{m.group(2)}{year}", "%d%b%Y").date()
 
         strike_str = parts[2]
         if not strike_str.startswith("T"):
@@ -559,7 +561,8 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
         strike = float(strike_str[1:])
 
         return {"asset": asset, "symbol": symbol,
-                "expiry": expiry, "strike": strike}
+                "expiry": expiry, "strike": strike,
+                "settlement_hour": settlement_hour}
     except Exception:
         return None
 
@@ -626,23 +629,34 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
     if parsed is None:
         return []
 
-    expiry = parsed["expiry"]
-    strike = parsed["strike"]
+    expiry           = parsed["expiry"]
+    strike           = parsed["strike"]
+    settlement_hour  = parsed.get("settlement_hour")  # UTC hour from compact ticker
 
     # Compute hours to expiry and filter expired contracts
     close_time_str = market.get("close_time", "")
     hours_to_close = None
+    now_utc        = datetime.now(timezone.utc)
+
     if close_time_str:
         try:
             close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-            if close_dt <= datetime.now(timezone.utc):
+            if close_dt <= now_utc:
                 return []
-            hours_to_close = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            hours_to_close = (close_dt - now_utc).total_seconds() / 3600
         except Exception:
-            if expiry < date.today():
+            pass
+
+    if hours_to_close is None:
+        # Fall back to ticker-encoded settlement hour (UTC) if available
+        if settlement_hour is not None:
+            close_dt = datetime(expiry.year, expiry.month, expiry.day,
+                                settlement_hour, 0, 0, tzinfo=timezone.utc)
+            if close_dt <= now_utc:
                 return []
-    elif expiry < date.today():
-        return []
+            hours_to_close = (close_dt - now_utc).total_seconds() / 3600
+        elif expiry < date.today():
+            return []
 
     hours_left = hours_to_close if hours_to_close is not None else max(1, (expiry - date.today()).days) * 24
 
