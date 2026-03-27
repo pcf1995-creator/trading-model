@@ -370,9 +370,7 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                     })
                 return pd.DataFrame(rows)
 
-            # Get bankroll from Kalshi API
-            balance_cents = client.get_balance().get("balance", 0)
-            bankroll = balance_cents / 100 if balance_cents else 1000.0
+            bankroll = 500.0
 
             under24 = [r for r in all_results if r["hours_to_expiry"] <= 24]
             over24  = [r for r in all_results if r["hours_to_expiry"] > 24]
