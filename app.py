@@ -338,17 +338,14 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                 rows = []
                 for p in portfolio:
                     rows.append({
-                        "Asset"    : p["asset"],
+                        "Ticker"   : p["ticker"],
                         "Side"     : p["side"],
-                        "Strike"   : f"${p['strike']:,.0f}",
-                        "Expiry"   : p["expiry"],
                         "Hrs Left" : f"{p['hours_to_expiry']:.0f}h",
                         "Price"    : f"{p['price']}¢",
                         "Cal Prob" : f"{p['calibrated_prob']*100:.1f}%",
                         "EV"       : f"{p['ev']:+.3f}",
                         "Bet $"    : f"${p['kelly_dollars']:.0f}",
                         "Contracts": p["contracts_suggested"],
-                        "Note"     : "correlated" if p["correlated"] else "",
                     })
                 return pd.DataFrame(rows)
 
