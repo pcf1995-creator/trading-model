@@ -293,6 +293,24 @@ class KalshiClient:
             return []
         return self._request("GET", "/portfolio/positions").get("market_positions", [])
 
+    def get_fills(self, limit: int = 200) -> list[dict]:
+        """Return recent trade fills (executed orders)."""
+        if self.dry_run:
+            return []
+        fills  = []
+        cursor = None
+        while True:
+            params = {"limit": min(limit, 1000)}
+            if cursor:
+                params["cursor"] = cursor
+            data   = self._request("GET", "/portfolio/fills", params=params)
+            batch  = data.get("fills", [])
+            fills.extend(batch)
+            cursor = data.get("cursor")
+            if not cursor or not batch or len(fills) >= limit:
+                break
+        return fills
+
     def place_order(self, ticker: str, side: str, count: int,
                     limit_price_cents: int) -> dict:
         """

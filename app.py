@@ -236,43 +236,87 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 # KALSHI — CLOSED POSITIONS
 # ══════════════════════════════════════════════════════════════════════════════
-# Filter to positions with a real entry (skip zero-cost stubs)
-closed_kalshi = [p for p in all_kalshi
-                 if p["status"] not in ("open",) and p.get("entry_cents", 0) > 0]
+# Build closed positions from API fills, supplemented by local JSON entry prices
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_closed_positions() -> list[dict]:
+    """
+    Pull fills from Kalshi API, group by ticker, and reconstruct closed positions.
+    Returns list of dicts with ticker, contracts, entry_cents, exit_cents, side.
+    """
+    client = make_kalshi_client()
+    if client.dry_run:
+        return []
+    try:
+        fills = client.get_fills(limit=500)
+    except Exception:
+        return []
+
+    # Group fills by ticker
+    from collections import defaultdict
+    by_ticker: dict[str, list] = defaultdict(list)
+    for f in fills:
+        tkr = f.get("market_ticker") or f.get("ticker", "")
+        if tkr:
+            by_ticker[tkr].append(f)
+
+    # Open tickers to exclude
+    open_tickers = {p["ticker"] for p in open_kalshi}
+
+    results = []
+    for tkr, tkr_fills in by_ticker.items():
+        if tkr in open_tickers:
+            continue
+        # avg fill price weighted by count
+        total_count = sum(abs(f.get("count", 0)) for f in tkr_fills)
+        if total_count == 0:
+            continue
+        avg_price = sum(
+            abs(f.get("count", 0)) * (f.get("yes_price") or f.get("no_price") or 0)
+            for f in tkr_fills
+        ) / total_count
+        side = "yes" if (tkr_fills[0].get("side", "yes") == "yes") else "no"
+        results.append({
+            "ticker"      : tkr,
+            "contracts"   : total_count,
+            "entry_cents" : round(avg_price / 100) if avg_price > 100 else round(avg_price),
+            "side"        : side,
+            "status"      : "settled",
+        })
+    return results
+
+api_closed   = fetch_closed_positions() if not _client.dry_run else []
+local_closed = [p for p in all_kalshi
+                if p["status"] not in ("open",) and p.get("entry_cents", 0) > 0]
+
+# Merge: prefer API fills, fall back to local JSON
+api_tickers   = {p["ticker"] for p in api_closed}
+closed_kalshi = api_closed + [p for p in local_closed if p["ticker"] not in api_tickers]
 
 if closed_kalshi:
     with st.expander(f"Closed / Settled Positions ({len(closed_kalshi)})"):
-        # Fetch actual settlement for contracts held to expiry
-        need_settlement = tuple(
-            p["ticker"] for p in closed_kalshi
-            if p["status"] in ("settled", "stop_triggered")
-        )
-        settlement_map = fetch_settlements(need_settlement) if need_settlement else {}
+        need_settlement = tuple(p["ticker"] for p in closed_kalshi)
+        settlement_map  = fetch_settlements(need_settlement) if need_settlement else {}
 
         rows = []
         for p in closed_kalshi:
             asset, expiry, strike = parse_ticker(p["ticker"])
             entry  = p.get("entry_cents", 0)
-            ctrs   = p["contracts"]
-            status = p["status"]
+            ctrs   = p.get("contracts", 1)
+            result = settlement_map.get(p["ticker"])
 
-            if status == "closed":
-                # Manually sold
-                exit_c = p.get("exit_cents", 0)
-                pnl    = (exit_c - entry) * ctrs / 100
+            if result == "yes":
+                pnl        = (100 - entry) * ctrs / 100
+                exit_label = "100¢ (won ✓)"
+            elif result == "no":
+                pnl        = -entry * ctrs / 100
+                exit_label = "0¢ (expired)"
+            elif p.get("exit_cents"):
+                exit_c     = p["exit_cents"]
+                pnl        = (exit_c - entry) * ctrs / 100
                 exit_label = f"{exit_c}¢ (sold)"
             else:
-                # Held to expiry — use actual settlement result
-                result = settlement_map.get(p["ticker"])
-                if result == "yes":
-                    pnl        = (100 - entry) * ctrs / 100
-                    exit_label = "100¢ (won ✓)"
-                elif result == "no":
-                    pnl        = -entry * ctrs / 100
-                    exit_label = "0¢ (expired)"
-                else:
-                    pnl        = None
-                    exit_label = "—"
+                pnl        = None
+                exit_label = "—"
 
             rows.append({
                 "Asset"    : asset,
