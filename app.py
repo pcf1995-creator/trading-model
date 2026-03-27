@@ -289,13 +289,20 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                     asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df}
 
             all_results = []
+            scan_debug  = []
             with st.spinner("Scoring contracts..."):
                 for symbol, series in KALSHI_SERIES.items():
                     markets   = client.get_markets(series_ticker=series, status="open")
+                    scored    = 0
                     asset_dfs = asset_dfs_by_symbol[symbol]
                     for market in markets:
-                        for r in score_contract(market, models, asset_dfs):
-                            all_results.append(r)
+                        results = score_contract(market, models, asset_dfs)
+                        all_results.extend(results)
+                        if results:
+                            scored += 1
+                    scan_debug.append(f"{series}: {len(markets)} markets, {scored} scored")
+            st.caption(" · ".join(scan_debug)
+                       + f" · {sum(1 for r in all_results if r['hours_to_expiry'] > 24)} sides >24h")
 
             DAILY_BUDGET  = 50.0
             WEEKLY_BUDGET = 200.0
