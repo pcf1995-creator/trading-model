@@ -478,6 +478,8 @@ def compute_base_rate(close: pd.Series, strike_distance: float,
     Fraction of historical days where close[t+horizon] > close[t]*(1+strike_distance).
     Always uses daily close data regardless of model type.
     """
+    if close is None or len(close) == 0:
+        return 0.5
     cutoff = close.index[-1] - pd.DateOffset(years=BASE_RATE_LOOKBACK)
     recent = close[close.index >= cutoff]
     hits   = 0
@@ -728,7 +730,8 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
     strike_distance = (strike / current_price) - 1
 
     # Base rate always computed on daily data (historical frequency)
-    daily_close = asset_dfs["daily"]["Close"]
+    daily_df_for_br = asset_dfs.get("daily")
+    daily_close = daily_df_for_br["Close"] if daily_df_for_br is not None and len(daily_df_for_br) > 0 else pd.Series(dtype=float)
     base_rate   = compute_base_rate(daily_close, strike_distance, horizon_days)
     cal_prob    = calibrate_probability(model_prob, training_base_rate, base_rate)
 
