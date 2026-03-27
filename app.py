@@ -317,10 +317,6 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         break
                     best = group[0]
                     picks.append((best, best["kelly_pct"]))
-                    if len(group) > 1 and len(picks) < 4:
-                        second = group[1]
-                        if second["ev"] >= best["ev"] * 0.80:
-                            picks.append((second, second["kelly_pct"] * 0.5))
 
                 if not picks:
                     return []
