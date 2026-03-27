@@ -39,6 +39,7 @@ def make_kalshi_client() -> KalshiClient:
 
 POSITIONS_KALSHI = ROOT / "kalshi" / "positions_kalshi.json"
 POSITIONS_STOCKS = ROOT / "positions.json"
+PAPER_TRADES     = ROOT / "paper_trades.json"
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
@@ -497,10 +498,44 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
             daily_port  = build_bucket(under24, DAILY_BUDGET)
             weekly_port = build_bucket(over24,  WEEKLY_BUDGET)
 
+            def save_paper_trades(portfolio: list, bucket: str) -> None:
+                import json as _j
+                from datetime import datetime, timezone
+                existing = load_json(PAPER_TRADES)
+                existing_keys = {(p["ticker"], p["side"]) for p in existing}
+                added = 0
+                for p in portfolio:
+                    key = (p["ticker"], p["side"])
+                    if key in existing_keys:
+                        continue
+                    existing.append({
+                        "ticker"       : p["ticker"],
+                        "side"         : p["side"],
+                        "price_cents"  : p["price"],
+                        "contracts"    : p["contracts_suggested"],
+                        "bet_dollars"  : p["kelly_dollars"],
+                        "model_prob"   : p["model_prob"],
+                        "cal_prob"     : p["calibrated_prob"],
+                        "ev"           : p["ev"],
+                        "hours_to_exp" : p["hours_to_expiry"],
+                        "close_time"   : p.get("expiry", ""),
+                        "bucket"       : bucket,
+                        "placed_at"    : datetime.now(timezone.utc).isoformat(),
+                        "status"       : "open",
+                        "result"       : None,
+                        "pnl_dollars"  : None,
+                    })
+                    added += 1
+                with open(PAPER_TRADES, "w") as _f:
+                    _j.dump(existing, _f, indent=2)
+                st.success(f"Recorded {added} paper trade(s).")
+
             # ── Daily plays ──
             st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (≤24h)")
             if daily_port:
                 st.dataframe(make_portfolio_table(daily_port), width="stretch", hide_index=True)
+                if st.button("📝 Paper Trade Daily Plays", key="paper_daily"):
+                    save_paper_trades(daily_port, "daily")
             else:
                 st.info("No daily contracts meet the thresholds right now.")
 
@@ -508,6 +543,8 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
             st.subheader(f"Weekly Plays — ${WEEKLY_BUDGET:.0f} budget (>24h)")
             if weekly_port:
                 st.dataframe(make_portfolio_table(weekly_port), width="stretch", hide_index=True)
+                if st.button("📝 Paper Trade Weekly Plays", key="paper_weekly"):
+                    save_paper_trades(weekly_port, "weekly")
             else:
                 st.info("No weekly contracts available right now.")
 
@@ -529,6 +566,152 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
     except Exception as e:
         st.error(f"Scan error: {e}")
         import traceback; st.code(traceback.format_exc())
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAPER TRADES — TRACKING
+# ══════════════════════════════════════════════════════════════════════════════
+st.header("Paper Trades — Tracking")
+st.caption("Model-suggested trades recorded without real money. Used to track accuracy and recalibrate.")
+
+_paper = load_json(PAPER_TRADES)
+
+if not _paper:
+    st.info("No paper trades recorded yet. Run the Kalshi Scan and click '📝 Paper Trade' to start tracking.")
+else:
+    # ── Auto-settle expired trades ────────────────────────────────────────────
+    _now_utc   = datetime.now(timezone.utc)
+    _updated   = False
+    _open_paper = []
+    _settled_paper = []
+
+    for _pt in _paper:
+        if _pt.get("status") == "open":
+            _close_str = _pt.get("close_time", "")
+            _closed    = False
+            if _close_str:
+                try:
+                    _close_dt = datetime.fromisoformat(_close_str.replace("Z", "+00:00"))
+                    _closed   = _close_dt <= _now_utc
+                except Exception:
+                    pass
+            if _closed and not _client.dry_run:
+                try:
+                    _mkt    = _client._request("GET", f"/markets/{_pt['ticker']}").get("market", {})
+                    _result = _mkt.get("result")
+                    if _result is not None:
+                        _pt["status"] = "settled"
+                        _pt["result"] = _result
+                        _side         = _pt.get("side", "yes")
+                        _entry        = _pt.get("price_cents", 50)
+                        _ctrs         = _pt.get("contracts", 1)
+                        if _result == _side:   # won
+                            _pt["pnl_dollars"] = round((100 - _entry) * _ctrs / 100, 2)
+                        else:                  # lost
+                            _pt["pnl_dollars"] = round(-_entry * _ctrs / 100, 2)
+                        _updated = True
+                except Exception:
+                    pass
+        if _pt.get("status") == "open":
+            _open_paper.append(_pt)
+        else:
+            _settled_paper.append(_pt)
+
+    if _updated:
+        import json as _j
+        with open(PAPER_TRADES, "w") as _f:
+            _j.dump(_paper, _f, indent=2)
+        st.success(f"Auto-settled {sum(1 for p in _settled_paper if p.get('pnl_dollars') is not None)} paper trade(s).")
+
+    # ── Open paper trades ─────────────────────────────────────────────────────
+    if _open_paper:
+        st.subheader(f"Open Paper Trades ({len(_open_paper)})")
+        _open_tickers_pt = tuple(p["ticker"] for p in _open_paper)
+        _pt_live = fetch_live_prices(_open_tickers_pt) if not _client.dry_run else {}
+
+        _pt_rows = []
+        for _pt in _open_paper:
+            _entry = _pt.get("price_cents", 50)
+            _ctrs  = _pt.get("contracts", 1)
+            _bid   = _pt_live.get(_pt["ticker"])
+            _hrs   = hours_left(_pt.get("close_time", ""))
+            _unreal = round((_bid - _entry) * _ctrs / 100, 2) if _bid is not None else None
+            _pt_rows.append({
+                "Ticker"    : _pt["ticker"],
+                "Side"      : _pt.get("side", "yes"),
+                "Bucket"    : _pt.get("bucket", ""),
+                "Entry ¢"   : _entry,
+                "Live Bid"  : f"{_bid}¢" if _bid is not None else "—",
+                "Contracts" : _ctrs,
+                "Bet $"     : f"${_pt.get('bet_dollars', 0):.0f}",
+                "Cal Prob"  : f"{_pt.get('cal_prob', 0)*100:.1f}%",
+                "Hrs Left"  : (f"{int(_hrs*60)}m" if _hrs is not None and _hrs < 1
+                               else f"{_hrs:.0f}h" if _hrs is not None else "—"),
+                "Unreal P&L": (f"${_unreal:+.2f}" if _unreal is not None else "—"),
+            })
+        st.dataframe(
+            pd.DataFrame(_pt_rows).style.map(color_pnl, subset=["Unreal P&L"]),
+            hide_index=True, use_container_width=True,
+        )
+
+    # ── Settled paper trades ──────────────────────────────────────────────────
+    if _settled_paper:
+        with st.expander(f"Settled Paper Trades ({len(_settled_paper)})"):
+            _s_rows = []
+            for _pt in sorted(_settled_paper, key=lambda x: x.get("placed_at", ""), reverse=True):
+                _pnl = _pt.get("pnl_dollars")
+                _s_rows.append({
+                    "Ticker"   : _pt["ticker"],
+                    "Side"     : _pt.get("side", "yes"),
+                    "Bucket"   : _pt.get("bucket", ""),
+                    "Entry ¢"  : _pt.get("price_cents", 0),
+                    "Cal Prob" : f"{_pt.get('cal_prob', 0)*100:.1f}%",
+                    "Result"   : _pt.get("result", "—"),
+                    "P&L $"    : (f"${_pnl:+.2f}" if _pnl is not None else "—"),
+                    "Placed"   : _pt.get("placed_at", "")[:10],
+                })
+            st.dataframe(
+                pd.DataFrame(_s_rows).style.map(color_pnl, subset=["P&L $"]),
+                hide_index=True, use_container_width=True,
+            )
+
+    # ── Calibration summary ───────────────────────────────────────────────────
+    _resolved = [p for p in _settled_paper if p.get("pnl_dollars") is not None]
+    if _resolved:
+        st.subheader("Calibration")
+        _wins       = sum(1 for p in _resolved
+                          if p.get("pnl_dollars", 0) > 0)
+        _actual_wr  = _wins / len(_resolved)
+        _pred_wr    = sum(p.get("cal_prob", 0.5) for p in _resolved) / len(_resolved)
+        _total_pnl  = sum(p.get("pnl_dollars", 0) for p in _resolved)
+
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _c1.metric("Settled Trades", len(_resolved))
+        _c2.metric("Actual Win Rate", f"{_actual_wr:.0%}")
+        _c3.metric("Predicted Win Rate", f"{_pred_wr:.0%}",
+                   delta=f"{(_actual_wr - _pred_wr)*100:+.1f}pp")
+        _c4.metric("Total P&L", f"${_total_pnl:+.2f}")
+
+        # Bucket breakdown
+        _buckets = {}
+        for _p in _resolved:
+            _b = _p.get("bucket", "other")
+            _buckets.setdefault(_b, []).append(_p)
+        if len(_buckets) > 1:
+            _bk_rows = []
+            for _b, _bps in sorted(_buckets.items()):
+                _bwins = sum(1 for p in _bps if p.get("pnl_dollars", 0) > 0)
+                _bpnl  = sum(p.get("pnl_dollars", 0) for p in _bps)
+                _bpred = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
+                _bk_rows.append({
+                    "Bucket"      : _b,
+                    "Trades"      : len(_bps),
+                    "Win Rate"    : f"{_bwins/len(_bps):.0%}",
+                    "Pred Win Rate": f"{_bpred:.0%}",
+                    "Total P&L"   : f"${_bpnl:+.2f}",
+                })
+            st.dataframe(pd.DataFrame(_bk_rows), hide_index=True, use_container_width=True)
 
 st.divider()
 
