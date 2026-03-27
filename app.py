@@ -376,12 +376,111 @@ st.divider()
 st.header("Kalshi — Scan Opportunities")
 st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry.")
 
+DAILY_BUDGET  = 50.0
+WEEKLY_BUDGET = 200.0
+
+
+def build_bucket(results: list, budget: float) -> list:
+    from kalshi_crypto import MIN_EV, MIN_EDGE
+    valid = [r for r in results if r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE]
+    valid.sort(key=lambda x: x["ev"], reverse=True)
+    groups: dict[tuple, list] = {}
+    for r in valid:
+        groups.setdefault((r["asset"], r["expiry"]), []).append(r)
+    picks = []
+    for group in sorted(groups.values(), key=lambda g: g[0]["ev"], reverse=True):
+        if len(picks) >= 4:
+            break
+        picks.append((group[0], group[0]["kelly_pct"]))
+    if not picks:
+        return []
+    total_weight = sum(w for _, w in picks)
+    portfolio = []
+    for r, weight in picks:
+        dollars   = round(budget * (weight / total_weight), 2)
+        contracts = max(1, int(dollars / (r["price"] / 100)))
+        portfolio.append({**r,
+            "kelly_dollars"      : dollars,
+            "contracts_suggested": contracts,
+            "correlated"         : weight < r["kelly_pct"],
+        })
+    return portfolio
+
+
+def make_portfolio_table(portfolio: list) -> pd.DataFrame:
+    rows = []
+    for p in portfolio:
+        rows.append({
+            "Ticker"   : p["ticker"],
+            "Side"     : p["side"],
+            "Hrs Left" : (f"{int(p['hours_to_expiry'] * 60)}m"
+                          if p['hours_to_expiry'] < 1
+                          else f"{p['hours_to_expiry']:.0f}h"),
+            "Price"    : f"{p['price']}¢",
+            "Cal Prob" : f"{p['calibrated_prob']*100:.1f}%",
+            "EV"       : f"{p['ev']:+.3f}",
+            "Bet $"    : f"${p['kelly_dollars']:.0f}",
+            "Contracts": p["contracts_suggested"],
+            "Model"    : p.get("model_type", "daily"),
+        })
+    return pd.DataFrame(rows)
+
+
+def make_scan_table(results: list) -> pd.DataFrame:
+    rows = []
+    for r in results:
+        rows.append({
+            "Asset"    : r["asset"],
+            "Side"     : r["side"],
+            "Strike"   : f"${r['strike']:,.0f}",
+            "Expiry"   : r["expiry"],
+            "Price"    : f"{r['price']}¢",
+            "Cal Prob" : f"{r['calibrated_prob']*100:.1f}%",
+            "Edge"     : f"{r['edge']*100:+.1f}pp",
+            "EV"       : f"{r['ev']:+.3f}",
+            "Kelly %"  : f"{r['kelly_pct']:.1f}%",
+        })
+    return pd.DataFrame(rows)
+
+
+def save_paper_trades(portfolio: list, bucket: str) -> None:
+    import json as _j
+    existing      = load_json(PAPER_TRADES)
+    existing_keys = {(p["ticker"], p["side"]) for p in existing}
+    added = 0
+    for p in portfolio:
+        key = (p["ticker"], p["side"])
+        if key in existing_keys:
+            continue
+        existing.append({
+            "ticker"       : p["ticker"],
+            "side"         : p["side"],
+            "price_cents"  : p["price"],
+            "contracts"    : p["contracts_suggested"],
+            "bet_dollars"  : p["kelly_dollars"],
+            "model_prob"   : p["model_prob"],
+            "cal_prob"     : p["calibrated_prob"],
+            "ev"           : p["ev"],
+            "hours_to_exp" : p["hours_to_expiry"],
+            "close_time"   : p.get("expiry", ""),
+            "bucket"       : bucket,
+            "placed_at"    : datetime.now(timezone.utc).isoformat(),
+            "status"       : "open",
+            "result"       : None,
+            "pnl_dollars"  : None,
+        })
+        added += 1
+    with open(PAPER_TRADES, "w") as _f:
+        _j.dump(existing, _f, indent=2)
+    st.success(f"Recorded {added} paper trade(s).")
+
+
 if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
     try:
         from kalshi_crypto import (
             load_crypto_models, score_contract,
             download_crypto, download_crypto_hourly,
-            CRYPTO_ASSETS, KALSHI_SERIES, INFERENCE_PERIOD, MIN_EV, MIN_EDGE,
+            CRYPTO_ASSETS, KALSHI_SERIES, INFERENCE_PERIOD,
         )
 
         with st.spinner("Loading model..."):
@@ -416,156 +515,62 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                         if results:
                             scored += 1
                     scan_debug.append(f"{series}: {len(markets)} markets, {scored} scored")
-            st.caption(" · ".join(scan_debug)
-                       + f" · {sum(1 for r in all_results if r['hours_to_expiry'] > 24)} sides >24h")
-
-            DAILY_BUDGET  = 50.0
-            WEEKLY_BUDGET = 200.0
-
-            def build_bucket(results: list, budget: float) -> list:
-                """
-                Pick best signal per (asset, expiry) group by EV.
-                Add correlated second pick at half Kelly weight if EV >= 80% of best in group.
-                Normalize Kelly weights so total spend = budget.
-                """
-                valid = [r for r in results if r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE]
-                valid.sort(key=lambda x: x["ev"], reverse=True)
-
-                groups: dict[tuple, list] = {}
-                for r in valid:
-                    groups.setdefault((r["asset"], r["expiry"]), []).append(r)
-
-                picks = []  # (result, kelly_weight)
-                for group in sorted(groups.values(), key=lambda g: g[0]["ev"], reverse=True):
-                    if len(picks) >= 4:
-                        break
-                    best = group[0]
-                    picks.append((best, best["kelly_pct"]))
-
-                if not picks:
-                    return []
-
-                total_weight = sum(w for _, w in picks)
-                portfolio = []
-                for r, weight in picks:
-                    dollars   = round(budget * (weight / total_weight), 2)
-                    contracts = max(1, int(dollars / (r["price"] / 100)))
-                    portfolio.append({
-                        **r,
-                        "kelly_dollars"      : dollars,
-                        "contracts_suggested": contracts,
-                        "correlated"         : weight < r["kelly_pct"],
-                    })
-                return portfolio
-
-            def make_portfolio_table(portfolio: list) -> pd.DataFrame:
-                rows = []
-                for p in portfolio:
-                    rows.append({
-                        "Ticker"   : p["ticker"],
-                        "Side"     : p["side"],
-                        "Hrs Left" : (f"{int(p['hours_to_expiry'] * 60)}m"
-                                      if p['hours_to_expiry'] < 1
-                                      else f"{p['hours_to_expiry']:.0f}h"),
-                        "Price"    : f"{p['price']}¢",
-                        "Cal Prob" : f"{p['calibrated_prob']*100:.1f}%",
-                        "EV"       : f"{p['ev']:+.3f}",
-                        "Bet $"    : f"${p['kelly_dollars']:.0f}",
-                        "Contracts": p["contracts_suggested"],
-                        "Model"    : p.get("model_type", "daily"),
-                    })
-                return pd.DataFrame(rows)
-
-            def make_scan_table(results: list) -> pd.DataFrame:
-                rows = []
-                for r in results:
-                    rows.append({
-                        "Asset"    : r["asset"],
-                        "Side"     : r["side"],
-                        "Strike"   : f"${r['strike']:,.0f}",
-                        "Expiry"   : r["expiry"],
-                        "Price"    : f"{r['price']}¢",
-                        "Cal Prob" : f"{r['calibrated_prob']*100:.1f}%",
-                        "Edge"     : f"{r['edge']*100:+.1f}pp",
-                        "EV"       : f"{r['ev']:+.3f}",
-                        "Kelly %"  : f"{r['kelly_pct']:.1f}%",
-                    })
-                return pd.DataFrame(rows)
 
             under24 = [r for r in all_results if r["hours_to_expiry"] <= 24]
             over24  = [r for r in all_results if r["hours_to_expiry"] > 24]
 
-            daily_port  = build_bucket(under24, DAILY_BUDGET)
-            weekly_port = build_bucket(over24,  WEEKLY_BUDGET)
-
-            def save_paper_trades(portfolio: list, bucket: str) -> None:
-                import json as _j
-                from datetime import datetime, timezone
-                existing = load_json(PAPER_TRADES)
-                existing_keys = {(p["ticker"], p["side"]) for p in existing}
-                added = 0
-                for p in portfolio:
-                    key = (p["ticker"], p["side"])
-                    if key in existing_keys:
-                        continue
-                    existing.append({
-                        "ticker"       : p["ticker"],
-                        "side"         : p["side"],
-                        "price_cents"  : p["price"],
-                        "contracts"    : p["contracts_suggested"],
-                        "bet_dollars"  : p["kelly_dollars"],
-                        "model_prob"   : p["model_prob"],
-                        "cal_prob"     : p["calibrated_prob"],
-                        "ev"           : p["ev"],
-                        "hours_to_exp" : p["hours_to_expiry"],
-                        "close_time"   : p.get("expiry", ""),
-                        "bucket"       : bucket,
-                        "placed_at"    : datetime.now(timezone.utc).isoformat(),
-                        "status"       : "open",
-                        "result"       : None,
-                        "pnl_dollars"  : None,
-                    })
-                    added += 1
-                with open(PAPER_TRADES, "w") as _f:
-                    _j.dump(existing, _f, indent=2)
-                st.success(f"Recorded {added} paper trade(s).")
-
-            # ── Daily plays ──
-            st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (≤24h)")
-            if daily_port:
-                st.dataframe(make_portfolio_table(daily_port), width="stretch", hide_index=True)
-                if st.button("📝 Paper Trade Daily Plays", key="paper_daily"):
-                    save_paper_trades(daily_port, "daily")
-            else:
-                st.info("No daily contracts meet the thresholds right now.")
-
-            # ── Weekly plays ──
-            st.subheader(f"Weekly Plays — ${WEEKLY_BUDGET:.0f} budget (>24h)")
-            if weekly_port:
-                st.dataframe(make_portfolio_table(weekly_port), width="stretch", hide_index=True)
-                if st.button("📝 Paper Trade Weekly Plays", key="paper_weekly"):
-                    save_paper_trades(weekly_port, "weekly")
-            else:
-                st.info("No weekly contracts available right now.")
-
-            # ── Full scan results ──
-            with st.expander("All scored contracts"):
-                if under24:
-                    st.markdown("**≤ 24h to expiry**")
-                    st.dataframe(make_scan_table(
-                        sorted(under24, key=lambda x: x["ev"], reverse=True)[:10]),
-                        width="stretch", hide_index=True)
-                if over24:
-                    st.markdown("**> 24h to expiry**")
-                    st.dataframe(make_scan_table(
-                        sorted(over24, key=lambda x: x["ev"], reverse=True)[:10]),
-                        width="stretch", hide_index=True)
-
-            st.caption(f"Scanned {len(all_results)//2} contracts · {len(all_results)} sides scored")
+            st.session_state["scan_daily_port"]  = build_bucket(under24, DAILY_BUDGET)
+            st.session_state["scan_weekly_port"] = build_bucket(over24,  WEEKLY_BUDGET)
+            st.session_state["scan_under24"]     = under24
+            st.session_state["scan_over24"]      = over24
+            st.session_state["scan_debug"]       = (
+                " · ".join(scan_debug)
+                + f" · {len(all_results)//2} contracts · {len(all_results)} sides scored"
+            )
 
     except Exception as e:
         st.error(f"Scan error: {e}")
         import traceback; st.code(traceback.format_exc())
+
+# ── Render scan results (persists across reruns via session_state) ─────────────
+if "scan_daily_port" in st.session_state:
+    daily_port  = st.session_state["scan_daily_port"]
+    weekly_port = st.session_state["scan_weekly_port"]
+    under24     = st.session_state["scan_under24"]
+    over24      = st.session_state["scan_over24"]
+
+    st.caption(st.session_state.get("scan_debug", ""))
+
+    # ── Daily plays ──
+    st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (≤24h)")
+    if daily_port:
+        st.dataframe(make_portfolio_table(daily_port), use_container_width=True, hide_index=True)
+        if st.button("📝 Paper Trade Daily Plays", key="paper_daily"):
+            save_paper_trades(daily_port, "daily")
+    else:
+        st.info("No daily contracts meet the thresholds right now.")
+
+    # ── Weekly plays ──
+    st.subheader(f"Weekly Plays — ${WEEKLY_BUDGET:.0f} budget (>24h)")
+    if weekly_port:
+        st.dataframe(make_portfolio_table(weekly_port), use_container_width=True, hide_index=True)
+        if st.button("📝 Paper Trade Weekly Plays", key="paper_weekly"):
+            save_paper_trades(weekly_port, "weekly")
+    else:
+        st.info("No weekly contracts available right now.")
+
+    # ── Full scan results ──
+    with st.expander("All scored contracts"):
+        if under24:
+            st.markdown("**≤ 24h to expiry**")
+            st.dataframe(make_scan_table(
+                sorted(under24, key=lambda x: x["ev"], reverse=True)[:10]),
+                use_container_width=True, hide_index=True)
+        if over24:
+            st.markdown("**> 24h to expiry**")
+            st.dataframe(make_scan_table(
+                sorted(over24, key=lambda x: x["ev"], reverse=True)[:10]),
+                use_container_width=True, hide_index=True)
 
 st.divider()
 
