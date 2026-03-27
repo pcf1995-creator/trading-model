@@ -71,6 +71,9 @@ MODEL_INTRADAY_PATH    = "model_crypto_intraday.joblib"
 FEATURES_INTRADAY_PATH = "features_crypto_intraday.csv"
 METADATA_INTRADAY_PATH = "model_crypto_intraday_meta.json"
 
+# Paper-trade calibration (Platt scaling fitted on live outcomes)
+CALIBRATION_PATH   = "model_crypto_calibration.json"
+
 RF_TREES           = 300
 RF_MAX_DEPTH       = 12
 RF_MIN_LEAF        = 5
@@ -468,7 +471,121 @@ def load_crypto_models() -> dict:
         models["intraday"] = None
         logger.info("No intraday model found — run --train-all to build it.")
 
+    models["calibration"] = load_calibration()
     return models
+
+
+# ── Paper-trade calibration (Platt scaling) ───────────────────────────────────
+def load_calibration() -> dict | None:
+    """Load Platt scaling params saved by recalibrate_from_paper_trades()."""
+    if not Path(CALIBRATION_PATH).exists():
+        return None
+    try:
+        with open(CALIBRATION_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def recalibrate_from_paper_trades(paper_trades_path: str) -> dict:
+    """
+    Fit Platt scaling (logistic regression on model_prob → settlement outcome)
+    using settled paper trades, with exponential decay weights (half-life 30 days).
+
+    For both YES and NO bets, the calibration target is always whether the market
+    settled YES. This lets both sides contribute signal to the same curve.
+
+    Saves calibration to CALIBRATION_PATH and returns the result dict.
+    Minimum 5 settled trades with at least 1 win and 1 loss per bucket.
+    """
+    from sklearn.linear_model import LogisticRegression
+
+    try:
+        with open(paper_trades_path) as f:
+            trades = json.load(f)
+    except Exception as e:
+        return {"error": f"Could not read paper trades: {e}"}
+
+    settled = [t for t in trades
+               if t.get("status") == "settled"
+               and t.get("result") in ("yes", "no")]
+    if not settled:
+        return {"error": "No settled trades with known results yet."}
+
+    now_utc  = datetime.now(timezone.utc)
+    buckets  = {}
+
+    for bucket in ("daily", "intraday"):
+        bt = [t for t in settled if t.get("bucket") == bucket]
+        if len(bt) < 5:
+            buckets[bucket] = {"skipped": True, "reason": f"Only {len(bt)} settled trades (need ≥5)"}
+            continue
+
+        probs, outcomes, weights = [], [], []
+        for t in bt:
+            mp     = float(t.get("model_prob", 0.5))
+            result = t.get("result", "").lower()
+            # outcome = 1 if market settled YES (independent of side bet)
+            outcome = 1 if result == "yes" else 0
+
+            placed_str = t.get("placed_at", "")
+            try:
+                placed_dt = datetime.fromisoformat(placed_str)
+                if placed_dt.tzinfo is None:
+                    placed_dt = placed_dt.replace(tzinfo=timezone.utc)
+                days_ago = max(0, (now_utc - placed_dt).days)
+            except Exception:
+                days_ago = 0
+            w = math.exp(-days_ago / 30)   # half-life 30 days
+
+            probs.append(mp)
+            outcomes.append(outcome)
+            weights.append(w)
+
+        y_arr = np.array(outcomes)
+        if len(set(y_arr)) < 2:
+            buckets[bucket] = {
+                "skipped": True,
+                "reason": "Need at least 1 win and 1 loss to fit calibration",
+            }
+            continue
+
+        X = np.array(probs).reshape(-1, 1)
+        lr = LogisticRegression(C=1.0, fit_intercept=True, max_iter=500)
+        lr.fit(X, y_arr, sample_weight=np.array(weights))
+
+        coef      = float(lr.coef_[0][0])
+        intercept = float(lr.intercept_[0])
+        win_rate  = float(np.mean(y_arr))
+        pred_rate = float(np.mean(probs))
+
+        buckets[bucket] = {
+            "coef"      : coef,
+            "intercept" : intercept,
+            "n_trades"  : len(bt),
+            "win_rate"  : round(win_rate, 4),
+            "pred_rate" : round(pred_rate, 4),
+            "skipped"   : False,
+        }
+        logger.info(
+            f"Calibration [{bucket}]: n={len(bt)}, "
+            f"actual={win_rate:.1%}, predicted={pred_rate:.1%}, "
+            f"coef={coef:.3f}, intercept={intercept:.3f}"
+        )
+
+    result = {
+        "updated_at": now_utc.isoformat(),
+        "buckets"   : buckets,
+    }
+    with open(CALIBRATION_PATH, "w") as f:
+        json.dump(result, f, indent=2)
+    logger.info(f"Calibration saved → {CALIBRATION_PATH}")
+    return result
+
+
+def _apply_platt(model_prob: float, coef: float, intercept: float) -> float:
+    """Apply Platt scaling: sigmoid(coef * model_prob + intercept)."""
+    return float(1 / (1 + math.exp(-(coef * model_prob + intercept))))
 
 
 # ── Base rate ─────────────────────────────────────────────────────────────────
@@ -740,6 +857,14 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
         return []
 
     model_prob   = float(model.predict_proba(row)[0][1])
+
+    # Apply paper-trade Platt calibration if available for this bucket
+    _cal = models.get("calibration")
+    if _cal:
+        _bp = _cal.get("buckets", {}).get(model_type, {})
+        if _bp and not _bp.get("skipped") and "coef" in _bp:
+            model_prob = _apply_platt(model_prob, _bp["coef"], _bp["intercept"])
+
     horizon_days = max(1, (expiry - date.today()).days)
     strike_distance = (strike / current_price) - 1
 

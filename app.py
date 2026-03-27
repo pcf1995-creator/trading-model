@@ -572,8 +572,55 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 # PAPER TRADES — TRACKING
 # ══════════════════════════════════════════════════════════════════════════════
-st.header("Paper Trades — Tracking")
-st.caption("Model-suggested trades recorded without real money. Used to track accuracy and recalibrate.")
+_pt_header_col, _pt_btn_col = st.columns([5, 2])
+with _pt_header_col:
+    st.header("Paper Trades — Tracking")
+    st.caption("Model-suggested trades recorded without real money. Used to track accuracy and recalibrate.")
+
+# ── Calibration status + recalibrate button ───────────────────────────────────
+CALIBRATION_FILE = ROOT / "model_crypto_calibration.json"
+_cal_data = None
+if CALIBRATION_FILE.exists():
+    try:
+        with open(CALIBRATION_FILE) as _cf:
+            _cal_data = json.load(_cf)
+    except Exception:
+        pass
+
+with _pt_btn_col:
+    st.write("")  # vertical spacing
+    if st.button("🔁 Recalibrate from Paper Trades", use_container_width=True):
+        try:
+            from kalshi_crypto import recalibrate_from_paper_trades
+            with st.spinner("Fitting calibration..."):
+                _new_cal = recalibrate_from_paper_trades(str(PAPER_TRADES))
+            if "error" in _new_cal:
+                st.warning(_new_cal["error"])
+            else:
+                _buckets = _new_cal.get("buckets", {})
+                for _bname, _bdata in _buckets.items():
+                    if _bdata.get("skipped"):
+                        st.info(f"{_bname}: {_bdata['reason']}")
+                    else:
+                        st.success(
+                            f"{_bname} calibrated on {_bdata['n_trades']} trades — "
+                            f"actual {_bdata['win_rate']:.0%} vs predicted {_bdata['pred_rate']:.0%}"
+                        )
+                _cal_data = _new_cal
+        except Exception as _ce:
+            st.error(f"Calibration error: {_ce}")
+
+if _cal_data:
+    _bkts = _cal_data.get("buckets", {})
+    _status_parts = []
+    for _bn, _bd in _bkts.items():
+        if not _bd.get("skipped"):
+            _status_parts.append(f"**{_bn}** {_bd['n_trades']} trades (actual {_bd['win_rate']:.0%} vs pred {_bd['pred_rate']:.0%})")
+    if _status_parts:
+        _updated = _cal_data.get("updated_at", "")[:10]
+        st.caption(f"Active calibration (updated {_updated}): " + " · ".join(_status_parts))
+else:
+    st.caption("No calibration active — click Recalibrate after accumulating 5+ settled paper trades per bucket.")
 
 _paper = load_json(PAPER_TRADES)
 
