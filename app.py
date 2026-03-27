@@ -133,38 +133,38 @@ c1, c2 = st.columns([1, 8])
 with c1:
     if st.button("↻ Refresh", type="primary"):
         st.cache_data.clear()
-        # Sync open positions from Kalshi API into local JSON
-        try:
-            _client = make_kalshi_client()
-            if not _client.dry_run:
-                _api_positions = _client.get_positions()
-                _local         = load_json(POSITIONS_KALSHI)
-                _local_open    = {p["ticker"]: p for p in _local if p["status"] == "open"}
-                # Add any API positions not already tracked locally
-                _tickers_added = set()
-                for _pos in _api_positions:
-                    _tkr = _pos.get("ticker", "")
-                    if _tkr and _tkr not in _local_open and _tkr not in _tickers_added:
-                        _mkt = _client.get_market(_tkr)
-                        _local.append({
-                            "ticker"      : _tkr,
-                            "status"      : "open",
-                            "side"        : "yes" if _pos.get("position", 0) > 0 else "no",
-                            "contracts"   : abs(_pos.get("position", 1)),
-                            "entry_cents" : 0,
-                            "stop_cents"  : 0,
-                            "close_time"  : _mkt.get("close_time", ""),
-                        })
-                        _tickers_added.add(_tkr)
-                import json as _json
-                with open(POSITIONS_KALSHI, "w") as _f:
-                    _json.dump(_local, _f, indent=2)
-        except Exception:
-            pass
         st.rerun()
 
+# ── Load positions: API is source of truth for open positions ─────────────────
+_client      = make_kalshi_client()
 all_kalshi   = load_json(POSITIONS_KALSHI)
-open_kalshi  = [p for p in all_kalshi if p["status"] == "open"]
+# Local JSON keyed by ticker — used for entry/stop prices and closed positions
+_local_by_ticker = {p["ticker"]: p for p in all_kalshi}
+
+if not _client.dry_run:
+    try:
+        _api_positions = _client.get_positions()
+        open_kalshi = []
+        for _pos in _api_positions:
+            _tkr = _pos.get("ticker", "")
+            if not _tkr:
+                continue
+            _local = _local_by_ticker.get(_tkr, {})
+            _mkt   = _client.get_market(_tkr)
+            open_kalshi.append({
+                "ticker"      : _tkr,
+                "status"      : "open",
+                "side"        : "yes" if _pos.get("position", 0) > 0 else "no",
+                "contracts"   : abs(_pos.get("position", 1)),
+                "entry_cents" : _local.get("entry_cents", 0),
+                "stop_cents"  : _local.get("stop_cents", 0),
+                "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
+            })
+    except Exception as e:
+        st.warning(f"Could not fetch live positions from Kalshi: {e}")
+        open_kalshi = [p for p in all_kalshi if p["status"] == "open"]
+else:
+    open_kalshi = [p for p in all_kalshi if p["status"] == "open"]
 
 if open_kalshi:
     open_tickers = tuple(p["ticker"] for p in open_kalshi)
@@ -211,15 +211,14 @@ if open_kalshi:
     )
 
     if st.button("💾 Save entry & stop prices"):
-        ticker_map = {p["ticker"]: p for p in all_kalshi}
+        import json as _json
         for i, row in edited.iterrows():
             tkr = df_open.iloc[i]["Ticker"]
-            if tkr in ticker_map:
-                ticker_map[tkr]["entry_cents"] = int(row["Entry ¢"])
-                ticker_map[tkr]["stop_cents"]  = int(row["Stop ¢"])
-        import json as _json
+            _local_by_ticker.setdefault(tkr, {"ticker": tkr, "status": "open"})
+            _local_by_ticker[tkr]["entry_cents"] = int(row["Entry ¢"])
+            _local_by_ticker[tkr]["stop_cents"]  = int(row["Stop ¢"])
         with open(POSITIONS_KALSHI, "w") as _f:
-            _json.dump(list(ticker_map.values()), _f, indent=2)
+            _json.dump(list(_local_by_ticker.values()), _f, indent=2)
         st.success("Saved!")
 
     m1, m2, m3 = st.columns(3)
