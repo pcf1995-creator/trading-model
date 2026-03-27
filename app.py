@@ -184,24 +184,43 @@ if open_kalshi:
                      if current is not None and entry > 0 else None)
 
         rows.append({
+            "Ticker"   : ticker,
             "Asset"    : asset,
             "Strike"   : f"${float(strike):,.0f}" if strike else "",
-            "Expiry"   : expiry,
             "Hrs Left" : (f"{int(hrs * 60)}m" if hrs is not None and hrs < 1
                           else f"{hrs:.0f}h" if hrs is not None else "—"),
             "Contracts": contracts,
-            "Entry"    : f"{entry}¢",
-            "Stop"     : f"{stop}¢",
+            "Entry ¢"  : entry,
+            "Stop ¢"   : stop,
             "Live Bid" : f"{current}¢" if current is not None else "—",
             "P&L"      : (f"+{pnl_pct:.1f}%" if pnl_pct is not None and pnl_pct >= 0
                           else f"{pnl_pct:.1f}%" if pnl_pct is not None else "—"),
         })
 
-    df_open = (pd.DataFrame(rows)
-               .sort_values(["Hrs Left", "Asset"])
-               .reset_index(drop=True))
-    st.dataframe(df_open.style.map(color_pnl, subset=["P&L"]),
-                 width="stretch", hide_index=True)
+    df_open = pd.DataFrame(rows).reset_index(drop=True)
+
+    edited = st.data_editor(
+        df_open.drop(columns=["Ticker"]),
+        column_config={
+            "Entry ¢": st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
+            "Stop ¢" : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
+        },
+        disabled=["Asset", "Strike", "Hrs Left", "Contracts", "Live Bid", "P&L"],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    if st.button("💾 Save entry & stop prices"):
+        ticker_map = {p["ticker"]: p for p in all_kalshi}
+        for i, row in edited.iterrows():
+            tkr = df_open.iloc[i]["Ticker"]
+            if tkr in ticker_map:
+                ticker_map[tkr]["entry_cents"] = int(row["Entry ¢"])
+                ticker_map[tkr]["stop_cents"]  = int(row["Stop ¢"])
+        import json as _json
+        with open(POSITIONS_KALSHI, "w") as _f:
+            _json.dump(list(ticker_map.values()), _f, indent=2)
+        st.success("Saved!")
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Open Positions", len(open_kalshi))
