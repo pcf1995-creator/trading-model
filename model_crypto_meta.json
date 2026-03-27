@@ -1,8 +1,9 @@
 {
-  "training_base_rate": 0.5074653854102087,
-  "trained_on": "2026-03-18",
-  "n_samples": 77424,
-  "cv_roc_auc": 0.871,
+  "training_base_rate": 0.4900554299999455,
+  "trained_on": "2026-03-26",
+  "n_samples": 77376,
+  "cv_roc_auc": 0.8755,
+  "weight_half_life_days": 180,
   "feature_names": [
     "SMA_5",
     "Price_SMA_5",

@@ -60,7 +60,7 @@ MIN_TRAIN_FRAC     = 0.5
 MIN_EV             = 0.05   # minimum EV per dollar to recommend
 MIN_EDGE           = 0.05   # minimum (calibrated_prob - market_price)
 MAX_KELLY          = 0.25   # cap half-Kelly at 25% of bankroll
-DEFAULT_BANKROLL   = 1_000
+DEFAULT_BANKROLL   = 500
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -193,9 +193,18 @@ def build_crypto_model() -> tuple[RandomForestClassifier, list[str], float]:
     X      = data.drop(columns=["label", "_date"])
     feature_names = X.columns.tolist()
 
-    training_base_rate = float(y.mean())
+    # Time-decay sample weights: exponential decay so recent data dominates
+    # Half-life = 180 days → data from 6mo ago has 50% weight, 1yr ago ~25%, 2yr ago ~6%
+    today_ts   = pd.Timestamp(date.today())
+    days_old   = (today_ts - pd.to_datetime(dates)).dt.days.clip(lower=0)
+    half_life  = 180
+    weights    = np.exp(-np.log(2) * days_old / half_life).values
+    weights   /= weights.mean()  # normalise so mean weight = 1
+
+    training_base_rate = float(np.average(y, weights=weights))
     logger.info(f"  Combined: {len(X):,} samples, "
-                f"base rate = {training_base_rate:.3f}")
+                f"weighted base rate = {training_base_rate:.3f}  "
+                f"(unweighted = {float(y.mean()):.3f})")
 
     logger.info("  Running walk-forward CV ...")
     cv_roc_auc = _walk_forward_cv(X, y, dates)
@@ -207,17 +216,18 @@ def build_crypto_model() -> tuple[RandomForestClassifier, list[str], float]:
         min_samples_leaf=RF_MIN_LEAF, class_weight="balanced",
         random_state=RANDOM_STATE, n_jobs=-1,
     )
-    rf.fit(X, y)
+    rf.fit(X, y, sample_weight=weights)
 
     # Save
     joblib.dump(rf, MODEL_PATH)
     pd.Series(feature_names).to_csv(FEATURES_PATH, index=False, header=False)
     meta = {
-        "training_base_rate": training_base_rate,
-        "trained_on"        : str(date.today()),
-        "n_samples"         : len(X),
-        "cv_roc_auc"        : round(cv_roc_auc, 4),
-        "feature_names"     : feature_names,
+        "training_base_rate"  : training_base_rate,
+        "trained_on"          : str(date.today()),
+        "n_samples"           : len(X),
+        "cv_roc_auc"          : round(cv_roc_auc, 4),
+        "weight_half_life_days": half_life,
+        "feature_names"       : feature_names,
     }
     with open(METADATA_PATH, "w") as f:
         json.dump(meta, f, indent=2)
@@ -531,8 +541,11 @@ def main():
     client = KalshiClient()
     if not client.dry_run:
         client.login()
-    balance_cents = client.get_balance().get("balance", 0)
-    bankroll      = args.bankroll or balance_cents / 100
+    try:
+        balance_cents = client.get_balance().get("balance", 0)
+    except Exception:
+        balance_cents = 0
+    bankroll = args.bankroll or balance_cents / 100 or DEFAULT_BANKROLL
     mode          = "DRY RUN" if client.dry_run else "LIVE"
 
     print(f"\n{'='*65}")
