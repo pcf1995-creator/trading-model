@@ -342,7 +342,9 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
                     rows.append({
                         "Ticker"   : p["ticker"],
                         "Side"     : p["side"],
-                        "Hrs Left" : f"{p['hours_to_expiry']:.0f}h",
+                        "Hrs Left" : (f"{int(p['hours_to_expiry'] * 60)}m"
+                                      if p['hours_to_expiry'] < 1
+                                      else f"{p['hours_to_expiry']:.0f}h"),
                         "Price"    : f"{p['price']}¢",
                         "Cal Prob" : f"{p['calibrated_prob']*100:.1f}%",
                         "EV"       : f"{p['ev']:+.3f}",
