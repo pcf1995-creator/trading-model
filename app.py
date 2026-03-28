@@ -504,30 +504,58 @@ st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry.")
 DAILY_BUDGET  = 50.0
 WEEKLY_BUDGET = 200.0
 
+# Estimated directional correlation between BTC and ETH.
+# When two same-direction BTC+ETH picks are selected, the second pick's
+# Kelly allocation is multiplied by (1 - BTC_ETH_CORR) to avoid
+# over-betting what is effectively one correlated position.
+# Tune this as paper trade data accumulates (empirically ~0.80–0.90).
+BTC_ETH_CORR = 0.80
+
 
 def build_bucket(results: list, budget: float) -> list:
     from kalshi_crypto import MIN_EV, MIN_EDGE
     valid = [r for r in results if r["ev"] >= MIN_EV and r["edge"] >= MIN_EDGE]
     valid.sort(key=lambda x: x["ev"], reverse=True)
-    groups: dict[tuple, list] = {}
+
+    # Pick top contracts by EV globally (no per-asset grouping).
+    # Deduplicate by ticker so the same contract can't appear twice.
+    seen: set[str] = set()
+    picks: list[dict] = []
     for r in valid:
-        groups.setdefault((r["asset"], r["expiry"]), []).append(r)
-    picks = []
-    for group in sorted(groups.values(), key=lambda g: g[0]["ev"], reverse=True):
         if len(picks) >= 4:
             break
-        picks.append((group[0], group[0]["kelly_pct"]))
+        if r["ticker"] in seen:
+            continue
+        seen.add(r["ticker"])
+        picks.append(r)
+
     if not picks:
         return []
-    total_weight = sum(w for _, w in picks)
+
+    # For each pick, compute a correlation discount vs the picks before it.
+    # Two picks are "correlated" when they are same-direction BTC+ETH bets
+    # (e.g. both NO, meaning both win only if crypto drops).
+    def _corr_discount(r: dict, earlier: list[dict]) -> float:
+        for e in earlier:
+            if e["asset"] != r["asset"] and e["side"] == r["side"]:
+                return 1.0 - BTC_ETH_CORR
+        return 1.0
+
+    discounts = []
+    for i, r in enumerate(picks):
+        discounts.append(_corr_discount(r, picks[:i]))
+
+    weights     = [r["kelly_pct"] * d for r, d in zip(picks, discounts)]
+    total_weight = sum(weights) or 1.0
+
     portfolio = []
-    for r, weight in picks:
-        dollars   = round(budget * (weight / total_weight), 2)
+    for r, w, d in zip(picks, weights, discounts):
+        dollars   = round(budget * w / total_weight, 2)
         contracts = max(1, int(dollars / (r["price"] / 100)))
         portfolio.append({**r,
             "kelly_dollars"      : dollars,
             "contracts_suggested": contracts,
-            "correlated"         : weight < r["kelly_pct"],
+            "correlated"         : d < 1.0,
         })
     return portfolio
 
