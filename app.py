@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "kalshi"))
 sys.path.insert(0, str(ROOT))
 
 from kalshi_api import KalshiClient, KALSHI_CONFIG  # noqa: E402
+import db
 
 
 def make_kalshi_client() -> KalshiClient:
@@ -137,10 +138,8 @@ with c1:
         st.rerun()
 
 # ── Load positions: API is source of truth for open positions ─────────────────
-_client      = make_kalshi_client()
-all_kalshi   = load_json(POSITIONS_KALSHI)
-# Local JSON keyed by ticker — used for entry/stop prices and closed positions
-_local_by_ticker = {p["ticker"]: p for p in all_kalshi}
+_client          = make_kalshi_client()
+_local_by_ticker = db.load_position_overrides()   # {ticker: {entry_cents, stop_cents, contracts}}
 
 if not _client.dry_run:
     try:
@@ -170,10 +169,10 @@ if not _client.dry_run:
         settling_kalshi = [p for p in _all_api if p["_hrs"] is not None and p["_hrs"] < 0]
     except Exception as e:
         st.warning(f"Could not fetch live positions from Kalshi: {e}")
-        open_kalshi     = [p for p in all_kalshi if p["status"] == "open"]
+        open_kalshi     = []
         settling_kalshi = []
 else:
-    open_kalshi     = [p for p in all_kalshi if p["status"] == "open"]
+    open_kalshi     = []
     settling_kalshi = []
 
 if open_kalshi:
@@ -224,15 +223,13 @@ if open_kalshi:
     )
 
     if st.button("💾 Save contracts, entry & stop"):
-        import json as _json
         for i, row in edited.iterrows():
             tkr = df_open.iloc[i]["Ticker"]
-            _local_by_ticker.setdefault(tkr, {"ticker": tkr, "status": "open"})
+            _local_by_ticker.setdefault(tkr, {"ticker": tkr})
             _local_by_ticker[tkr]["contracts"]   = int(row["Contracts"])
             _local_by_ticker[tkr]["entry_cents"] = int(row["Entry ¢"])
             _local_by_ticker[tkr]["stop_cents"]  = int(row["Stop ¢"])
-        with open(POSITIONS_KALSHI, "w") as _f:
-            _json.dump(list(_local_by_ticker.values()), _f, indent=2)
+        db.save_position_overrides(_local_by_ticker)
         st.success("Saved!")
 
     m1, m2, m3 = st.columns(3)
@@ -335,10 +332,7 @@ for _tkr, _tkr_fills in _by_ticker.items():
         "status"      : "settled",
     })
 
-local_closed  = [p for p in all_kalshi
-                 if p["status"] not in ("open",) and p.get("entry_cents", 0) > 0]
-api_tickers   = {p["ticker"] for p in api_closed}
-closed_kalshi = api_closed + [p for p in local_closed if p["ticker"] not in api_tickers]
+closed_kalshi = api_closed
 
 if _fills_err:
     st.warning(f"Fills API error: {_fills_err}")
@@ -474,8 +468,7 @@ def make_scan_table(results: list) -> pd.DataFrame:
 
 
 def save_paper_trades(portfolio: list, bucket: str) -> None:
-    import json as _j
-    existing      = load_json(PAPER_TRADES)
+    existing      = db.load_paper_trades()
     existing_keys = {(p["ticker"], p["side"]) for p in existing}
     added = 0
     skipped = 0
@@ -484,7 +477,7 @@ def save_paper_trades(portfolio: list, bucket: str) -> None:
         if key in existing_keys:
             skipped += 1
             continue
-        existing.append({
+        db.add_paper_trade({
             "ticker"       : p["ticker"],
             "side"         : p["side"],
             "price_cents"  : p["price"],
@@ -502,8 +495,6 @@ def save_paper_trades(portfolio: list, bucket: str) -> None:
             "pnl_dollars"  : None,
         })
         added += 1
-    with open(PAPER_TRADES, "w") as _f:
-        _j.dump(existing, _f, indent=2)
     if added:
         st.success(f"Recorded {added} new paper trade(s)." +
                    (f" ({skipped} already tracked.)" if skipped else ""))
@@ -521,6 +512,9 @@ if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
 
         with st.spinner("Loading model..."):
             models = load_crypto_models()
+            _db_cal = db.load_calibration_db()
+            if _db_cal:
+                models["calibration"] = _db_cal
 
         if models.get("daily") is None:
             st.error("No trained model. Run `python kalshi_crypto.py --train` first.")
@@ -619,35 +613,37 @@ with _pt_header_col:
     st.caption("Model-suggested trades recorded without real money. Used to track accuracy and recalibrate.")
 
 # ── Calibration status + recalibrate button ───────────────────────────────────
-CALIBRATION_FILE = ROOT / "model_crypto_calibration.json"
-_cal_data = None
-if CALIBRATION_FILE.exists():
-    try:
-        with open(CALIBRATION_FILE) as _cf:
-            _cal_data = json.load(_cf)
-    except Exception:
-        pass
+_cal_data = db.load_calibration_db()
 
 with _pt_btn_col:
     st.write("")  # vertical spacing
     if st.button("🔁 Recalibrate from Paper Trades", use_container_width=True):
         try:
             from kalshi_crypto import recalibrate_from_paper_trades
-            with st.spinner("Fitting calibration..."):
-                _new_cal = recalibrate_from_paper_trades(str(PAPER_TRADES))
-            if "error" in _new_cal:
-                st.warning(_new_cal["error"])
+            _settled = [t for t in db.load_paper_trades() if t.get("status") == "settled"]
+            if not _settled:
+                st.warning("No settled paper trades yet.")
             else:
-                _buckets = _new_cal.get("buckets", {})
-                for _bname, _bdata in _buckets.items():
-                    if _bdata.get("skipped"):
-                        st.info(f"{_bname}: {_bdata['reason']}")
-                    else:
-                        st.success(
-                            f"{_bname} calibrated on {_bdata['n_trades']} trades — "
-                            f"actual {_bdata['win_rate']:.0%} vs predicted {_bdata['pred_rate']:.0%}"
-                        )
-                _cal_data = _new_cal
+                import tempfile, json as _j
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as _tf:
+                    _j.dump(_settled + [t for t in db.load_paper_trades() if t.get("status") == "open"], _tf)
+                    _tmp_path = _tf.name
+                with st.spinner("Fitting calibration..."):
+                    _new_cal = recalibrate_from_paper_trades(_tmp_path)
+                if "error" in _new_cal:
+                    st.warning(_new_cal["error"])
+                else:
+                    db.save_calibration_db(_new_cal)
+                    _buckets = _new_cal.get("buckets", {})
+                    for _bname, _bdata in _buckets.items():
+                        if _bdata.get("skipped"):
+                            st.info(f"{_bname}: {_bdata['reason']}")
+                        else:
+                            st.success(
+                                f"{_bname} calibrated on {_bdata['n_trades']} trades — "
+                                f"actual {_bdata['win_rate']:.0%} vs predicted {_bdata['pred_rate']:.0%}"
+                            )
+                    _cal_data = _new_cal
         except Exception as _ce:
             st.error(f"Calibration error: {_ce}")
 
@@ -663,15 +659,15 @@ if _cal_data:
 else:
     st.caption("No calibration active — click Recalibrate after accumulating 5+ settled paper trades per bucket.")
 
-_paper = load_json(PAPER_TRADES)
+_paper = db.load_paper_trades()
 
 if not _paper:
     st.info("No paper trades recorded yet. Run the Kalshi Scan and click '📝 Paper Trade' to start tracking.")
 else:
     # ── Auto-settle expired trades ────────────────────────────────────────────
-    _now_utc   = datetime.now(timezone.utc)
-    _updated   = False
-    _open_paper = []
+    _now_utc       = datetime.now(timezone.utc)
+    _newly_settled = 0
+    _open_paper    = []
     _settled_paper = []
 
     for _pt in _paper:
@@ -689,16 +685,17 @@ else:
                     _mkt    = _client._request("GET", f"/markets/{_pt['ticker']}").get("market", {})
                     _result = _mkt.get("result")
                     if _result is not None:
-                        _pt["status"] = "settled"
-                        _pt["result"] = _result
-                        _side         = _pt.get("side", "yes")
-                        _entry        = _pt.get("price_cents", 50)
-                        _ctrs         = _pt.get("contracts", 1)
-                        if _result == _side:   # won
-                            _pt["pnl_dollars"] = round((100 - _entry) * _ctrs / 100, 2)
-                        else:                  # lost
-                            _pt["pnl_dollars"] = round(-_entry * _ctrs / 100, 2)
-                        _updated = True
+                        _side  = _pt.get("side", "yes")
+                        _entry = _pt.get("price_cents", 50)
+                        _ctrs  = _pt.get("contracts", 1)
+                        _pnl   = (round((100 - _entry) * _ctrs / 100, 2)
+                                  if _result == _side
+                                  else round(-_entry * _ctrs / 100, 2))
+                        db.settle_paper_trade(_pt["id"], _result, _pnl)
+                        _pt["status"]      = "settled"
+                        _pt["result"]      = _result
+                        _pt["pnl_dollars"] = _pnl
+                        _newly_settled    += 1
                 except Exception:
                     pass
         if _pt.get("status") == "open":
@@ -706,11 +703,8 @@ else:
         else:
             _settled_paper.append(_pt)
 
-    if _updated:
-        import json as _j
-        with open(PAPER_TRADES, "w") as _f:
-            _j.dump(_paper, _f, indent=2)
-        st.success(f"Auto-settled {sum(1 for p in _settled_paper if p.get('pnl_dollars') is not None)} paper trade(s).")
+    if _newly_settled:
+        st.success(f"Auto-settled {_newly_settled} paper trade(s).")
 
     # ── Open paper trades ─────────────────────────────────────────────────────
     if _open_paper:

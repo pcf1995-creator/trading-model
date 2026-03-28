@@ -7,3 +7,4 @@ yfinance>=0.2
 requests>=2.31
 cryptography>=41.0
 matplotlib>=3.7
+supabase>=2.3.0
