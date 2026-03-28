@@ -374,7 +374,7 @@ st.divider()
 # KALSHI — SCAN OPPORTUNITIES
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("Kalshi — Scan Opportunities")
-st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry.")
+st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry. · v2 (session_state)")
 
 DAILY_BUDGET  = 50.0
 WEEKLY_BUDGET = 200.0
@@ -545,6 +545,7 @@ if "scan_daily_port" in st.session_state:
     st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (≤24h)")
     if daily_port:
         st.dataframe(make_portfolio_table(daily_port), use_container_width=True, hide_index=True)
+        st.write(f"DEBUG: {len(daily_port)} daily picks in session_state")
         if st.button("📝 Paper Trade Daily Plays", key="paper_daily"):
             save_paper_trades(daily_port, "daily")
     else:
