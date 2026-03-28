@@ -352,9 +352,6 @@ closed_kalshi = api_closed
 
 if _fills_err:
     st.warning(f"Fills API error: {_fills_err}")
-if _raw_sample:
-    with st.expander("🔍 Debug: raw fill fields"):
-        st.json(_raw_sample)
 
 if closed_kalshi:
     with st.expander(f"Closed / Settled Positions ({len(closed_kalshi)})"):
@@ -419,6 +416,28 @@ if closed_kalshi:
             c1, c2 = st.columns(2)
             c1.metric("Win Rate", f"{wins/len(resolved):.0%}")
             c2.metric("Total P&L", f"${total_pnl:+.2f}")
+
+        with st.expander("🔍 Debug: fill cash flows per position"):
+            debug_rows = []
+            for p in closed_kalshi:
+                result = settlement_map.get(p["ticker"])
+                side   = p.get("side", "yes")
+                rem    = p.get("remaining_ctr", 0)
+                settle = (rem * 1.00 if result == side else 0.0) if result else None
+                debug_rows.append({
+                    "Ticker"        : p["ticker"],
+                    "Side"          : side,
+                    "Bought"        : p.get("contracts", 0),
+                    "Remaining"     : rem,
+                    "Buy Cost $"    : f"${p.get('buy_cost', 0):.4f}",
+                    "Sell Proc $"   : f"${p.get('sell_proceeds', 0):.4f}",
+                    "Settle $"      : f"${settle:.2f}" if settle is not None else "—",
+                    "Result"        : result or "—",
+                })
+            st.dataframe(pd.DataFrame(debug_rows), hide_index=True, use_container_width=True)
+            if _raw_sample:
+                st.caption("Most recent raw fill:")
+                st.json(_raw_sample)
 
 st.divider()
 
