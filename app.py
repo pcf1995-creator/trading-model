@@ -690,19 +690,6 @@ if "scan_daily_port" in st.session_state:
     else:
         st.info("No weekly contracts available right now.")
 
-    # ── Full scan results ──
-    with st.expander("All scored contracts"):
-        if under24:
-            st.markdown("**≤ 24h to expiry**")
-            st.dataframe(make_scan_table(
-                sorted(under24, key=lambda x: x["ev"], reverse=True)[:10]),
-                use_container_width=True, hide_index=True)
-        if over24:
-            st.markdown("**> 24h to expiry**")
-            st.dataframe(make_scan_table(
-                sorted(over24, key=lambda x: x["ev"], reverse=True)[:10]),
-                use_container_width=True, hide_index=True)
-
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -771,6 +758,31 @@ else:
     _open_paper    = []
     _settled_paper = []
 
+    # Re-open any trades that were incorrectly settled with empty result
+    # (Kalshi API returns result="" for open markets; "" is not None so the old
+    #  guard passed, treating every live market as a loss.)
+    for _pt in _paper:
+        if _pt.get("status") == "settled" and not _pt.get("result"):
+            db.reopen_paper_trade(_pt["id"])
+            _pt["status"] = "open"
+            _pt.pop("result", None)
+            _pt.pop("pnl_dollars", None)
+
+    # Correct P&L for settled trades where result was stored with wrong case
+    # and P&L was computed using the loss formula instead of the win formula.
+    for _pt in _paper:
+        if _pt.get("status") == "settled" and _pt.get("result"):
+            _result  = _pt["result"]
+            _side    = _pt.get("side", "yes")
+            _entry   = _pt.get("price_cents", 50)
+            _ctrs    = _pt.get("contracts", 1)
+            _correct = (round((100 - _entry) * _ctrs / 100, 2)
+                        if _result.lower() == _side.lower()
+                        else round(-_entry * _ctrs / 100, 2))
+            if _pt.get("pnl_dollars") != _correct:
+                db.settle_paper_trade(_pt["id"], _result, _correct)
+                _pt["pnl_dollars"] = _correct
+
     for _pt in _paper:
         if _pt.get("status") == "open":
             _close_str = _pt.get("close_time", "")
@@ -789,12 +801,12 @@ else:
                 try:
                     _mkt    = _client._request("GET", f"/markets/{_pt['ticker']}").get("market", {})
                     _result = _mkt.get("result")
-                    if _result is not None:
+                    if _result:  # must be non-empty string ("yes"/"no"); "" means still open
                         _side  = _pt.get("side", "yes")
                         _entry = _pt.get("price_cents", 50)
                         _ctrs  = _pt.get("contracts", 1)
                         _pnl   = (round((100 - _entry) * _ctrs / 100, 2)
-                                  if _result == _side
+                                  if _result.lower() == _side.lower()
                                   else round(-_entry * _ctrs / 100, 2))
                         db.settle_paper_trade(_pt["id"], _result, _pnl)
                         _pt["status"]      = "settled"

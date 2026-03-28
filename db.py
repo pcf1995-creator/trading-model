@@ -88,6 +88,25 @@ def add_paper_trade(trade: dict) -> None:
     _save_json(_PAPER_TRADES_JSON, trades)
 
 
+def reopen_paper_trade(trade_id: str) -> None:
+    """Reset a paper trade back to open (undoes an incorrect auto-settle)."""
+    updates = {"status": "open", "result": None, "pnl_dollars": None}
+    client = _get_client()
+    if client:
+        try:
+            client.table("paper_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"reopen_paper_trade failed: {e}")
+    trades = _load_json(_PAPER_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t["status"] = "open"
+            t.pop("result", None)
+            t.pop("pnl_dollars", None)
+    _save_json(_PAPER_TRADES_JSON, trades)
+
+
 def settle_paper_trade(trade_id: str, result: str, pnl: float) -> None:
     """Mark a paper trade settled with result + P&L. Matches by Supabase UUID id."""
     updates = {"status": "settled", "result": result, "pnl_dollars": pnl}
