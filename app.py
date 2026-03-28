@@ -448,9 +448,11 @@ def save_paper_trades(portfolio: list, bucket: str) -> None:
     existing      = load_json(PAPER_TRADES)
     existing_keys = {(p["ticker"], p["side"]) for p in existing}
     added = 0
+    skipped = 0
     for p in portfolio:
         key = (p["ticker"], p["side"])
         if key in existing_keys:
+            skipped += 1
             continue
         existing.append({
             "ticker"       : p["ticker"],
@@ -472,7 +474,11 @@ def save_paper_trades(portfolio: list, bucket: str) -> None:
         added += 1
     with open(PAPER_TRADES, "w") as _f:
         _j.dump(existing, _f, indent=2)
-    st.success(f"Recorded {added} paper trade(s).")
+    if added:
+        st.success(f"Recorded {added} new paper trade(s)." +
+                   (f" ({skipped} already tracked.)" if skipped else ""))
+    else:
+        st.info(f"All {skipped} trade(s) already tracked — no duplicates added.")
 
 
 if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
