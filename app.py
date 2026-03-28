@@ -311,13 +311,10 @@ def _fill_action(_f: dict) -> str:
                 pass
     return "buy"
 
-def _fill_price_dollars(_f: dict) -> float:
-    """Price in dollars (0–1). Tries dollar fields first, then fixed-point."""
-    side = _f.get("side", "yes")
-    candidates = [f"{side}_price_dollars", f"{side}_price_fixed", f"{side}_price",
-                  "yes_price_dollars", "no_price_dollars", "yes_price_fixed", "price"]
-    for field in candidates:
-        v = _f.get(field)
+def _price_dollars(_f: dict, field_prefix: str) -> float:
+    """Extract YES or NO price in dollars (0–1) from a fill."""
+    for suffix in ("_dollars", "_fixed", ""):
+        v = _f.get(f"{field_prefix}{suffix}")
         if v is not None:
             try:
                 fv = float(v)
@@ -326,25 +323,66 @@ def _fill_price_dollars(_f: dict) -> float:
                 pass
     return 0.0
 
+# Kalshi fills API quirk: "Sell YES at X¢" is recorded as action="sell", side="no",
+# no_price=(1-X).  To determine whether a side="no" sell is closing a YES position
+# or an actual NO position, we process fills chronologically and track net position.
 api_closed = []
 for _tkr, _tkr_fills in _by_ticker.items():
-    _buy_fills  = [f for f in _tkr_fills if _fill_action(f) == "buy"]
-    _sell_fills = [f for f in _tkr_fills if _fill_action(f) == "sell"]
-    _total_bought  = sum(_fill_count(f) for f in _buy_fills)
-    _total_sold    = sum(_fill_count(f) for f in _sell_fills)
+    _sorted_fills = sorted(
+        _tkr_fills,
+        key=lambda f: f.get("ts") or f.get("created_time", "")
+    )
+    _yes_pos = 0.0
+    _no_pos  = 0.0
+    _total_bought_yes = 0.0
+    _total_bought_no  = 0.0
+    _buy_cost      = 0.0
+    _sell_proceeds = 0.0
+
+    for _f in _sorted_fills:
+        _cnt    = _fill_count(_f)
+        _act    = _fill_action(_f)
+        _fside  = _f.get("side", "yes")
+        _yp     = _price_dollars(_f, "yes_price")
+        _np     = _price_dollars(_f, "no_price")
+
+        if _act == "buy" and _fside == "yes":
+            _buy_cost += _cnt * _yp
+            _yes_pos  += _cnt
+            _total_bought_yes += _cnt
+        elif _act == "buy" and _fside == "no":
+            _buy_cost += _cnt * _np
+            _no_pos   += _cnt
+            _total_bought_no += _cnt
+        elif _act == "sell" and _fside == "yes":
+            _sell_proceeds += _cnt * _yp
+            _yes_pos -= _cnt
+        else:  # sell, side="no" — ambiguous: closing YES (uses yp) or closing NO (uses np)
+            if _yes_pos > 0:
+                # Was holding YES; "Sell YES at yp" is recorded as side="no" by Kalshi
+                _sell_proceeds += _cnt * _yp
+                _yes_pos -= _cnt
+            else:
+                # Actual NO position being sold
+                _sell_proceeds += _cnt * _np
+                _no_pos -= _cnt
+
+    _total_bought = _total_bought_yes + _total_bought_no
     if _total_bought == 0:
         continue
-    _buy_cost      = sum(_fill_count(f) * _fill_price_dollars(f) for f in _buy_fills)
-    _sell_proceeds = sum(_fill_count(f) * _fill_price_dollars(f) for f in _sell_fills)
-    _remaining     = max(0.0, _total_bought - _total_sold)
+
+    _rem_yes = max(0.0, _yes_pos)
+    _rem_no  = max(0.0, _no_pos)
+    _primary_side = "yes" if _total_bought_yes >= _total_bought_no else "no"
     api_closed.append({
         "ticker"        : _tkr,
         "contracts"     : int(_total_bought),
-        "remaining_ctr" : int(round(_remaining)),
+        "rem_yes"       : int(round(_rem_yes)),
+        "rem_no"        : int(round(_rem_no)),
         "buy_cost"      : _buy_cost,
         "sell_proceeds" : _sell_proceeds,
         "entry_cents"   : round(_buy_cost / _total_bought * 100),
-        "side"          : _tkr_fills[0].get("side", "yes"),
+        "side"          : _primary_side,
         "status"        : "settled",
     })
 
@@ -361,41 +399,45 @@ if closed_kalshi:
         rows = []
         for p in closed_kalshi:
             asset, expiry, strike = parse_ticker(p["ticker"])
-            side        = p.get("side", "yes")
-            ctrs        = p.get("contracts", 1)
-            remaining   = p.get("remaining_ctr", ctrs)
-            buy_cost    = p.get("buy_cost", 0)
-            sell_proc   = p.get("sell_proceeds", 0)
-            entry       = p.get("entry_cents", 0)
-            result      = settlement_map.get(p["ticker"])
+            side      = p.get("side", "yes")
+            ctrs      = p.get("contracts", 1)
+            rem_yes   = p.get("rem_yes", 0)
+            rem_no    = p.get("rem_no", 0)
+            remaining = rem_yes + rem_no
+            buy_cost  = p.get("buy_cost", 0)
+            sell_proc = p.get("sell_proceeds", 0)
+            entry     = p.get("entry_cents", 0)
+            result    = settlement_map.get(p["ticker"])
 
-            # Settlement value: $1/contract if result matches side, else $0
+            # Settlement value: YES contracts win on result="yes", NO contracts win on result="no"
             if result is not None:
-                settle_val  = remaining * 1.00 if result == side else 0.0
-                settle_label = ("won ✓" if result == side else "lost ✗")
-                exit_label  = f"settled ({settle_label})"
+                settle_val = rem_yes * 1.00 if result == "yes" else 0.0
+                settle_val += rem_no * 1.00 if result == "no" else 0.0
+                won = (rem_yes > 0 and result == "yes") or (rem_no > 0 and result == "no")
+                exit_label = f"settled ({'won ✓' if won else 'lost ✗'})"
             else:
-                settle_val  = None
-                exit_label  = "pending"
+                settle_val = None
+                exit_label = "pending"
 
-            if sell_proc > 0:
-                exit_label = "sold early" if settle_val == 0.0 or result is None else exit_label + " + sold"
+            if sell_proc > 0 and remaining == 0:
+                exit_label = "sold" if settle_val is None else exit_label + " + sold"
+            elif sell_proc > 0:
+                exit_label = "partial sell + " + (exit_label if settle_val is not None else "pending")
 
             if settle_val is not None:
                 pnl = sell_proc - buy_cost + settle_val
-            elif sell_proc > 0 and remaining == 0:
-                # Fully sold before settlement; no settlement data yet
+            elif remaining == 0:
                 pnl = sell_proc - buy_cost
-                exit_label = "sold early"
+                exit_label = "sold"
             else:
                 pnl = None
 
-            # Compute exit price in cents for display
+            # Exit ¢: avg price received per contract sold (in the dominant side's terms)
             ctrs_sold = ctrs - remaining
             if ctrs_sold > 0 and sell_proc > 0:
                 exit_cents = round(sell_proc / ctrs_sold * 100)
             elif result is not None:
-                exit_cents = 100 if result == side else 0
+                exit_cents = 100 if won else 0
             else:
                 exit_cents = None
 
@@ -430,15 +472,17 @@ if closed_kalshi:
         with st.expander("🔍 Debug: fill cash flows per position"):
             debug_rows = []
             for p in closed_kalshi:
-                result = settlement_map.get(p["ticker"])
-                side   = p.get("side", "yes")
-                rem    = p.get("remaining_ctr", 0)
-                settle = (rem * 1.00 if result == side else 0.0) if result else None
+                result  = settlement_map.get(p["ticker"])
+                ry, rn  = p.get("rem_yes", 0), p.get("rem_no", 0)
+                settle  = None
+                if result is not None:
+                    settle = (ry if result == "yes" else 0) + (rn if result == "no" else 0)
                 debug_rows.append({
                     "Ticker"        : p["ticker"],
-                    "Side"          : side,
+                    "Side"          : p.get("side", "yes"),
                     "Bought"        : p.get("contracts", 0),
-                    "Remaining"     : rem,
+                    "Rem YES"       : ry,
+                    "Rem NO"        : rn,
                     "Buy Cost $"    : f"${p.get('buy_cost', 0):.4f}",
                     "Sell Proc $"   : f"${p.get('sell_proceeds', 0):.4f}",
                     "Settle $"      : f"${settle:.2f}" if settle is not None else "—",
