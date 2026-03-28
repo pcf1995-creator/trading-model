@@ -390,6 +390,15 @@ if closed_kalshi:
             else:
                 pnl = None
 
+            # Compute exit price in cents for display
+            ctrs_sold = ctrs - remaining
+            if ctrs_sold > 0 and sell_proc > 0:
+                exit_cents = round(sell_proc / ctrs_sold * 100)
+            elif result is not None:
+                exit_cents = 100 if result == side else 0
+            else:
+                exit_cents = None
+
             rows.append({
                 "Asset"    : asset,
                 "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
@@ -397,6 +406,7 @@ if closed_kalshi:
                 "Side"     : side.upper(),
                 "Contracts": ctrs,
                 "Entry ¢"  : entry,
+                "Exit ¢"   : exit_cents if exit_cents is not None else "—",
                 "Exit"     : exit_label,
                 "P&L $"    : (f"${pnl:+.2f}" if pnl is not None else "—"),
             })
