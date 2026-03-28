@@ -545,12 +545,16 @@ def build_bucket(results: list, budget: float) -> list:
     for i, r in enumerate(picks):
         discounts.append(_corr_discount(r, picks[:i]))
 
-    weights     = [r["kelly_pct"] * d for r, d in zip(picks, discounts)]
-    total_weight = sum(weights) or 1.0
+    # Size each pick as kelly_pct% of budget, discounted for correlation.
+    # Only normalize down if the total exceeds the budget — weak single picks
+    # get a proportionally small allocation, leaving room for better plays later.
+    raw = [r["kelly_pct"] / 100 * budget * d for r, d in zip(picks, discounts)]
+    total_raw = sum(raw) or 1.0
+    scale = min(1.0, budget / total_raw)
 
     portfolio = []
-    for r, w, d in zip(picks, weights, discounts):
-        dollars   = round(budget * w / total_weight, 2)
+    for r, raw_dollars, d in zip(picks, raw, discounts):
+        dollars   = round(raw_dollars * scale, 2)
         contracts = max(1, int(dollars / (r["price"] / 100)))
         portfolio.append({**r,
             "kelly_dollars"      : dollars,
