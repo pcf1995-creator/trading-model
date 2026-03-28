@@ -283,25 +283,47 @@ for _f in _fills:
             and (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH"))):
         _by_ticker[_tkr].append(_f)
 
+def _fill_count(_f: dict) -> float:
+    """Contracts traded — field is count_fp (string) or count (int)."""
+    for field in ("count_fp", "count"):
+        v = _f.get(field)
+        if v is not None:
+            try:
+                return abs(float(v))
+            except (ValueError, TypeError):
+                pass
+    return 0.0
+
+def _fill_price_dollars(_f: dict) -> float:
+    """Entry price in dollars (0-1). Tries dollar fields first, then fixed-point."""
+    side = _f.get("side", "yes")
+    candidates = (
+        [f"{side}_price_dollars", f"{side}_price_fixed", f"{side}_price",
+         "yes_price_dollars", "no_price_dollars", "yes_price_fixed", "price"]
+    )
+    for field in candidates:
+        v = _f.get(field)
+        if v is not None:
+            try:
+                fv = float(v)
+                # fixed-point (e.g. 5300) vs dollars (e.g. 0.53)
+                return fv / 100 if fv > 1 else fv
+            except (ValueError, TypeError):
+                pass
+    return 0.0
+
 api_closed = []
 for _tkr, _tkr_fills in _by_ticker.items():
-    _total = sum(abs(_f.get("count", 0)) for _f in _tkr_fills)
+    _total = sum(_fill_count(_f) for _f in _tkr_fills)
     if _total == 0:
         continue
-    # Try common price field names
-    def _price(_f):
-        for field in ("yes_price", "no_price", "price"):
-            v = _f.get(field)
-            if v is not None:
-                return v
-        return 0
-    _avg = sum(abs(_f.get("count", 0)) * _price(_f) for _f in _tkr_fills) / _total
-    # Kalshi prices may be in fixed-point (×100) or cents — normalise
-    _cents = round(_avg / 100) if _avg > 100 else round(_avg)
+    _avg_dollars = (sum(_fill_count(_f) * _fill_price_dollars(_f) for _f in _tkr_fills)
+                    / _total)
+    _cents = round(_avg_dollars * 100)
     _local = _local_by_ticker.get(_tkr, {})
     api_closed.append({
         "ticker"      : _tkr,
-        "contracts"   : _total,
+        "contracts"   : int(_total),
         "entry_cents" : _local.get("entry_cents", _cents),
         "exit_cents"  : _local.get("exit_cents", 0),
         "side"        : _tkr_fills[0].get("side", "yes"),
