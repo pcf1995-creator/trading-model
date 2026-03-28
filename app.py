@@ -698,6 +698,7 @@ else:
             _bid   = _pt_live.get(_pt["ticker"])
             _hrs   = hours_left(_pt.get("close_time", ""))
             _unreal = round((_bid - _entry) * _ctrs / 100, 2) if _bid is not None else None
+            _rec_h = _pt.get("hours_to_exp")
             _pt_rows.append({
                 "Ticker"    : _pt["ticker"],
                 "Side"      : _pt.get("side", "yes"),
@@ -707,6 +708,8 @@ else:
                 "Contracts" : _ctrs,
                 "Bet $"     : f"${_pt.get('bet_dollars', 0):.0f}",
                 "Cal Prob"  : f"{_pt.get('cal_prob', 0)*100:.1f}%",
+                "At Rec"    : (f"{int(_rec_h*60)}m" if _rec_h is not None and _rec_h < 1
+                               else f"{_rec_h:.0f}h" if _rec_h is not None else "—"),
                 "Hrs Left"  : (f"{int(_hrs*60)}m" if _hrs is not None and _hrs < 1
                                else f"{_hrs:.0f}h" if _hrs is not None else "—"),
                 "Unreal P&L": (f"${_unreal:+.2f}" if _unreal is not None else "—"),
@@ -722,10 +725,13 @@ else:
             _s_rows = []
             for _pt in sorted(_settled_paper, key=lambda x: x.get("placed_at", ""), reverse=True):
                 _pnl = _pt.get("pnl_dollars")
+                _rec_h = _pt.get("hours_to_exp")
                 _s_rows.append({
                     "Ticker"   : _pt["ticker"],
                     "Side"     : _pt.get("side", "yes"),
                     "Bucket"   : _pt.get("bucket", ""),
+                    "At Rec"   : (f"{int(_rec_h*60)}m" if _rec_h is not None and _rec_h < 1
+                                  else f"{_rec_h:.0f}h" if _rec_h is not None else "—"),
                     "Entry ¢"  : _pt.get("price_cents", 0),
                     "Cal Prob" : f"{_pt.get('cal_prob', 0)*100:.1f}%",
                     "Result"   : _pt.get("result", "—"),
