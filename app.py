@@ -158,7 +158,8 @@ if not _client.dry_run:
                 "ticker"      : _tkr,
                 "status"      : "open",
                 "side"        : "yes" if _pos.get("position", 0) > 0 else "no",
-                "contracts"   : abs(_pos.get("position", 1)),
+                # Prefer manually saved contracts; fall back to API position count
+                "contracts"   : _local.get("contracts", abs(_pos.get("position", 1))),
                 "entry_cents" : _local.get("entry_cents", 0),
                 "stop_cents"  : _local.get("stop_cents", 0),
                 "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
@@ -192,6 +193,7 @@ if open_kalshi:
         pnl_pct   = ((current - entry) / entry * 100
                      if current is not None and entry > 0 else None)
 
+        bet_dollars = entry * contracts / 100
         rows.append({
             "Ticker"   : ticker,
             "Asset"    : asset,
@@ -200,6 +202,7 @@ if open_kalshi:
                           else f"{hrs:.0f}h" if hrs is not None else "—"),
             "Contracts": contracts,
             "Entry ¢"  : entry,
+            "Bet $"    : f"${bet_dollars:.2f}",
             "Stop ¢"   : stop,
             "Live Bid" : f"{current}¢" if current is not None else "—",
             "P&L"      : (f"+{pnl_pct:.1f}%" if pnl_pct is not None and pnl_pct >= 0
@@ -211,19 +214,21 @@ if open_kalshi:
     edited = st.data_editor(
         df_open.drop(columns=["Ticker"]),
         column_config={
-            "Entry ¢": st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
-            "Stop ¢" : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
+            "Contracts": st.column_config.NumberColumn("Contracts", min_value=1, step=1),
+            "Entry ¢"  : st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
+            "Stop ¢"   : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
         },
-        disabled=["Asset", "Strike", "Hrs Left", "Contracts", "Live Bid", "P&L"],
+        disabled=["Asset", "Strike", "Hrs Left", "Bet $", "Live Bid", "P&L"],
         hide_index=True,
         use_container_width=True,
     )
 
-    if st.button("💾 Save entry & stop prices"):
+    if st.button("💾 Save contracts, entry & stop"):
         import json as _json
         for i, row in edited.iterrows():
             tkr = df_open.iloc[i]["Ticker"]
             _local_by_ticker.setdefault(tkr, {"ticker": tkr, "status": "open"})
+            _local_by_ticker[tkr]["contracts"]   = int(row["Contracts"])
             _local_by_ticker[tkr]["entry_cents"] = int(row["Entry ¢"])
             _local_by_ticker[tkr]["stop_cents"]  = int(row["Stop ¢"])
         with open(POSITIONS_KALSHI, "w") as _f:
