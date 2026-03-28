@@ -544,7 +544,7 @@ def save_paper_trades(portfolio: list, bucket: str) -> None:
             "cal_prob"     : p["calibrated_prob"],
             "ev"           : p["ev"],
             "hours_to_exp" : p["hours_to_expiry"],
-            "close_time"   : p.get("expiry", ""),
+            "close_time"   : p.get("close_time", ""),
             "bucket"       : bucket,
             "placed_at"    : datetime.now(timezone.utc).isoformat(),
             "status"       : "open",
@@ -736,7 +736,11 @@ else:
                     _close_dt = datetime.fromisoformat(_close_str.replace("Z", "+00:00"))
                     _closed   = _close_dt <= _now_utc
                 except Exception:
-                    pass
+                    # Non-ISO close_time (old records stored date string like "26MAR2801").
+                    # Fall through to API check — if the contract settled, result != None.
+                    _closed = True
+            else:
+                _closed = True  # no close_time at all → check API
             if _closed and not _client.dry_run:
                 try:
                     _mkt    = _client._request("GET", f"/markets/{_pt['ticker']}").get("market", {})
@@ -775,6 +779,11 @@ else:
             _ctrs  = _pt.get("contracts", 1)
             _bid   = _pt_live.get(_pt["ticker"])
             _hrs   = hours_left(_pt.get("close_time", ""))
+            _side  = _pt.get("side", "yes")
+            # Use settlement value (100¢) if market expired and bid dropped to 0
+            # (bid=0 on a closed winning contract would show a false loss otherwise)
+            if _bid == 0 and _hrs is not None and _hrs < 0:
+                _bid = None  # can't use live bid for expired markets
             _unreal = round((_bid - _entry) * _ctrs / 100, 2) if _bid is not None else None
             _rec_h = _pt.get("hours_to_exp")
             _pt_rows.append({
