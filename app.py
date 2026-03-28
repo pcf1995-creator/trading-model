@@ -542,7 +542,7 @@ def make_portfolio_table(portfolio: list) -> pd.DataFrame:
                           if p['hours_to_expiry'] < 1
                           else f"{p['hours_to_expiry']:.0f}h"),
             "Price"    : f"{p['price']}¢",
-            "Cal Prob" : f"{p['calibrated_prob']*100:.1f}%",
+            "Cal Prob" : f"{(1-p['calibrated_prob'] if p['side']=='no' else p['calibrated_prob'])*100:.1f}%",
             "EV"       : f"{p['ev']:+.3f}",
             "Bet $"    : f"${p['kelly_dollars']:.0f}",
             "Contracts": p["contracts_suggested"],
@@ -560,7 +560,7 @@ def make_scan_table(results: list) -> pd.DataFrame:
             "Strike"   : f"${r['strike']:,.0f}",
             "Expiry"   : r["expiry"],
             "Price"    : f"{r['price']}¢",
-            "Cal Prob" : f"{r['calibrated_prob']*100:.1f}%",
+            "Cal Prob" : f"{(1-r['calibrated_prob'] if r['side']=='no' else r['calibrated_prob'])*100:.1f}%",
             "Edge"     : f"{r['edge']*100:+.1f}pp",
             "EV"       : f"{r['ev']:+.3f}",
             "Kelly %"  : f"{r['kelly_pct']:.1f}%",
@@ -850,7 +850,7 @@ else:
                 "Live Bid"  : f"{_bid}¢" if _bid is not None else "—",
                 "Contracts" : _ctrs,
                 "Bet $"     : f"${_pt.get('bet_dollars', 0):.0f}",
-                "Cal Prob"  : f"{_pt.get('cal_prob', 0)*100:.1f}%",
+                "Cal Prob"  : f"{(1-_pt.get('cal_prob',0) if _side=='no' else _pt.get('cal_prob',0))*100:.1f}%",
                 "At Rec"    : (f"{int(_rec_h*60)}m" if _rec_h is not None and _rec_h < 1
                                else f"{_rec_h:.0f}h" if _rec_h is not None else "—"),
                 "Hrs Left"  : (f"{int(_hrs*60)}m" if _hrs is not None and _hrs < 1
@@ -878,7 +878,7 @@ else:
                     "Contracts": _pt.get("contracts", 1),
                     "Entry ¢"  : _pt.get("price_cents", 0),
                     "Bet $"    : f"${_pt.get('bet_dollars', _pt.get('contracts', 1) * _pt.get('price_cents', 0) / 100):.0f}",
-                    "Cal Prob" : f"{_pt.get('cal_prob', 0)*100:.1f}%",
+                    "Cal Prob" : f"{(1-_pt.get('cal_prob',0) if _pt.get('side','yes')=='no' else _pt.get('cal_prob',0))*100:.1f}%",
                     "Result"   : _pt.get("result", "—"),
                     "P&L $"    : (f"${_pnl:+.2f}" if _pnl is not None else "—"),
                     "Placed"   : _pt.get("placed_at", "")[:10],
