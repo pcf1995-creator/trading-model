@@ -875,7 +875,9 @@ else:
                     "Bucket"   : _pt.get("bucket", ""),
                     "At Rec"   : (f"{int(_rec_h*60)}m" if _rec_h is not None and _rec_h < 1
                                   else f"{_rec_h:.0f}h" if _rec_h is not None else "—"),
+                    "Contracts": _pt.get("contracts", 1),
                     "Entry ¢"  : _pt.get("price_cents", 0),
+                    "Bet $"    : f"${_pt.get('bet_dollars', _pt.get('contracts', 1) * _pt.get('price_cents', 0) / 100):.0f}",
                     "Cal Prob" : f"{_pt.get('cal_prob', 0)*100:.1f}%",
                     "Result"   : _pt.get("result", "—"),
                     "P&L $"    : (f"${_pnl:+.2f}" if _pnl is not None else "—"),
