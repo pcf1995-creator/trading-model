@@ -286,7 +286,7 @@ for _f in _fills:
         _by_ticker[_tkr].append(_f)
 
 def _fill_count(_f: dict) -> float:
-    """Contracts traded — field is count_fp (string) or count (int)."""
+    """Contracts traded (always positive)."""
     for field in ("count_fp", "count"):
         v = _f.get(field)
         if v is not None:
@@ -296,19 +296,31 @@ def _fill_count(_f: dict) -> float:
                 pass
     return 0.0
 
+def _fill_action(_f: dict) -> str:
+    """Returns 'buy' or 'sell'. Falls back to sign of count_fp if action absent."""
+    action = _f.get("action", "")
+    if action in ("buy", "sell"):
+        return action
+    for field in ("count_fp", "count"):
+        v = _f.get(field)
+        if v is not None:
+            try:
+                if float(v) < 0:
+                    return "sell"
+            except (ValueError, TypeError):
+                pass
+    return "buy"
+
 def _fill_price_dollars(_f: dict) -> float:
-    """Entry price in dollars (0-1). Tries dollar fields first, then fixed-point."""
+    """Price in dollars (0–1). Tries dollar fields first, then fixed-point."""
     side = _f.get("side", "yes")
-    candidates = (
-        [f"{side}_price_dollars", f"{side}_price_fixed", f"{side}_price",
-         "yes_price_dollars", "no_price_dollars", "yes_price_fixed", "price"]
-    )
+    candidates = [f"{side}_price_dollars", f"{side}_price_fixed", f"{side}_price",
+                  "yes_price_dollars", "no_price_dollars", "yes_price_fixed", "price"]
     for field in candidates:
         v = _f.get(field)
         if v is not None:
             try:
                 fv = float(v)
-                # fixed-point (e.g. 5300) vs dollars (e.g. 0.53)
                 return fv / 100 if fv > 1 else fv
             except (ValueError, TypeError):
                 pass
@@ -316,20 +328,24 @@ def _fill_price_dollars(_f: dict) -> float:
 
 api_closed = []
 for _tkr, _tkr_fills in _by_ticker.items():
-    _total = sum(_fill_count(_f) for _f in _tkr_fills)
-    if _total == 0:
+    _buy_fills  = [f for f in _tkr_fills if _fill_action(f) == "buy"]
+    _sell_fills = [f for f in _tkr_fills if _fill_action(f) == "sell"]
+    _total_bought  = sum(_fill_count(f) for f in _buy_fills)
+    _total_sold    = sum(_fill_count(f) for f in _sell_fills)
+    if _total_bought == 0:
         continue
-    _avg_dollars = (sum(_fill_count(_f) * _fill_price_dollars(_f) for _f in _tkr_fills)
-                    / _total)
-    _cents = round(_avg_dollars * 100)
-    _local = _local_by_ticker.get(_tkr, {})
+    _buy_cost      = sum(_fill_count(f) * _fill_price_dollars(f) for f in _buy_fills)
+    _sell_proceeds = sum(_fill_count(f) * _fill_price_dollars(f) for f in _sell_fills)
+    _remaining     = max(0.0, _total_bought - _total_sold)
     api_closed.append({
-        "ticker"      : _tkr,
-        "contracts"   : int(_total),
-        "entry_cents" : _local.get("entry_cents", _cents),
-        "exit_cents"  : _local.get("exit_cents", 0),
-        "side"        : _tkr_fills[0].get("side", "yes"),
-        "status"      : "settled",
+        "ticker"        : _tkr,
+        "contracts"     : int(_total_bought),
+        "remaining_ctr" : int(round(_remaining)),
+        "buy_cost"      : _buy_cost,
+        "sell_proceeds" : _sell_proceeds,
+        "entry_cents"   : round(_buy_cost / _total_bought * 100),
+        "side"          : _tkr_fills[0].get("side", "yes"),
+        "status"        : "settled",
     })
 
 closed_kalshi = api_closed
@@ -348,30 +364,42 @@ if closed_kalshi:
         rows = []
         for p in closed_kalshi:
             asset, expiry, strike = parse_ticker(p["ticker"])
-            entry  = p.get("entry_cents", 0)
-            ctrs   = p.get("contracts", 1)
-            result = settlement_map.get(p["ticker"])
+            side        = p.get("side", "yes")
+            ctrs        = p.get("contracts", 1)
+            remaining   = p.get("remaining_ctr", ctrs)
+            buy_cost    = p.get("buy_cost", 0)
+            sell_proc   = p.get("sell_proceeds", 0)
+            entry       = p.get("entry_cents", 0)
+            result      = settlement_map.get(p["ticker"])
 
-            if result == "yes":
-                pnl        = (100 - entry) * ctrs / 100
-                exit_label = "100¢ (won ✓)"
-            elif result == "no":
-                pnl        = -entry * ctrs / 100
-                exit_label = "0¢ (expired)"
-            elif p.get("exit_cents"):
-                exit_c     = p["exit_cents"]
-                pnl        = (exit_c - entry) * ctrs / 100
-                exit_label = f"{exit_c}¢ (sold)"
+            # Settlement value: $1/contract if result matches side, else $0
+            if result is not None:
+                settle_val  = remaining * 1.00 if result == side else 0.0
+                settle_label = ("won ✓" if result == side else "lost ✗")
+                exit_label  = f"settled ({settle_label})"
             else:
-                pnl        = None
-                exit_label = "—"
+                settle_val  = None
+                exit_label  = "pending"
+
+            if sell_proc > 0:
+                exit_label = "sold early" if settle_val == 0.0 or result is None else exit_label + " + sold"
+
+            if settle_val is not None:
+                pnl = sell_proc - buy_cost + settle_val
+            elif sell_proc > 0 and remaining == 0:
+                # Fully sold before settlement; no settlement data yet
+                pnl = sell_proc - buy_cost
+                exit_label = "sold early"
+            else:
+                pnl = None
 
             rows.append({
                 "Asset"    : asset,
                 "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
                 "Expiry"   : expiry,
+                "Side"     : side.upper(),
                 "Contracts": ctrs,
-                "Entry"    : f"{entry}¢",
+                "Entry ¢"  : entry,
                 "Exit"     : exit_label,
                 "P&L $"    : (f"${pnl:+.2f}" if pnl is not None else "—"),
             })
