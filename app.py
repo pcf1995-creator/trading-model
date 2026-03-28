@@ -194,7 +194,7 @@ if open_kalshi:
         rows.append({
             "Ticker"   : ticker,
             "Asset"    : asset,
-            "Strike"   : f"${float(strike):,.0f}" if strike else "",
+            "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
             "Hrs Left" : (f"{int(hrs * 60)}m" if hrs is not None and hrs < 1
                           else f"{hrs:.0f}h" if hrs is not None else "—"),
             "Contracts": contracts,
@@ -248,7 +248,7 @@ if settling_kalshi:
             asset, expiry, strike = parse_ticker(p["ticker"])
             settle_rows.append({
                 "Asset"    : asset,
-                "Strike"   : f"${float(strike):,.0f}" if strike else "",
+                "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
                 "Expiry"   : expiry,
                 "Contracts": p["contracts"],
                 "Entry"    : f"{p['entry_cents']}¢",
@@ -344,7 +344,7 @@ if closed_kalshi:
 
             rows.append({
                 "Asset"    : asset,
-                "Strike"   : f"${float(strike):,.0f}" if strike else "",
+                "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
                 "Expiry"   : expiry,
                 "Contracts": ctrs,
                 "Entry"    : f"{entry}¢",
