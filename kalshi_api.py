@@ -300,14 +300,16 @@ class KalshiClient:
         fills  = []
         cursor = None
         while True:
-            params = {"limit": min(limit, 1000)}
+            params = {"limit": 1000}   # max per page
             if cursor:
                 params["cursor"] = cursor
             data   = self._request("GET", "/portfolio/fills", params=params)
             batch  = data.get("fills", [])
             fills.extend(batch)
             cursor = data.get("cursor")
-            if not cursor or not batch or len(fills) >= limit:
+            if not cursor or not batch:
+                break
+            if limit and len(fills) >= limit:
                 break
         return fills
 

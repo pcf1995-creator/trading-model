@@ -148,7 +148,8 @@ if not _client.dry_run:
         _all_api = []
         for _pos in _api_positions:
             _tkr = _pos.get("ticker", "")
-            if not _tkr:
+            # Only show crypto positions in this dashboard
+            if not _tkr or not (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH")):
                 continue
             _local = _local_by_ticker.get(_tkr, {})
             _mkt   = _client.get_market(_tkr)
@@ -267,7 +268,7 @@ _fills_err  = None
 _raw_sample = None
 if not _client.dry_run:
     try:
-        _fills      = _client.get_fills(limit=500)
+        _fills      = _client.get_fills(limit=2000)
         _raw_sample = _fills[0] if _fills else None
     except Exception as e:
         _fills_err = str(e)
@@ -277,7 +278,9 @@ _open_tickers = {p["ticker"] for p in open_kalshi} | {p["ticker"] for p in settl
 _by_ticker: dict[str, list] = defaultdict(list)
 for _f in _fills:
     _tkr = _f.get("market_ticker") or _f.get("ticker", "")
-    if _tkr and _tkr not in _open_tickers:
+    if (_tkr
+            and _tkr not in _open_tickers
+            and (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH"))):
         _by_ticker[_tkr].append(_f)
 
 api_closed = []
