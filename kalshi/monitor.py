@@ -93,10 +93,13 @@ def sync_positions(client: KalshiClient) -> None:
     added      = 0
 
     for p in raw:
-        ticker    = p.get("ticker", "")
-        contracts = round(float(p.get("position_fp", 0)))  # fixed-point contract count
-        if not ticker or contracts <= 0:
+        ticker   = p.get("ticker", "")
+        # position > 0 = long YES, position < 0 = long NO
+        net_pos  = p.get("position", 0) or round(float(p.get("position_fp", 0)))
+        if not ticker or net_pos == 0:
             continue
+        side      = "yes" if net_pos > 0 else "no"
+        contracts = abs(int(round(net_pos)))
         # Only track crypto contracts
         series = ticker.split("-")[0].upper()
         if not any(x in series for x in ("KXBTCD", "KXETHD")):
@@ -104,34 +107,45 @@ def sync_positions(client: KalshiClient) -> None:
         if ticker in ex_tickers:
             continue                            # already tracked
 
-        # Best guess at entry: use last_price or yes_bid as proxy
+        # Best guess at entry: use current bid for the held side as proxy
         market = client.get_market(ticker)
-        yes_bid_dollars = market.get("yes_bid_dollars")
-        yes_bid_fp      = market.get("yes_bid_fp")
-        yes_bid         = market.get("yes_bid")
-        if yes_bid_dollars is not None:
-            entry_cents = round(float(yes_bid_dollars) * 100)
-        elif yes_bid_fp is not None:
-            entry_cents = round(yes_bid_fp / 100)
-        elif yes_bid is not None:
-            entry_cents = int(yes_bid)
+        if side == "no":
+            # NO bid = 100 - yes_ask
+            ya = (market.get("yes_ask_dollars") or market.get("yes_ask_fp")
+                  or market.get("yes_ask"))
+            if market.get("yes_ask_dollars") is not None:
+                entry_cents = max(0, 100 - round(float(market["yes_ask_dollars"]) * 100))
+            elif market.get("yes_ask_fp") is not None:
+                entry_cents = max(0, 100 - round(market["yes_ask_fp"] / 100))
+            elif market.get("yes_ask") is not None:
+                entry_cents = max(0, 100 - int(market["yes_ask"]))
+            else:
+                entry_cents = 50
         else:
-            entry_cents = 50   # fallback if no price data
+            if market.get("yes_bid_dollars") is not None:
+                entry_cents = round(float(market["yes_bid_dollars"]) * 100)
+            elif market.get("yes_bid_fp") is not None:
+                entry_cents = round(market["yes_bid_fp"] / 100)
+            elif market.get("yes_bid") is not None:
+                entry_cents = int(market["yes_bid"])
+            else:
+                entry_cents = 50
 
         close_time = market.get("close_time", "")
         position = {
             "ticker"      : ticker,
+            "side"        : side,
             "contracts"   : contracts,
             "entry_cents" : entry_cents,
             "stop_cents"  : round(entry_cents * (1 - STOP_LOSS_PCT)),
             "close_time"  : close_time,
             "entered_at"  : datetime.now(timezone.utc).isoformat(),
             "status"      : "open",
-            "synced"      : True,   # flag that entry price is estimated
+            "synced"      : True,
         }
         existing.append(position)
         added += 1
-        print(f"  Added: {ticker}  {contracts} contracts  "
+        print(f"  Added: {ticker}  {side.upper()}  {contracts} contracts  "
               f"entry ~{entry_cents}¢  stop {position['stop_cents']}¢")
 
     save_positions(existing)
