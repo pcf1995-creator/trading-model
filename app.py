@@ -560,12 +560,12 @@ st.caption("Top 5 by EV across both YES and NO sides, split by time to expiry.")
 DAILY_BUDGET  = 50.0
 WEEKLY_BUDGET = 200.0
 
-# Estimated directional correlation between BTC and ETH.
-# When two same-direction BTC+ETH picks are selected, the second pick's
-# Kelly allocation is multiplied by (1 - BTC_ETH_CORR) to avoid
-# over-betting what is effectively one correlated position.
-# Tune this as paper trade data accumulates (empirically ~0.80–0.90).
-BTC_ETH_CORR = 0.80
+# Correlation constants for portfolio construction.
+# Each same-direction pick's Kelly allocation is multiplied by (1 - corr)
+# relative to the most correlated earlier pick.
+# Tune as paper trade data accumulates.
+SAME_ASSET_SAME_SIDE_CORR = 0.90  # BTC YES + BTC YES — nearly identical bets
+BTC_ETH_CORR               = 0.80  # BTC YES + ETH YES — correlated direction
 
 
 def build_bucket(results: list, budget: float) -> list:
@@ -592,10 +592,15 @@ def build_bucket(results: list, budget: float) -> list:
     # Two picks are "correlated" when they are same-direction BTC+ETH bets
     # (e.g. both NO, meaning both win only if crypto drops).
     def _corr_discount(r: dict, earlier: list[dict]) -> float:
+        """Return the allocation multiplier based on highest correlation with any earlier pick."""
+        max_corr = 0.0
         for e in earlier:
-            if e["asset"] != r["asset"] and e["side"] == r["side"]:
-                return 1.0 - BTC_ETH_CORR
-        return 1.0
+            if e["side"].lower() == r["side"].lower():
+                if e["asset"] == r["asset"]:
+                    max_corr = max(max_corr, SAME_ASSET_SAME_SIDE_CORR)
+                else:
+                    max_corr = max(max_corr, BTC_ETH_CORR)
+        return 1.0 - max_corr
 
     discounts = []
     for i, r in enumerate(picks):
