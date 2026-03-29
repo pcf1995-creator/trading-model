@@ -232,13 +232,41 @@ if open_kalshi:
         db.save_position_overrides(_local_by_ticker)
         st.success("Saved!")
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Open Positions", len(open_kalshi))
     expiring_soon = sum(1 for p in open_kalshi
                         if (h := hours_left(p.get("close_time", ""))) is not None and h < 12)
     m2.metric("Expiring < 12h", expiring_soon)
     total_exp = sum(p["entry_cents"] * p["contracts"] for p in open_kalshi)
     m3.metric("Total Exposure", f"${total_exp/100:.2f}")
+    stops_at_risk = sum(1 for p in open_kalshi
+                        if p.get("stop_cents", 0) > 0 and
+                        live.get(p["ticker"], 999) <= p["stop_cents"])
+    m4.metric("At Stop", stops_at_risk, delta=None)
+
+    # ── Stop-loss execution ────────────────────────────────────────────────────
+    if st.button("🛑 Execute Stop-Losses", type="primary" if stops_at_risk else "secondary",
+                 disabled=_client.dry_run):
+        _stops_executed = 0
+        _stop_errors    = []
+        for p in open_kalshi:
+            _bid  = live.get(p["ticker"])
+            _stop = p.get("stop_cents", 0)
+            if _stop == 0 or _bid is None:
+                continue
+            if _bid <= _stop:
+                _side  = p.get("side", "yes")
+                _count = p["contracts"]
+                try:
+                    _result = _client.sell_position(p["ticker"], _side, _count, _bid)
+                    st.success(f"Sold {_count} {_side.upper()} {p['ticker']} @ {_bid}¢")
+                    _stops_executed += 1
+                except Exception as _e:
+                    _stop_errors.append(f"{p['ticker']}: {_e}")
+        if _stops_executed == 0 and not _stop_errors:
+            st.info("No positions currently at or below stop-loss.")
+        for _err in _stop_errors:
+            st.error(f"Order failed — {_err}")
 else:
     st.info("No open Kalshi positions.")
 

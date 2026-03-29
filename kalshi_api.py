@@ -314,17 +314,18 @@ class KalshiClient:
         return fills
 
     def place_order(self, ticker: str, side: str, count: int,
-                    limit_price_cents: int) -> dict:
+                    limit_price_cents: int, action: str = "buy") -> dict:
         """
+        action            : 'buy' or 'sell'
         side              : 'yes' or 'no'
         count             : number of contracts (each pays $1)
-        limit_price_cents : price in cents (1–99)
+        limit_price_cents : for buys — max price willing to pay;
+                            for sells — min price willing to accept
         """
-        # API now expects fixed-point (cents × 100)
         price_fp = limit_price_cents * 100
         payload  = {
             "ticker"      : ticker,
-            "action"      : "buy",
+            "action"      : action,
             "side"        : side,
             "count"       : count,
             "type"        : "limit",
@@ -334,3 +335,13 @@ class KalshiClient:
             logger.info(f"DRY RUN — would place order: {payload}")
             return {"status": "dry_run", **payload}
         return self._request("POST", "/portfolio/orders", json=payload)
+
+    def sell_position(self, ticker: str, side: str, count: int,
+                      min_price_cents: int) -> dict:
+        """
+        Convenience wrapper for selling an existing position.
+        min_price_cents: minimum acceptable exit price (use current bid for market-like fill).
+        Floors at 1¢ so the order is always valid.
+        """
+        price = max(1, min_price_cents)
+        return self.place_order(ticker, side, count, price, action="sell")

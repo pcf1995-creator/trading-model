@@ -212,13 +212,24 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
             continue
 
         if current_cents <= stop:
-            print(f"\n  *** ALERT — DOWN 50%+: {ticker}")
-            print(f"      Current bid : {current_cents}¢")
-            print(f"      Entry       : {entry}¢")
+            side  = p.get("side", "yes")
+            count = p["contracts"]
+            print(f"\n  *** STOP-LOSS TRIGGERED: {ticker}")
+            print(f"      Current bid : {current_cents}¢  (stop {stop}¢  entry {entry}¢)")
             print(f"      P&L         : {pnl_pct:+.1f}%")
-            print(f"      ACTION      : Review manually — consider selling "
-                  f"{p['contracts']} YES contracts on Kalshi")
-            # Do NOT auto-close — user decides whether to sell
+            print(f"      Selling     : {count} {side.upper()} contracts at {current_cents}¢ ...")
+            if not dry_run_sell:
+                try:
+                    result = client.sell_position(ticker, side, count, current_cents)
+                    print(f"      Order placed: {result}")
+                    p["status"]     = "stopped"
+                    p["closed_at"]  = datetime.now(timezone.utc).isoformat()
+                    p["exit_cents"] = current_cents
+                    changed = True
+                except Exception as e:
+                    print(f"      ERROR placing sell order: {e}")
+            else:
+                print(f"      (dry run — pass --execute to place real order)")
         else:
             print(f"  OK  {ticker:<42} {status_str}")
 
@@ -245,6 +256,8 @@ def main():
     check_p = sub.add_parser("check", help="Check positions against stop-loss levels")
     check_p.add_argument("--urgent", action="store_true",
                          help="Only check contracts expiring within 6 hours")
+    check_p.add_argument("--execute", action="store_true",
+                         help="Place real sell orders when stop-loss triggers (default: dry run)")
 
     # list
     sub.add_parser("list", help="List all open positions")
@@ -257,7 +270,9 @@ def main():
     elif args.command == "sync":
         sync_positions(client)
     elif args.command == "check":
-        check_positions(client, urgent_only=getattr(args, "urgent", False))
+        check_positions(client,
+                        dry_run_sell=not getattr(args, "execute", False),
+                        urgent_only=getattr(args, "urgent", False))
     elif args.command == "list":
         list_positions()
     else:
