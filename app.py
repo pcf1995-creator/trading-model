@@ -81,7 +81,30 @@ def color_pnl(val: str) -> str:
     return ""
 
 
-def get_bid_cents(market: dict) -> int | None:
+def get_bid_cents(market: dict, side: str = "yes") -> int | None:
+    """Return the current bid price in cents for the held side.
+    YES bid = what you receive selling YES.
+    NO bid  = 100 - yes_ask (what you receive selling NO).
+    """
+    if side.lower() == "no":
+        # Prefer explicit no_bid fields, fall back to 100 - yes_ask
+        for key in ("no_bid_dollars", ):
+            v = market.get(key)
+            if v is not None:
+                return round(float(v) * 100)
+        no_bid_fp = market.get("no_bid_fp")
+        if no_bid_fp is not None:
+            return round(no_bid_fp / 100)
+        no_bid = market.get("no_bid")
+        if no_bid is not None:
+            return int(no_bid)
+        # Compute from yes_ask
+        for key, scale in (("yes_ask_dollars", 100), ("yes_ask_fp", 0.01), ("yes_ask", 1)):
+            v = market.get(key)
+            if v is not None:
+                return max(0, 100 - round(float(v) * scale))
+        return None
+    # YES side
     bid_fp      = market.get("yes_bid_fp")
     bid_dollars = market.get("yes_bid_dollars")
     bid         = market.get("yes_bid")
@@ -96,15 +119,19 @@ def get_bid_cents(market: dict) -> int | None:
 
 # ── Cached API calls ───────────────────────────────────────────────────────────
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_live_prices(tickers: tuple) -> dict[str, int | None]:
-    """Live yes_bid for each ticker. Auto-refreshes every 60s."""
+def fetch_live_prices(tickers: tuple, sides: tuple | None = None) -> dict[str, int | None]:
+    """Live bid for each ticker, using the correct side (YES bid or NO bid).
+    sides: tuple of 'yes'/'no' matching tickers order. Defaults to all 'yes'.
+    """
     client = make_kalshi_client()
     if client.dry_run:
         return {}
+    side_map = dict(zip(tickers, sides)) if sides else {}
     prices = {}
     for ticker in tickers:
         try:
-            prices[ticker] = get_bid_cents(client.get_market(ticker))
+            mkt = client.get_market(ticker)
+            prices[ticker] = get_bid_cents(mkt, side_map.get(ticker, "yes"))
         except Exception:
             prices[ticker] = None
     return prices
@@ -177,8 +204,9 @@ else:
 
 if open_kalshi:
     open_tickers = tuple(p["ticker"] for p in open_kalshi)
+    open_sides   = tuple(p.get("side", "yes") for p in open_kalshi)
     with st.spinner("Loading live prices..."):
-        live = fetch_live_prices(open_tickers)
+        live = fetch_live_prices(open_tickers, open_sides)
 
     rows = []
     for p in open_kalshi:
@@ -203,7 +231,7 @@ if open_kalshi:
             "Entry ¢"  : entry,
             "Bet $"    : f"${bet_dollars:.2f}",
             "Stop ¢"   : stop,
-            "Live Bid" : f"{current}¢" if current is not None else "—",
+            "Live Bid" : f"{current}¢ ({'NO' if p.get('side','yes').lower()=='no' else 'YES'})" if current is not None else "—",
             "P&L"      : (f"+{pnl_pct:.1f}%" if pnl_pct is not None and pnl_pct >= 0
                           else f"{pnl_pct:.1f}%" if pnl_pct is not None else "—"),
         })

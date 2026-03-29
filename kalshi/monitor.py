@@ -181,20 +181,33 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
             print(f"  {ticker}: could not fetch market data")
             continue
 
-        # Current best exit price (yes_bid — what you'd sell for)
-        yes_bid_dollars = market.get("yes_bid_dollars")
-        yes_bid_fp      = market.get("yes_bid_fp")
-        yes_bid         = market.get("yes_bid")
-
-        if yes_bid_dollars is not None:
-            current_cents = round(float(yes_bid_dollars) * 100)
-        elif yes_bid_fp is not None:
-            current_cents = round(yes_bid_fp / 100)
-        elif yes_bid is not None:
-            current_cents = int(yes_bid)
+        # Current best exit price for the held side
+        side = p.get("side", "yes")
+        if side.lower() == "no":
+            # NO bid = 100 - yes_ask
+            yes_ask = market.get("yes_ask_dollars") or market.get("yes_ask_fp") or market.get("yes_ask")
+            if yes_ask is None:
+                print(f"  {ticker}: no ask price available for NO bid")
+                continue
+            if market.get("yes_ask_dollars") is not None:
+                current_cents = max(0, 100 - round(float(market["yes_ask_dollars"]) * 100))
+            elif market.get("yes_ask_fp") is not None:
+                current_cents = max(0, 100 - round(market["yes_ask_fp"] / 100))
+            else:
+                current_cents = max(0, 100 - int(market["yes_ask"]))
         else:
-            print(f"  {ticker}: no bid price available")
-            continue
+            yes_bid_dollars = market.get("yes_bid_dollars")
+            yes_bid_fp      = market.get("yes_bid_fp")
+            yes_bid         = market.get("yes_bid")
+            if yes_bid_dollars is not None:
+                current_cents = round(float(yes_bid_dollars) * 100)
+            elif yes_bid_fp is not None:
+                current_cents = round(yes_bid_fp / 100)
+            elif yes_bid is not None:
+                current_cents = int(yes_bid)
+            else:
+                print(f"  {ticker}: no bid price available")
+                continue
 
         entry   = p["entry_cents"]
         stop    = p["stop_cents"]
