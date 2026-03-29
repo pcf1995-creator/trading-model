@@ -285,6 +285,8 @@ def main():
                          help="Only check contracts expiring within 6 hours")
     check_p.add_argument("--execute", action="store_true",
                          help="Place real sell orders when stop-loss triggers (default: dry run)")
+    check_p.add_argument("--sync-first", action="store_true",
+                         help="Pull latest positions from Kalshi API before checking")
 
     # list
     sub.add_parser("list", help="List all open positions")
@@ -297,6 +299,9 @@ def main():
     elif args.command == "sync":
         sync_positions(client)
     elif args.command == "check":
+        if getattr(args, "sync_first", False):
+            print("Syncing positions from Kalshi API ...")
+            sync_positions(client)
         check_positions(client,
                         dry_run_sell=not getattr(args, "execute", False),
                         urgent_only=getattr(args, "urgent", False))
