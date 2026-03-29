@@ -156,10 +156,11 @@ def sync_positions(client: KalshiClient) -> None:
 
 
 def check_positions(client: KalshiClient, dry_run_sell: bool = True,
-                    urgent_only: bool = False) -> None:
+                    urgent_only: bool = False, imminent_only: bool = False) -> None:
     """
     Check current prices against stop-loss levels.
-    urgent_only=True: only check contracts expiring within 6 hours.
+    urgent_only=True:   only check contracts expiring within 6 hours.
+    imminent_only=True: only check contracts expiring within 1 hour.
     """
     positions = load_positions()
     open_pos  = [p for p in positions if p["status"] == "open"]
@@ -178,14 +179,15 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
         if not any(x in series for x in ("KXBTCD", "KXETHD")):
             continue
 
-        # If urgent_only, skip contracts with more than 6 hours remaining
-        if urgent_only:
+        # Filter by time-to-expiry if requested
+        threshold = 1 if imminent_only else (6 if urgent_only else None)
+        if threshold is not None:
             close_time_str = p.get("close_time", "")
             if close_time_str:
                 try:
-                    close_dt  = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                    close_dt   = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
                     hours_left = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
-                    if hours_left > 6:
+                    if hours_left > threshold:
                         continue
                 except Exception:
                     pass
@@ -283,6 +285,8 @@ def main():
     check_p = sub.add_parser("check", help="Check positions against stop-loss levels")
     check_p.add_argument("--urgent", action="store_true",
                          help="Only check contracts expiring within 6 hours")
+    check_p.add_argument("--imminent", action="store_true",
+                         help="Only check contracts expiring within 1 hour")
     check_p.add_argument("--execute", action="store_true",
                          help="Place real sell orders when stop-loss triggers (default: dry run)")
     check_p.add_argument("--sync-first", action="store_true",
@@ -304,7 +308,8 @@ def main():
             sync_positions(client)
         check_positions(client,
                         dry_run_sell=not getattr(args, "execute", False),
-                        urgent_only=getattr(args, "urgent", False))
+                        urgent_only=getattr(args, "urgent", False),
+                        imminent_only=getattr(args, "imminent", False))
     elif args.command == "list":
         list_positions()
     else:
