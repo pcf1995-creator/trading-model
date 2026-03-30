@@ -805,6 +805,8 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
         df_hourly = asset_dfs["hourly"]
 
         feat_df  = compute_features_hourly(df_hourly)
+        if feat_df.empty:
+            return []
         last_row = feat_df.iloc[[-1]]
         if last_row.isnull().any(axis=1).values[0]:
             return []
@@ -832,6 +834,8 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
         df_daily = asset_dfs["daily"]
 
         feat_df  = compute_features(df_daily)
+        if feat_df.empty:
+            return []
         last_row = feat_df.iloc[[-1]]
         if last_row.isnull().any(axis=1).values[0]:
             return []
