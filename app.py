@@ -1340,32 +1340,78 @@ with tab_dash:
                 _ep = float(_sp["entry_price"])
                 try:
                     _cur = float(_closes[_sp["ticker"]].dropna().iloc[-1])
-                    _pnl_pct_live = (_cur - _ep) / _ep * 100
-                    _pnl_d_live   = round((_cur - _ep) * float(_sp.get("shares", 0)), 2)
-                    _cur_str  = f"${_cur:.2f}"
-                    _pnl_str  = f"{_pnl_pct_live:+.1f}%"
-                    _pnld_str = f"${_pnl_d_live:+.2f}"
                 except Exception:
-                    _cur_str = _pnl_str = _pnld_str = "—"
+                    _cur = None
                 try:
                     _entry_d = date.fromisoformat(_sp.get("entry_date", ""))
                     _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
                 except Exception:
-                    _days = "—"
+                    _days = 0
                 _sp_open_rows.append({
+                    "_id"       : _sp["id"],
                     "Ticker"    : _sp["ticker"],
-                    "Entry $"   : f"${_ep:.2f}",
+                    "Entry $"   : _ep,
+                    "Shares"    : int(_sp.get("shares", 0)),
                     "Entry Date": _sp.get("entry_date", ""),
-                    "Shares"    : _sp.get("shares", 0),
-                    "Invested"  : f"${_sp.get('dollars', 0):.0f}",
-                    "Cur Price" : _cur_str,
+                    "Cur Price" : round(_cur, 2) if _cur else None,
                     "Days Held" : _days,
-                    "P&L %"     : _pnl_str,
-                    "P&L $"     : _pnld_str,
                     "Prob"      : f"{_sp.get('model_prob', 0)*100:.1f}%",
                 })
+            _sp_df = pd.DataFrame(_sp_open_rows)
+            _edited_sp = st.data_editor(
+                _sp_df,
+                column_config={
+                    "_id"       : None,  # hidden
+                    "Entry $"   : st.column_config.NumberColumn("Entry $", format="$%.2f", min_value=0.0),
+                    "Shares"    : st.column_config.NumberColumn("Shares", min_value=0, step=1),
+                    "Ticker"    : st.column_config.TextColumn(disabled=True),
+                    "Entry Date": st.column_config.TextColumn(disabled=True),
+                    "Cur Price" : st.column_config.NumberColumn("Cur Price", format="$%.2f", disabled=True),
+                    "Days Held" : st.column_config.NumberColumn(disabled=True),
+                    "Prob"      : st.column_config.TextColumn(disabled=True),
+                },
+                hide_index=True, use_container_width=True, key="sp_open_editor",
+            )
+            # Compute Invested and P&L from edited values; show read-only summary
+            _summary_rows = []
+            _changed = False
+            for i, row in _edited_sp.iterrows():
+                _orig = _sp_open_rows[i]
+                _ep2  = float(row["Entry $"])
+                _sh2  = int(row["Shares"])
+                _cur2 = row["Cur Price"]
+                _inv  = round(_ep2 * _sh2, 2)
+                _pnl_pct = (_cur2 - _ep2) / _ep2 * 100 if _cur2 and _ep2 > 0 else 0.0
+                _pnl_d   = round((_cur2 - _ep2) * _sh2, 2) if _cur2 else 0.0
+                _summary_rows.append({
+                    "Ticker"   : row["Ticker"],
+                    "Entry $"  : f"${_ep2:.2f}",
+                    "Shares"   : _sh2,
+                    "Invested" : f"${_inv:.0f}",
+                    "Cur Price": f"${_cur2:.2f}" if _cur2 else "—",
+                    "Days Held": row["Days Held"],
+                    "P&L %"    : f"{_pnl_pct:+.1f}%",
+                    "P&L $"    : f"${_pnl_d:+.2f}",
+                    "Prob"     : row["Prob"],
+                })
+                if _ep2 != _orig["Entry $"] or _sh2 != _orig["Shares"]:
+                    _changed = True
+            if _changed:
+                if st.button("💾 Save Changes", key="sp_save_btn"):
+                    for i, row in _edited_sp.iterrows():
+                        _orig = _sp_open_rows[i]
+                        _ep2 = float(row["Entry $"])
+                        _sh2 = int(row["Shares"])
+                        if _ep2 != _orig["Entry $"] or _sh2 != _orig["Shares"]:
+                            db._get_client().table("stock_paper_trades").update({
+                                "entry_price": _ep2,
+                                "shares"     : _sh2,
+                                "dollars"    : round(_ep2 * _sh2, 2),
+                            }).eq("id", _orig["_id"]).execute()
+                    st.success("Saved.")
+                    st.rerun()
             st.dataframe(
-                pd.DataFrame(_sp_open_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                pd.DataFrame(_summary_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
                 hide_index=True, use_container_width=True,
             )
 
