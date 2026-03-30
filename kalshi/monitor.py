@@ -81,6 +81,45 @@ def list_positions() -> None:
               f"{p['entry_cents']:>5}¢  {p['stop_cents']:>4}¢  {entered}")
 
 
+def _avg_entry_from_fills(client: KalshiClient, ticker: str, side: str) -> int | None:
+    """Compute actual average entry price in cents from fill history."""
+    try:
+        fills = client.get_fills(limit=200)
+    except Exception:
+        return None
+    buy_cost = 0.0
+    buy_count = 0.0
+    for f in fills:
+        if (f.get("market_ticker") or f.get("ticker", "")) != ticker:
+            continue
+        action = f.get("action", "")
+        fside  = f.get("side", "yes")
+        # Parse yes_price (always present); derive no_price = 1 - yes_price
+        yp = f.get("yes_price_dollars") or f.get("yes_price") or 0
+        try:
+            yp = float(yp)
+            if yp > 1:
+                yp /= 100
+        except (ValueError, TypeError):
+            yp = 0.0
+        np_ = max(0.0, 1.0 - yp) if yp > 0 else 0.0
+        try:
+            cnt = abs(float(f.get("count_fp") or f.get("count") or 0))
+        except (ValueError, TypeError):
+            cnt = 0.0
+        if cnt == 0:
+            continue
+        if action == "buy" and fside == "yes" and side == "yes":
+            buy_cost  += cnt * yp
+            buy_count += cnt
+        elif action == "buy" and fside == "no" and side == "no":
+            buy_cost  += cnt * np_
+            buy_count += cnt
+    if buy_count > 0:
+        return round(buy_cost / buy_count * 100)
+    return None
+
+
 def sync_positions(client: KalshiClient) -> None:
     """Pull current positions from Kalshi API and update local file."""
     raw = client.get_positions()
@@ -107,29 +146,32 @@ def sync_positions(client: KalshiClient) -> None:
         if ticker in ex_tickers:
             continue                            # already tracked
 
-        # Best guess at entry: use current bid for the held side as proxy
-        market = client.get_market(ticker)
-        if side == "no":
-            # NO bid = 100 - yes_ask
-            ya = (market.get("yes_ask_dollars") or market.get("yes_ask_fp")
-                  or market.get("yes_ask"))
-            if market.get("yes_ask_dollars") is not None:
-                entry_cents = max(0, 100 - round(float(market["yes_ask_dollars"]) * 100))
-            elif market.get("yes_ask_fp") is not None:
-                entry_cents = max(0, 100 - round(market["yes_ask_fp"] / 100))
-            elif market.get("yes_ask") is not None:
-                entry_cents = max(0, 100 - int(market["yes_ask"]))
+        # Use actual avg entry from fills; fall back to current bid proxy
+        entry_cents = _avg_entry_from_fills(client, ticker, side)
+        entry_source = "fills"
+        if entry_cents is None:
+            entry_source = "proxy"
+            market = client.get_market(ticker)
+            if side == "no":
+                if market.get("yes_ask_dollars") is not None:
+                    entry_cents = max(0, 100 - round(float(market["yes_ask_dollars"]) * 100))
+                elif market.get("yes_ask_fp") is not None:
+                    entry_cents = max(0, 100 - round(market["yes_ask_fp"] / 100))
+                elif market.get("yes_ask") is not None:
+                    entry_cents = max(0, 100 - int(market["yes_ask"]))
+                else:
+                    entry_cents = 50
             else:
-                entry_cents = 50
+                if market.get("yes_bid_dollars") is not None:
+                    entry_cents = round(float(market["yes_bid_dollars"]) * 100)
+                elif market.get("yes_bid_fp") is not None:
+                    entry_cents = round(market["yes_bid_fp"] / 100)
+                elif market.get("yes_bid") is not None:
+                    entry_cents = int(market["yes_bid"])
+                else:
+                    entry_cents = 50
         else:
-            if market.get("yes_bid_dollars") is not None:
-                entry_cents = round(float(market["yes_bid_dollars"]) * 100)
-            elif market.get("yes_bid_fp") is not None:
-                entry_cents = round(market["yes_bid_fp"] / 100)
-            elif market.get("yes_bid") is not None:
-                entry_cents = int(market["yes_bid"])
-            else:
-                entry_cents = 50
+            market = client.get_market(ticker)
 
         close_time = market.get("close_time", "")
         position = {
@@ -146,10 +188,28 @@ def sync_positions(client: KalshiClient) -> None:
         existing.append(position)
         added += 1
         print(f"  Added: {ticker}  {side.upper()}  {contracts} contracts  "
-              f"entry ~{entry_cents}¢  stop {position['stop_cents']}¢")
+              f"entry {entry_cents}¢ ({entry_source})  stop {position['stop_cents']}¢")
+
+    # Re-check entry price for existing open positions that used a proxy
+    updated = 0
+    for pos in existing:
+        if pos.get("status") != "open":
+            continue
+        if not pos.get("synced"):
+            continue
+        # Only update if entry looks like it may be a proxy (no fill_entry flag)
+        if pos.get("entry_from_fills"):
+            continue
+        actual = _avg_entry_from_fills(client, pos["ticker"], pos.get("side", "yes"))
+        if actual is not None and actual != pos["entry_cents"]:
+            pos["entry_cents"] = actual
+            pos["stop_cents"]  = round(actual * (1 - STOP_LOSS_PCT))
+            pos["entry_from_fills"] = True
+            updated += 1
+            print(f"  Updated entry: {pos['ticker']}  {actual}¢  stop {pos['stop_cents']}¢")
 
     save_positions(existing)
-    print(f"\nSync complete — {added} new position(s) added.")
+    print(f"\nSync complete — {added} new position(s) added, {updated} entry price(s) corrected.")
     if added:
         print("  Note: entry prices are estimated from current bid. "
               "Update manually if needed.")
