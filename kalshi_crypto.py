@@ -882,6 +882,7 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
         "ticker"         : ticker,
         "asset"          : parsed["asset"],
         "expiry"         : str(expiry),
+        "close_time"     : close_time_str,
         "strike"         : strike,
         "current_price"  : round(current_price, 2),
         "strike_distance": round(strike_distance * 100, 1),
