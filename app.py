@@ -1260,9 +1260,6 @@ with tab_dash:
     _stock_paper = db.load_stock_paper_trades()
     _open_sp   = [t for t in _stock_paper if t.get("status") == "open"]
     _closed_sp = [t for t in _stock_paper if t.get("status") == "closed"]
-    _sb_ok = db._get_client() is not None
-    st.caption(f"Supabase: {'✓ connected' if _sb_ok else '✗ not connected'} · {len(_stock_paper)} trade(s) loaded")
-
     if not _stock_paper:
         st.info("No stock paper trades yet. Run the scan and click '📝 Paper Trade' to start tracking.")
     else:
