@@ -430,17 +430,13 @@ for _tkr, _tkr_fills in _by_ticker.items():
             _no_pos   += _cnt
             _total_bought_no += _cnt
         elif _act == "sell" and _fside == "yes":
+            # Kalshi records closing a NO position as action="sell", side="yes";
+            # proceeds = no_price = 1 - yes_price
+            _sell_proceeds += _cnt * _np
+            _no_pos -= _cnt
+        else:  # sell, side="no" — closing a YES position
             _sell_proceeds += _cnt * _yp
             _yes_pos -= _cnt
-        else:  # sell, side="no" — ambiguous: closing YES (uses yp) or closing NO (uses np)
-            if _yes_pos > 0:
-                # Was holding YES; "Sell YES at yp" is recorded as side="no" by Kalshi
-                _sell_proceeds += _cnt * _yp
-                _yes_pos -= _cnt
-            else:
-                # Actual NO position being sold; no_price = 1 - yes_price
-                _sell_proceeds += _cnt * _np
-                _no_pos -= _cnt
 
     _total_bought = _total_bought_yes + _total_bought_no
     if _total_bought == 0:
