@@ -7,7 +7,7 @@ import importlib.util
 import json
 import sys
 import warnings
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -1212,10 +1212,191 @@ with tab_dash:
                         f"Edge = prob minus per-ticker signal threshold · "
                         f"Suggested $ uses fractional Kelly (win +2% / stop −2%, min prob 60%)"
                     )
+                    st.write("")
+                    for s in buy_signals:
+                        alloc_s = _kelly_alloc(s["prob"], stock_budget) * scale
+                        shares_s = int(alloc_s / s["close"]) if s["close"] > 0 else 0
+                        if st.button(f"📝 Paper Trade {s['ticker']}", key=f"pt_stock_{s['ticker']}"):
+                            import uuid
+                            db.add_stock_paper_trade({
+                                "id"          : str(uuid.uuid4()),
+                                "ticker"      : s["ticker"],
+                                "entry_price" : s["close"],
+                                "entry_date"  : s["date"],
+                                "shares"      : shares_s,
+                                "dollars"     : round(shares_s * s["close"], 2),
+                                "model_prob"  : s["prob"],
+                                "status"      : "open",
+                                "exit_reason" : None,
+                                "exit_price"  : None,
+                                "exit_date"   : None,
+                                "pnl_dollars" : None,
+                                "pnl_pct"     : None,
+                                "placed_at"   : datetime.now(timezone.utc).isoformat(),
+                            })
+                            st.success(f"Paper trade recorded: {s['ticker']} @ ${s['close']:.2f} × {shares_s} shares (${alloc_s*scale:.0f})")
 
         except Exception as e:
             st.error(f"Stock scan error: {e}")
             import traceback; st.code(traceback.format_exc())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Stocks — Paper Trade Tracker")
+    st.caption("Tracks model-suggested entries. Auto-settles at +2% target, −2% stop, or after 5 trading days.")
+
+    _stock_paper = db.load_stock_paper_trades()
+    _open_sp   = [t for t in _stock_paper if t.get("status") == "open"]
+    _closed_sp = [t for t in _stock_paper if t.get("status") == "closed"]
+
+    if not _stock_paper:
+        st.info("No stock paper trades yet. Run the scan and click '📝 Paper Trade' to start tracking.")
+    else:
+        # ── Auto-settle open trades ──────────────────────────────────────────
+        if _open_sp:
+            import yfinance as yf
+            _tickers_to_check = list({t["ticker"] for t in _open_sp})
+            try:
+                _price_data = yf.download(_tickers_to_check, period="10d",
+                                          auto_adjust=True, progress=False)
+                if isinstance(_price_data.columns, pd.MultiIndex):
+                    _closes = _price_data["Close"]
+                else:
+                    _closes = _price_data[["Close"]]
+                    _closes.columns = _tickers_to_check
+            except Exception:
+                _closes = pd.DataFrame()
+
+            _newly_closed = 0
+            _today_str = datetime.now(timezone.utc).date().isoformat()
+
+            for _sp in _open_sp:
+                _tk    = _sp["ticker"]
+                _ep    = float(_sp["entry_price"])
+                _entry_dt = _sp.get("entry_date", "")
+                try:
+                    _entry_d = date.fromisoformat(_entry_dt)
+                except Exception:
+                    continue
+
+                # Count trading days held
+                _days_held = sum(
+                    1 for _d in pd.bdate_range(_entry_d, date.today())
+                    if _d.date() > _entry_d
+                )
+
+                # Get latest close
+                try:
+                    _cur_close = float(_closes[_tk].dropna().iloc[-1])
+                except Exception:
+                    continue
+
+                _pnl_pct = (_cur_close - _ep) / _ep
+                _pnl_dollars = round((_cur_close - _ep) * float(_sp.get("shares", 0)), 2)
+                _exit_date = _closes[_tk].dropna().index[-1].date().isoformat()
+
+                if _pnl_pct >= 0.02:
+                    _reason = "target"
+                elif _pnl_pct <= -0.02:
+                    _reason = "stop"
+                elif _days_held >= 5:
+                    _reason = "time"
+                else:
+                    _reason = None
+
+                if _reason:
+                    db.close_stock_paper_trade(
+                        _sp["id"], round(_cur_close, 4), _exit_date,
+                        _reason, _pnl_dollars, round(_pnl_pct * 100, 2)
+                    )
+                    _sp.update({
+                        "status": "closed", "exit_reason": _reason,
+                        "exit_price": round(_cur_close, 4), "exit_date": _exit_date,
+                        "pnl_dollars": _pnl_dollars, "pnl_pct": round(_pnl_pct * 100, 2),
+                    })
+                    _newly_closed += 1
+
+            if _newly_closed:
+                st.success(f"Auto-settled {_newly_closed} stock paper trade(s).")
+                _open_sp   = [t for t in _stock_paper if t.get("status") == "open"]
+                _closed_sp = [t for t in _stock_paper if t.get("status") == "closed"]
+
+        # ── Open trades ──────────────────────────────────────────────────────
+        if _open_sp:
+            st.subheader(f"Open ({len(_open_sp)})")
+            _sp_open_rows = []
+            for _sp in _open_sp:
+                _ep = float(_sp["entry_price"])
+                try:
+                    _cur = float(_closes[_sp["ticker"]].dropna().iloc[-1])
+                    _pnl_pct_live = (_cur - _ep) / _ep * 100
+                    _pnl_d_live   = round((_cur - _ep) * float(_sp.get("shares", 0)), 2)
+                    _cur_str  = f"${_cur:.2f}"
+                    _pnl_str  = f"{_pnl_pct_live:+.1f}%"
+                    _pnld_str = f"${_pnl_d_live:+.2f}"
+                except Exception:
+                    _cur_str = _pnl_str = _pnld_str = "—"
+                try:
+                    _entry_d = date.fromisoformat(_sp.get("entry_date", ""))
+                    _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
+                except Exception:
+                    _days = "—"
+                _sp_open_rows.append({
+                    "Ticker"    : _sp["ticker"],
+                    "Entry $"   : f"${_ep:.2f}",
+                    "Entry Date": _sp.get("entry_date", ""),
+                    "Shares"    : _sp.get("shares", 0),
+                    "Invested"  : f"${_sp.get('dollars', 0):.0f}",
+                    "Cur Price" : _cur_str,
+                    "Days Held" : _days,
+                    "P&L %"     : _pnl_str,
+                    "P&L $"     : _pnld_str,
+                    "Prob"      : f"{_sp.get('model_prob', 0)*100:.1f}%",
+                })
+            st.dataframe(
+                pd.DataFrame(_sp_open_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                hide_index=True, use_container_width=True,
+            )
+
+        # ── Closed trades ────────────────────────────────────────────────────
+        if _closed_sp:
+            _reason_labels = {"target": "✓ Target +2%", "stop": "✗ Stop −2%", "time": "⏱ Time exit"}
+            with st.expander(f"Closed ({len(_closed_sp)})"):
+                _sp_closed_rows = []
+                for _sp in sorted(_closed_sp, key=lambda x: x.get("exit_date", ""), reverse=True):
+                    _pnl = _sp.get("pnl_dollars")
+                    _sp_closed_rows.append({
+                        "Ticker"    : _sp["ticker"],
+                        "Entry $"   : f"${float(_sp['entry_price']):.2f}",
+                        "Exit $"    : f"${float(_sp['exit_price']):.2f}" if _sp.get("exit_price") else "—",
+                        "Shares"    : _sp.get("shares", 0),
+                        "Exit"      : _reason_labels.get(_sp.get("exit_reason", ""), "—"),
+                        "P&L %"     : f"{_sp.get('pnl_pct', 0):+.1f}%",
+                        "P&L $"     : f"${_pnl:+.2f}" if _pnl is not None else "—",
+                        "Entry Date": _sp.get("entry_date", ""),
+                        "Exit Date" : _sp.get("exit_date", ""),
+                        "Prob"      : f"{_sp.get('model_prob', 0)*100:.1f}%",
+                    })
+                st.dataframe(
+                    pd.DataFrame(_sp_closed_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                    hide_index=True, use_container_width=True,
+                )
+
+            # ── Summary metrics ──────────────────────────────────────────────
+            _with_pnl = [t for t in _closed_sp if t.get("pnl_dollars") is not None]
+            if _with_pnl:
+                _wins     = sum(1 for t in _with_pnl if t.get("pnl_pct", 0) > 0)
+                _total_pnl = sum(t["pnl_dollars"] for t in _with_pnl)
+                _avg_pnl  = sum(t.get("pnl_pct", 0) for t in _with_pnl) / len(_with_pnl)
+                _by_reason = {}
+                for t in _with_pnl:
+                    r = t.get("exit_reason", "time")
+                    _by_reason.setdefault(r, []).append(t.get("pnl_pct", 0))
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Trades", len(_with_pnl))
+                c2.metric("Win Rate", f"{_wins/len(_with_pnl):.0%}")
+                c3.metric("Avg P&L", f"{_avg_pnl:+.1f}%")
+                c4.metric("Total P&L", f"${_total_pnl:+.2f}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB

@@ -124,6 +124,61 @@ def settle_paper_trade(trade_id: str, result: str, pnl: float) -> None:
     _save_json(_PAPER_TRADES_JSON, trades)
 
 
+# ── Stock paper trades ─────────────────────────────────────────────────────────
+_STOCK_PAPER_TRADES_JSON = ROOT / "stock_paper_trades.json"
+
+def load_stock_paper_trades() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("stock_paper_trades")
+                    .select("*")
+                    .order("placed_at", desc=False)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_stock_paper_trades failed: {e}")
+    return _load_json(_STOCK_PAPER_TRADES_JSON)
+
+
+def add_stock_paper_trade(trade: dict) -> None:
+    client = _get_client()
+    if client:
+        try:
+            row = {k: v for k, v in trade.items() if k != "id"}
+            client.table("stock_paper_trades").insert(row).execute()
+            return
+        except Exception as e:
+            logger.warning(f"add_stock_paper_trade failed: {e}")
+    trades = _load_json(_STOCK_PAPER_TRADES_JSON)
+    trades.append(trade)
+    _save_json(_STOCK_PAPER_TRADES_JSON, trades)
+
+
+def close_stock_paper_trade(trade_id: str, exit_price: float, exit_date: str,
+                             exit_reason: str, pnl_dollars: float, pnl_pct: float) -> None:
+    updates = {
+        "status": "closed",
+        "exit_price": exit_price,
+        "exit_date": exit_date,
+        "exit_reason": exit_reason,
+        "pnl_dollars": pnl_dollars,
+        "pnl_pct": pnl_pct,
+    }
+    client = _get_client()
+    if client:
+        try:
+            client.table("stock_paper_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"close_stock_paper_trade failed: {e}")
+    trades = _load_json(_STOCK_PAPER_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(updates)
+    _save_json(_STOCK_PAPER_TRADES_JSON, trades)
+
+
 # ── Position overrides ─────────────────────────────────────────────────────────
 def load_position_overrides() -> dict[str, dict]:
     """Returns {ticker: {ticker, contracts, entry_cents, stop_cents}}"""
