@@ -196,3 +196,64 @@ def save_calibration_db(data: dict) -> None:
         except Exception as e:
             logger.warning(f"save_calibration_db failed: {e}")
     _save_json(_CALIBRATION_JSON, data)
+
+
+# ── Stock model file storage (Supabase Storage) ─────────────────────────────
+
+_MODEL_CACHE_DIR = Path("/tmp/trading_models")
+
+def get_stock_file(filename: str, local_root: Path | None = None) -> Path | None:
+    """Return path to a stock model file, downloading from Supabase Storage if needed.
+
+    Priority:
+    1. Local file at local_root/filename (for local dev)
+    2. Cached file at /tmp/trading_models/filename (previously downloaded)
+    3. Download from Supabase Storage bucket 'stock-models'
+
+    Returns Path if file is available, None if unavailable.
+    """
+    # Check local first
+    if local_root:
+        local_path = local_root / filename
+        if local_path.exists():
+            return local_path
+
+    # Check cache
+    _MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached = _MODEL_CACHE_DIR / filename
+    if cached.exists():
+        return cached
+
+    # Download from Supabase Storage
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        data = client.storage.from_("stock-models").download(filename)
+        cached.write_bytes(data)
+        logger.info(f"Downloaded {filename} from Supabase Storage")
+        return cached
+    except Exception as e:
+        logger.warning(f"Could not download {filename} from Supabase Storage: {e}")
+        return None
+
+
+def upload_stock_file(filename: str, local_path: Path) -> bool:
+    """Upload a stock model file to Supabase Storage bucket 'stock-models'."""
+    client = _get_client()
+    if not client:
+        logger.error("No Supabase client — cannot upload")
+        return False
+    try:
+        with open(local_path, "rb") as f:
+            data = f.read()
+        # Try upsert (update if exists)
+        try:
+            client.storage.from_("stock-models").upload(filename, data)
+        except Exception:
+            client.storage.from_("stock-models").update(filename, data)
+        logger.info(f"Uploaded {filename} to Supabase Storage")
+        return True
+    except Exception as e:
+        logger.error(f"Upload failed for {filename}: {e}")
+        return False

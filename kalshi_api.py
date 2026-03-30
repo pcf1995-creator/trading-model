@@ -322,14 +322,13 @@ class KalshiClient:
         limit_price_cents : for buys — max price willing to pay;
                             for sells — min price willing to accept
         """
-        price_fp = limit_price_cents * 100
         payload  = {
-            "ticker"      : ticker,
-            "action"      : action,
-            "side"        : side,
-            "count"       : count,
-            "type"        : "limit",
-            "yes_price_fp": price_fp if side == "yes" else (100 - limit_price_cents) * 100,
+            "ticker"   : ticker,
+            "action"   : action,
+            "side"     : side,
+            "count"    : count,
+            "type"     : "limit",
+            "yes_price": limit_price_cents if side == "yes" else (100 - limit_price_cents),
         }
         if self.dry_run:
             logger.info(f"DRY RUN — would place order: {payload}")

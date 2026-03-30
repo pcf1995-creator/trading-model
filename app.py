@@ -1140,12 +1140,9 @@ with tab_dash:
             pm = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(pm)
 
-            summary_path = ROOT / "ticker_summary.csv"
-            if not summary_path.exists():
-                summary_path = ROOT / "stocks" / "ticker_summary.csv"
-
-            if not summary_path.exists():
-                st.error("No ticker_summary.csv found. Run features.py first.")
+            summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
+            if summary_path is None:
+                st.error("No ticker_summary.csv found. Run features.py or upload to Supabase Storage.")
             else:
                 summary   = pd.read_csv(summary_path)
                 thresh_map = dict(zip(summary["Ticker"], summary["CV_Threshold"]))
@@ -1157,9 +1154,9 @@ with tab_dash:
                 prog = st.progress(0, text="Scanning...")
                 for i, ticker in enumerate(eligible):
                     prog.progress((i + 1) / len(eligible), text=f"Scanning {ticker}...")
-                    model_path    = ROOT / f"model_{ticker}.joblib"
-                    features_path = ROOT / f"features_{ticker}.csv"
-                    if not model_path.exists():
+                    model_path    = db.get_stock_file(f"model_{ticker}.joblib", ROOT)
+                    features_path = db.get_stock_file(f"features_{ticker}.csv", ROOT)
+                    if model_path is None or features_path is None:
                         continue
                     model         = joblib.load(model_path)
                     feature_names = pd.read_csv(features_path, header=None)[0].tolist()
@@ -1174,7 +1171,11 @@ with tab_dash:
                     key=lambda x: x["prob"], reverse=True,
                 )[:5]
 
-                models_found = sum(1 for t in eligible if (ROOT / f"model_{t}.joblib").exists())
+                def _model_available(ticker):
+                    if (ROOT / f"model_{ticker}.joblib").exists():
+                        return True
+                    return (db._MODEL_CACHE_DIR / f"model_{ticker}.joblib").exists()
+                models_found = sum(1 for t in eligible if _model_available(t))
                 if models_found == 0:
                     st.warning("No stock model files found on this server. "
                                "Stock models are trained locally and not deployed. "
