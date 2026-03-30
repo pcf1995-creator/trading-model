@@ -1361,9 +1361,9 @@ with tab_dash:
             _edited_sp = st.data_editor(
                 _sp_df,
                 column_config={
-                    "_id"       : None,  # hidden
-                    "Entry $"   : st.column_config.NumberColumn("Entry $", format="$%.2f", min_value=0.0),
-                    "Shares"    : st.column_config.NumberColumn("Shares", min_value=0, step=1),
+                    "_id"       : None,
+                    "Entry $"   : st.column_config.NumberColumn("Entry $", format="$%.2f", min_value=0.0, step=0.01),
+                    "Shares"    : st.column_config.NumberColumn("Shares", min_value=0.0, step=0.01, format="%.2f"),
                     "Ticker"    : st.column_config.TextColumn(disabled=True),
                     "Entry Date": st.column_config.TextColumn(disabled=True),
                     "Cur Price" : st.column_config.NumberColumn("Cur Price", format="$%.2f", disabled=True),
@@ -1372,13 +1372,11 @@ with tab_dash:
                 },
                 hide_index=True, use_container_width=True, key="sp_open_editor",
             )
-            # Compute Invested and P&L from edited values; show read-only summary
+            # Summary table: Invested and P&L computed from edited values
             _summary_rows = []
-            _changed = False
             for i, row in _edited_sp.iterrows():
-                _orig = _sp_open_rows[i]
-                _ep2  = float(row["Entry $"])
-                _sh2  = int(row["Shares"])
+                _ep2  = float(row["Entry $"] or 0)
+                _sh2  = float(row["Shares"] or 0)
                 _cur2 = row["Cur Price"]
                 _inv  = round(_ep2 * _sh2, 2)
                 _pnl_pct = (_cur2 - _ep2) / _ep2 * 100 if _cur2 and _ep2 > 0 else 0.0
@@ -1386,34 +1384,29 @@ with tab_dash:
                 _summary_rows.append({
                     "Ticker"   : row["Ticker"],
                     "Entry $"  : f"${_ep2:.2f}",
-                    "Shares"   : _sh2,
-                    "Invested" : f"${_inv:.0f}",
+                    "Shares"   : f"{_sh2:.2f}",
+                    "Invested" : f"${_inv:.2f}",
                     "Cur Price": f"${_cur2:.2f}" if _cur2 else "—",
                     "Days Held": row["Days Held"],
                     "P&L %"    : f"{_pnl_pct:+.1f}%",
                     "P&L $"    : f"${_pnl_d:+.2f}",
                     "Prob"     : row["Prob"],
                 })
-                if _ep2 != _orig["Entry $"] or _sh2 != _orig["Shares"]:
-                    _changed = True
-            if _changed:
-                if st.button("💾 Save Changes", key="sp_save_btn"):
-                    for i, row in _edited_sp.iterrows():
-                        _orig = _sp_open_rows[i]
-                        _ep2 = float(row["Entry $"])
-                        _sh2 = int(row["Shares"])
-                        if _ep2 != _orig["Entry $"] or _sh2 != _orig["Shares"]:
-                            db._get_client().table("stock_paper_trades").update({
-                                "entry_price": _ep2,
-                                "shares"     : _sh2,
-                                "dollars"    : round(_ep2 * _sh2, 2),
-                            }).eq("id", _orig["_id"]).execute()
-                    st.success("Saved.")
-                    st.rerun()
             st.dataframe(
                 pd.DataFrame(_summary_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
                 hide_index=True, use_container_width=True,
             )
+            if st.button("💾 Save Changes", key="sp_save_btn"):
+                for i, row in _edited_sp.iterrows():
+                    _ep2 = float(row["Entry $"] or 0)
+                    _sh2 = float(row["Shares"] or 0)
+                    db._get_client().table("stock_paper_trades").update({
+                        "entry_price": _ep2,
+                        "shares"     : _sh2,
+                        "dollars"    : round(_ep2 * _sh2, 2),
+                    }).eq("id", _sp_open_rows[i]["_id"]).execute()
+                st.success("Saved.")
+                st.rerun()
 
         # ── Closed trades ────────────────────────────────────────────────────
         if _closed_sp:
