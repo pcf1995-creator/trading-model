@@ -177,17 +177,23 @@ if not _client.dry_run:
             # Only show crypto positions in this dashboard
             if not _tkr or not (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH")):
                 continue
+            _side  = "yes" if _pos.get("position", 0) > 0 else "no"
             _local = _local_by_ticker.get(_tkr, {})
             _mkt   = _client.get_market(_tkr)
             _hrs   = hours_left(_mkt.get("close_time", ""))
+            # Use saved entry; fall back to current live bid as proxy
+            _proxy_entry = get_bid_cents(_mkt, _side) or 0
+            _entry = _local.get("entry_cents") or _proxy_entry
+            # Use saved stop; fall back to 50% of entry
+            _stop  = _local.get("stop_cents") or round(_entry * 0.5)
             _all_api.append({
                 "ticker"      : _tkr,
                 "status"      : "open",
-                "side"        : "yes" if _pos.get("position", 0) > 0 else "no",
+                "side"        : _side,
                 # Prefer manually saved contracts; fall back to API position count
                 "contracts"   : _local.get("contracts", abs(_pos.get("position", 1))),
-                "entry_cents" : _local.get("entry_cents", 0),
-                "stop_cents"  : _local.get("stop_cents", 0),
+                "entry_cents" : _entry,
+                "stop_cents"  : _stop,
                 "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
                 "_hrs"        : _hrs,
             })
@@ -220,7 +226,8 @@ if open_kalshi:
         pnl_pct   = ((current - entry) / entry * 100
                      if current is not None and entry > 0 else None)
 
-        bet_dollars = entry * contracts / 100
+        bet_dollars  = entry * contracts / 100
+        stop_dollars = stop * contracts / 100
         rows.append({
             "Ticker"   : ticker,
             "Asset"    : asset,
@@ -231,6 +238,7 @@ if open_kalshi:
             "Entry ¢"  : entry,
             "Bet $"    : f"${bet_dollars:.2f}",
             "Stop ¢"   : stop,
+            "Stop $"   : f"${stop_dollars:.2f}",
             "Live Bid" : f"{current}¢ ({'NO' if p.get('side','yes').lower()=='no' else 'YES'})" if current is not None else "—",
             "P&L"      : (f"+{pnl_pct:.1f}%" if pnl_pct is not None and pnl_pct >= 0
                           else f"{pnl_pct:.1f}%" if pnl_pct is not None else "—"),
@@ -245,7 +253,7 @@ if open_kalshi:
             "Entry ¢"  : st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
             "Stop ¢"   : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
         },
-        disabled=["Asset", "Strike", "Hrs Left", "Bet $", "Live Bid", "P&L"],
+        disabled=["Asset", "Strike", "Hrs Left", "Bet $", "Stop $", "Live Bid", "P&L"],
         hide_index=True,
         use_container_width=True,
     )
@@ -379,9 +387,20 @@ def _price_dollars(_f: dict, field_prefix: str) -> float:
                 pass
     return 0.0
 
+def _no_price_dollars(_f: dict) -> float:
+    """NO price in dollars. Kalshi fills only include yes_price; derive NO price as 1 - yes_price."""
+    np = _price_dollars(_f, "no_price")
+    if np > 0:
+        return np
+    yp = _price_dollars(_f, "yes_price")
+    if yp > 0:
+        return max(0.0, 1.0 - yp)
+    return 0.0
+
 # Kalshi fills API quirk: "Sell YES at X¢" is recorded as action="sell", side="no",
 # no_price=(1-X).  To determine whether a side="no" sell is closing a YES position
 # or an actual NO position, we process fills chronologically and track net position.
+# Kalshi fills only carry yes_price; for NO fills we derive no_price = 1 - yes_price.
 api_closed = []
 for _tkr, _tkr_fills in _by_ticker.items():
     _sorted_fills = sorted(
@@ -400,7 +419,7 @@ for _tkr, _tkr_fills in _by_ticker.items():
         _act    = _fill_action(_f)
         _fside  = _f.get("side", "yes")
         _yp     = _price_dollars(_f, "yes_price")
-        _np     = _price_dollars(_f, "no_price")
+        _np     = _no_price_dollars(_f)
 
         if _act == "buy" and _fside == "yes":
             _buy_cost += _cnt * _yp
@@ -419,7 +438,7 @@ for _tkr, _tkr_fills in _by_ticker.items():
                 _sell_proceeds += _cnt * _yp
                 _yes_pos -= _cnt
             else:
-                # Actual NO position being sold
+                # Actual NO position being sold; no_price = 1 - yes_price
                 _sell_proceeds += _cnt * _np
                 _no_pos -= _cnt
 
