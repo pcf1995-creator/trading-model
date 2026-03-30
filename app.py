@@ -1039,42 +1039,73 @@ with tab_dash:
                     hide_index=True, use_container_width=True,
                 )
 
-        # ── Calibration summary ───────────────────────────────────────────────────
+        # ── Performance summary ───────────────────────────────────────────────────
         _resolved = [p for p in _settled_paper if p.get("pnl_dollars") is not None]
+
+        # Open trades summary by bucket
+        if _open_paper:
+            st.subheader("Open — By Bucket")
+            _open_buckets = {}
+            for _p in _open_paper:
+                _b = _p.get("bucket", "other")
+                _open_buckets.setdefault(_b, []).append(_p)
+            _ob_rows = []
+            for _b, _bps in sorted(_open_buckets.items()):
+                _proj_wr = sum(
+                    (1 - p.get("cal_prob", 0.5)) if p.get("side", "yes").lower() == "no"
+                    else p.get("cal_prob", 0.5)
+                    for p in _bps
+                ) / len(_bps)
+                _bet_tot = sum(p.get("bet_dollars", 0) for p in _bps)
+                _ob_rows.append({
+                    "Bucket"        : _b,
+                    "Open Trades"   : len(_bps),
+                    "Proj Win Rate" : f"{_proj_wr:.0%}",
+                    "Total Bet $"   : f"${_bet_tot:.0f}",
+                })
+            st.dataframe(pd.DataFrame(_ob_rows), hide_index=True, use_container_width=True)
+
         if _resolved:
-            st.subheader("Calibration")
-            _wins       = sum(1 for p in _resolved
-                              if p.get("pnl_dollars", 0) > 0)
-            _actual_wr  = _wins / len(_resolved)
-            _pred_wr    = sum(p.get("cal_prob", 0.5) for p in _resolved) / len(_resolved)
-            _total_pnl  = sum(p.get("pnl_dollars", 0) for p in _resolved)
-
-            _c1, _c2, _c3, _c4 = st.columns(4)
-            _c1.metric("Settled Trades", len(_resolved))
-            _c2.metric("Actual Win Rate", f"{_actual_wr:.0%}")
-            _c3.metric("Predicted Win Rate", f"{_pred_wr:.0%}",
-                       delta=f"{(_actual_wr - _pred_wr)*100:+.1f}pp")
-            _c4.metric("Total P&L", f"${_total_pnl:+.2f}")
-
-            # Bucket breakdown
+            st.subheader("Settled — By Bucket")
             _buckets = {}
             for _p in _resolved:
                 _b = _p.get("bucket", "other")
                 _buckets.setdefault(_b, []).append(_p)
-            if len(_buckets) > 1:
-                _bk_rows = []
-                for _b, _bps in sorted(_buckets.items()):
-                    _bwins = sum(1 for p in _bps if p.get("pnl_dollars", 0) > 0)
-                    _bpnl  = sum(p.get("pnl_dollars", 0) for p in _bps)
-                    _bpred = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
-                    _bk_rows.append({
-                        "Bucket"      : _b,
-                        "Trades"      : len(_bps),
-                        "Win Rate"    : f"{_bwins/len(_bps):.0%}",
-                        "Pred Win Rate": f"{_bpred:.0%}",
-                        "Total P&L"   : f"${_bpnl:+.2f}",
-                    })
-                st.dataframe(pd.DataFrame(_bk_rows), hide_index=True, use_container_width=True)
+
+            _bk_rows = []
+            for _b, _bps in sorted(_buckets.items()):
+                _bwins = sum(1 for p in _bps if p.get("pnl_dollars", 0) > 0)
+                _bpnl  = sum(p.get("pnl_dollars", 0) for p in _bps)
+                _bpred = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
+                _avg_pnl = _bpnl / len(_bps)
+                _bk_rows.append({
+                    "Bucket"         : _b,
+                    "Trades"         : len(_bps),
+                    "Actual Win Rate": f"{_bwins/len(_bps):.0%}",
+                    "Pred Win Rate"  : f"{_bpred:.0%}",
+                    "Edge"           : f"{(_bwins/len(_bps) - _bpred)*100:+.1f}pp",
+                    "Total P&L"      : f"${_bpnl:+.2f}",
+                    "Avg P&L/Trade"  : f"${_avg_pnl:+.2f}",
+                })
+            st.dataframe(
+                pd.DataFrame(_bk_rows).style.map(
+                    lambda v: "color: green" if isinstance(v, str) and v.startswith("+") else
+                              "color: red"   if isinstance(v, str) and v.startswith("-") else "",
+                    subset=["Edge", "Total P&L", "Avg P&L/Trade"]
+                ),
+                hide_index=True, use_container_width=True
+            )
+
+            # Overall totals
+            _wins      = sum(1 for p in _resolved if p.get("pnl_dollars", 0) > 0)
+            _total_pnl = sum(p.get("pnl_dollars", 0) for p in _resolved)
+            _pred_wr   = sum(p.get("cal_prob", 0.5) for p in _resolved) / len(_resolved)
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            _c1.metric("Total Settled", len(_resolved))
+            _c2.metric("Overall Win Rate", f"{_wins/len(_resolved):.0%}")
+            _c3.metric("Predicted Win Rate", f"{_pred_wr:.0%}",
+                       delta=f"{(_wins/len(_resolved) - _pred_wr)*100:+.1f}pp")
+            _c4.metric("Total P&L", f"${_total_pnl:+.2f}")
 
     st.divider()
 
