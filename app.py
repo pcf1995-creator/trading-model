@@ -273,18 +273,23 @@ if open_kalshi:
             _local_by_ticker[tkr]["entry_cents"] = int(row["Entry ¢"])
             _local_by_ticker[tkr]["stop_cents"]  = int(row["Stop ¢"])
         db.save_position_overrides(_local_by_ticker)
-        st.success("Saved!")
+        st.cache_data.clear()
+        st.rerun()
 
+    # Compute metrics from edited table so they reflect current edits before saving
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Open Positions", len(open_kalshi))
     expiring_soon = sum(1 for p in open_kalshi
                         if (h := hours_left(p.get("close_time", ""))) is not None and h < 12)
     m2.metric("Expiring < 12h", expiring_soon)
-    total_exp = sum(p["entry_cents"] * p["contracts"] for p in open_kalshi)
+    total_exp = sum(int(row["Entry ¢"]) * int(row["Contracts"])
+                    for _, row in edited.iterrows())
     m3.metric("Total Exposure", f"${total_exp/100:.2f}")
-    stops_at_risk = sum(1 for p in open_kalshi
-                        if p.get("stop_cents", 0) > 0 and
-                        live.get(p["ticker"], 999) <= p["stop_cents"])
+    stops_at_risk = sum(
+        1 for i, row in edited.iterrows()
+        if int(row["Stop ¢"]) > 0
+        and live.get(df_open.iloc[i]["Ticker"], 999) <= int(row["Stop ¢"])
+    )
     m4.metric("At Stop", stops_at_risk, delta=None)
 
     # ── Stop-loss execution ────────────────────────────────────────────────────
