@@ -1174,8 +1174,13 @@ with tab_dash:
                     key=lambda x: x["prob"], reverse=True,
                 )[:5]
 
-                if not buy_signals:
-                    st.info("No buy signals today.")
+                models_found = sum(1 for t in eligible if (ROOT / f"model_{t}.joblib").exists())
+                if models_found == 0:
+                    st.warning("No stock model files found on this server. "
+                               "Stock models are trained locally and not deployed. "
+                               "Run the scan locally with `streamlit run app.py`.")
+                elif not buy_signals:
+                    st.info(f"No buy signals today. ({models_found}/{len(eligible)} models scanned)")
                 else:
                     scan_rows = [
                         {
