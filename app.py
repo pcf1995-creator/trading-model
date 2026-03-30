@@ -58,14 +58,30 @@ with tab_dash:
             return json.load(f)
 
 
-    def hours_left(close_time_str: str) -> float | None:
-        if not close_time_str:
-            return None
-        try:
-            dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-            return (dt - datetime.now(timezone.utc)).total_seconds() / 3600
-        except Exception:
-            return None
+    def hours_left(close_time_str: str, ticker: str = "") -> float | None:
+        if close_time_str:
+            try:
+                dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                return (dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            except Exception:
+                pass
+        # Fallback: parse close time from ticker e.g. KXBTCD-26APR0317-T70000
+        if ticker:
+            try:
+                _MONTHS = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
+                           "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+                code = ticker.split("-")[1]           # e.g. "26APR0317"
+                yr   = 2000 + int(code[:2])
+                mon  = _MONTHS[code[2:5]]
+                day  = int(code[5:7])
+                hr   = int(code[7:9])                 # ET hour (17 = 5pm ET)
+                from zoneinfo import ZoneInfo
+                et   = ZoneInfo("America/New_York")
+                dt   = datetime(yr, mon, day, hr, 0, 0, tzinfo=et)
+                return (dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            except Exception:
+                pass
+        return None
 
 
     def parse_ticker(ticker: str) -> tuple[str, str, str]:
@@ -969,7 +985,7 @@ with tab_dash:
                 _entry = _pt.get("price_cents", 50)
                 _ctrs  = _pt.get("contracts", 1)
                 _bid   = _pt_live.get(_pt["ticker"])
-                _hrs   = hours_left(_pt.get("close_time", ""))
+                _hrs   = hours_left(_pt.get("close_time", ""), _pt.get("ticker", ""))
                 _side  = _pt.get("side", "yes")
                 # Use settlement value (100¢) if market expired and bid dropped to 0
                 # (bid=0 on a closed winning contract would show a false loss otherwise)
