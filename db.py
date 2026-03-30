@@ -144,8 +144,8 @@ def load_stock_paper_trades() -> list[dict]:
 def add_stock_paper_trade(trade: dict) -> None:
     client = _get_client()
     if client:
-        row = {k: v for k, v in trade.items() if k != "id"}
-        client.table("stock_paper_trades").insert(row).execute()
+        # Include id — stock_paper_trades uses text PK supplied by caller
+        client.table("stock_paper_trades").insert(trade).execute()
         return
     # Local fallback (only reliable in local dev, not Streamlit Cloud)
     trades = _load_json(_STOCK_PAPER_TRADES_JSON)
