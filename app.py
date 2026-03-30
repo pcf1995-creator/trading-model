@@ -1369,49 +1369,23 @@ with tab_dash:
                 st.session_state["sp_open_rows"] = _sp_open_rows
             else:
                 _sp_open_rows = st.session_state["sp_open_rows"]
-                # Update live prices without resetting editable fields
-                for row in _sp_open_rows:
-                    _cur = _cur_prices.get(row["Ticker"])
-                    row["Cur Price"] = round(_cur, 2) if _cur else None
 
-            _sp_df = pd.DataFrame(_sp_open_rows)
+            # Editable table: ONLY static fields (no live data — prevents resets)
+            _edit_df = pd.DataFrame([{
+                "_id"    : r["_id"],
+                "Ticker" : r["Ticker"],
+                "Entry $": r["Entry $"],
+                "Shares" : r["Shares"],
+            } for r in _sp_open_rows])
             _edited_sp = st.data_editor(
-                _sp_df,
+                _edit_df,
                 column_config={
-                    "_id"       : None,
-                    "Entry $"   : st.column_config.NumberColumn("Entry $", format="$%.2f", min_value=0.0, step=0.01),
-                    "Shares"    : st.column_config.NumberColumn("Shares", min_value=0.0, step=0.01, format="%.2f"),
-                    "Ticker"    : st.column_config.TextColumn(disabled=True),
-                    "Entry Date": st.column_config.TextColumn(disabled=True),
-                    "Cur Price" : st.column_config.NumberColumn("Cur Price", format="$%.2f", disabled=True),
-                    "Days Held" : st.column_config.NumberColumn(disabled=True),
-                    "Prob"      : st.column_config.TextColumn(disabled=True),
+                    "_id"    : None,
+                    "Ticker" : st.column_config.TextColumn(disabled=True),
+                    "Entry $": st.column_config.NumberColumn("Entry $", format="$%.2f", min_value=0.0, step=0.01),
+                    "Shares" : st.column_config.NumberColumn("Shares", min_value=0.0, step=0.01, format="%.2f"),
                 },
                 hide_index=True, use_container_width=True, key="sp_open_editor",
-            )
-            # Summary table: Invested and P&L computed from edited values
-            _summary_rows = []
-            for i, row in _edited_sp.iterrows():
-                _ep2  = float(row["Entry $"] or 0)
-                _sh2  = float(row["Shares"] or 0)
-                _cur2 = row["Cur Price"]
-                _inv  = round(_ep2 * _sh2, 2)
-                _pnl_pct = (_cur2 - _ep2) / _ep2 * 100 if _cur2 and _ep2 > 0 else 0.0
-                _pnl_d   = round((_cur2 - _ep2) * _sh2, 2) if _cur2 else 0.0
-                _summary_rows.append({
-                    "Ticker"   : row["Ticker"],
-                    "Entry $"  : f"${_ep2:.2f}",
-                    "Shares"   : f"{_sh2:.2f}",
-                    "Invested" : f"${_inv:.2f}",
-                    "Cur Price": f"${_cur2:.2f}" if _cur2 else "—",
-                    "Days Held": row["Days Held"],
-                    "P&L %"    : f"{_pnl_pct:+.1f}%",
-                    "P&L $"    : f"${_pnl_d:+.2f}",
-                    "Prob"     : row["Prob"],
-                })
-            st.dataframe(
-                pd.DataFrame(_summary_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                hide_index=True, use_container_width=True,
             )
             if st.button("💾 Save Changes", key="sp_save_btn"):
                 for i, row in _edited_sp.iterrows():
@@ -1422,9 +1396,35 @@ with tab_dash:
                         "shares"     : _sh2,
                         "dollars"    : round(_ep2 * _sh2, 2),
                     }).eq("id", _sp_open_rows[i]["_id"]).execute()
-                st.session_state.pop("sp_open_ids", None)  # force reload on next run
+                st.session_state.pop("sp_open_ids", None)
                 st.success("Saved.")
                 st.rerun()
+
+            # Read-only summary with live prices and computed P&L
+            _summary_rows = []
+            for i, row in _edited_sp.iterrows():
+                _ep2 = float(row["Entry $"] or 0)
+                _sh2 = float(row["Shares"] or 0)
+                _cur2 = _cur_prices.get(row["Ticker"])
+                _inv  = round(_ep2 * _sh2, 2)
+                _pnl_pct = (_cur2 - _ep2) / _ep2 * 100 if _cur2 and _ep2 > 0 else 0.0
+                _pnl_d   = round((_cur2 - _ep2) * _sh2, 2) if _cur2 else 0.0
+                _orig = _sp_open_rows[i]
+                _summary_rows.append({
+                    "Ticker"    : row["Ticker"],
+                    "Entry $"   : f"${_ep2:.2f}",
+                    "Shares"    : f"{_sh2:.2f}",
+                    "Invested"  : f"${_inv:.2f}",
+                    "Cur Price" : f"${_cur2:.2f}" if _cur2 else "—",
+                    "Days Held" : _orig["Days Held"],
+                    "P&L %"     : f"{_pnl_pct:+.1f}%",
+                    "P&L $"     : f"${_pnl_d:+.2f}",
+                    "Prob"      : _orig["Prob"],
+                })
+            st.dataframe(
+                pd.DataFrame(_summary_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                hide_index=True, use_container_width=True,
+            )
 
         # ── Closed trades ────────────────────────────────────────────────────
         if _closed_sp:
