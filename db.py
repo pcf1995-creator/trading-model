@@ -144,12 +144,10 @@ def load_stock_paper_trades() -> list[dict]:
 def add_stock_paper_trade(trade: dict) -> None:
     client = _get_client()
     if client:
-        try:
-            row = {k: v for k, v in trade.items() if k != "id"}
-            client.table("stock_paper_trades").insert(row).execute()
-            return
-        except Exception as e:
-            logger.warning(f"add_stock_paper_trade failed: {e}")
+        row = {k: v for k, v in trade.items() if k != "id"}
+        client.table("stock_paper_trades").insert(row).execute()
+        return
+    # Local fallback (only reliable in local dev, not Streamlit Cloud)
     trades = _load_json(_STOCK_PAPER_TRADES_JSON)
     trades.append(trade)
     _save_json(_STOCK_PAPER_TRADES_JSON, trades)

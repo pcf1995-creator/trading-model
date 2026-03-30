@@ -1227,8 +1227,8 @@ with tab_dash:
         st.write("")
         for s in _ss:
             if st.button(f"📝 Paper Trade {s['ticker']}", key=f"pt_stock_{s['ticker']}"):
-                import uuid
-                db.add_stock_paper_trade({
+                import uuid, traceback as _tb
+                _trade = {
                     "id"         : str(uuid.uuid4()),
                     "ticker"     : s["ticker"],
                     "entry_price": s["close"],
@@ -1243,9 +1243,14 @@ with tab_dash:
                     "pnl_dollars": None,
                     "pnl_pct"    : None,
                     "placed_at"  : datetime.now(timezone.utc).isoformat(),
-                })
-                st.success(f"Recorded: {s['ticker']} @ ${s['close']:.2f} × {s['shares']} shares (${s['alloc']:.0f})")
-                st.rerun()
+                }
+                try:
+                    db.add_stock_paper_trade(_trade)
+                    st.success(f"Recorded: {s['ticker']} @ ${s['close']:.2f} × {s['shares']} shares (${s['alloc']:.0f})")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"Failed to save paper trade: {_e}")
+                    st.code(_tb.format_exc())
 
     # ══════════════════════════════════════════════════════════════════════════
     st.divider()
