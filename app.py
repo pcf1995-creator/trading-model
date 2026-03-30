@@ -1388,17 +1388,21 @@ with tab_dash:
                 hide_index=True, use_container_width=True, key="sp_open_editor",
             )
             if st.button("💾 Save Changes", key="sp_save_btn"):
-                for i, row in _edited_sp.iterrows():
-                    _ep2 = float(row["Entry $"] or 0)
-                    _sh2 = float(row["Shares"] or 0)
-                    db._get_client().table("stock_paper_trades").update({
-                        "entry_price": _ep2,
-                        "shares"     : _sh2,
-                        "dollars"    : round(_ep2 * _sh2, 2),
-                    }).eq("id", _sp_open_rows[i]["_id"]).execute()
-                st.session_state.pop("sp_open_ids", None)
-                st.success("Saved.")
-                st.rerun()
+                try:
+                    for i, row in _edited_sp.iterrows():
+                        _ep2 = float(row["Entry $"] or 0)
+                        _sh2 = float(row["Shares"] or 0)
+                        _row_id = _sp_open_rows[i]["_id"]
+                        resp = db._get_client().table("stock_paper_trades").update({
+                            "entry_price": _ep2,
+                            "shares"     : _sh2,
+                            "dollars"    : round(_ep2 * _sh2, 2),
+                        }).eq("id", _row_id).execute()
+                    st.session_state.pop("sp_open_ids", None)
+                    st.success("Saved.")
+                    st.rerun()
+                except Exception as _save_err:
+                    st.error(f"Save failed: {_save_err}")
 
             # Read-only summary with live prices and computed P&L
             _summary_rows = []
