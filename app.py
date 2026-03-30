@@ -177,8 +177,8 @@ if not _client.dry_run:
             # Only show crypto positions in this dashboard
             if not _tkr or not (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH")):
                 continue
-            # position_fp is fixed-point × 100; fall back to position (integer)
-            _net_pos = _pos.get("position") or round(float(_pos.get("position_fp", 0) or 0) / 100)
+            # Match monitor.py: position_fp is same scale as position (no /100 needed)
+            _net_pos = _pos.get("position") or round(float(_pos.get("position_fp", 0) or 0))
             _side  = "yes" if _net_pos > 0 else "no"
             _local = _local_by_ticker.get(_tkr, {})
             _mkt   = _client.get_market(_tkr)
