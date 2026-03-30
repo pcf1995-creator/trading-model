@@ -32,12 +32,12 @@ warnings.filterwarnings("ignore")
 POSITIONS_FILE  = "positions.json"
 SUMMARY_FILE    = "ticker_summary.csv"
 MAX_POSITIONS   = 8
-STOP_LOSS_PCT   = 0.03    # 3% hard stop
+STOP_LOSS_PCT   = 0.02    # 2% hard stop (checked at EOD close)
 HOLD_DAYS       = 5       # trading days
 HISTORY_DAYS    = 300     # enough for 200-day MA + buffer
 DEFAULT_CAPITAL = 10_000
 MIN_ROC_AUC     = 0.55    # only trade tickers with CV ROC-AUC above this
-MIN_PROB        = 0.50    # only buy when model is majority-confident
+MIN_PROB        = 0.60    # break-even at 60% with symmetric 2%/2% win/loss
 # ──────────────────────────────────────────────────────────────────────────────
 
 

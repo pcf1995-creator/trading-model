@@ -1183,11 +1183,10 @@ with tab_dash:
                 elif not buy_signals:
                     st.info(f"No buy signals today. ({models_found}/{len(eligible)} models scanned)")
                 else:
-                    # Kelly sizing: win=+2%, loss=-3% stop → b=2/3
-                    # kelly_f = (p*b - q) / b  →  clamp 0..1, scale to budget
+                    # Kelly sizing: win=+2%, loss=-2% stop (symmetric) → b=1
+                    # kelly_f = 2p - 1  →  clamp 0..1, scale to budget
                     def _kelly_alloc(prob, budget):
-                        b = 2 / 3
-                        f = max(0.0, (prob * b - (1 - prob)) / b)
+                        f = max(0.0, 2 * prob - 1.0)
                         return round(f * budget, 0)
 
                     total_kelly = sum(_kelly_alloc(s["prob"], stock_budget) for s in buy_signals)
@@ -1211,7 +1210,7 @@ with tab_dash:
                         f"Scanned {len(eligible)} tickers · {models_found} scored · "
                         f"Prob = chance of +2% in 5 days · "
                         f"Edge = prob minus per-ticker signal threshold · "
-                        f"Suggested $ uses fractional Kelly (win +2% / stop −3%)"
+                        f"Suggested $ uses fractional Kelly (win +2% / stop −2%, min prob 60%)"
                     )
 
         except Exception as e:
