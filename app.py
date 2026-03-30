@@ -177,23 +177,29 @@ if not _client.dry_run:
             # Only show crypto positions in this dashboard
             if not _tkr or not (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH")):
                 continue
-            _side  = "yes" if _pos.get("position", 0) > 0 else "no"
+            # position_fp is fixed-point × 100; fall back to position (integer)
+            _net_pos = _pos.get("position") or round(float(_pos.get("position_fp", 0) or 0) / 100)
+            _side  = "yes" if _net_pos > 0 else "no"
             _local = _local_by_ticker.get(_tkr, {})
             _mkt   = _client.get_market(_tkr)
             _hrs   = hours_left(_mkt.get("close_time", ""))
-            # Use saved entry; fall back to current live bid as proxy
+            # Use saved entry if present and non-zero; fall back to current live bid as proxy
             _proxy_entry = get_bid_cents(_mkt, _side) or 0
-            _entry = _local.get("entry_cents") or _proxy_entry
-            # Use saved stop; fall back to 50% of entry
-            _stop  = _local.get("stop_cents") or round(_entry * 0.5)
+            _saved_entry = _local.get("entry_cents")
+            _entry = _saved_entry if _saved_entry else _proxy_entry
+            # Use saved stop if present and non-zero; fall back to 50% of entry
+            _saved_stop = _local.get("stop_cents")
+            _stop = _saved_stop if _saved_stop else round(_entry * 0.5)
+            _api_contracts = abs(_net_pos) if _net_pos != 0 else 1
             _all_api.append({
                 "ticker"      : _tkr,
                 "status"      : "open",
                 "side"        : _side,
                 # Prefer manually saved contracts; fall back to API position count
-                "contracts"   : _local.get("contracts", abs(_pos.get("position", 1))),
+                "contracts"   : _local.get("contracts") or _api_contracts,
                 "entry_cents" : _entry,
                 "stop_cents"  : _stop,
+                "_entry_proxy": not bool(_saved_entry),
                 "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
                 "_hrs"        : _hrs,
             })
@@ -228,6 +234,7 @@ if open_kalshi:
 
         bet_dollars  = entry * contracts / 100
         stop_dollars = stop * contracts / 100
+        entry_proxy  = p.get("_entry_proxy", False)
         rows.append({
             "Ticker"   : ticker,
             "Asset"    : asset,
@@ -236,7 +243,7 @@ if open_kalshi:
                           else f"{hrs:.0f}h" if hrs is not None else "—"),
             "Contracts": contracts,
             "Entry ¢"  : entry,
-            "Bet $"    : f"${bet_dollars:.2f}",
+            "Bet $"    : f"~${bet_dollars:.2f}" if entry_proxy else f"${bet_dollars:.2f}",
             "Stop ¢"   : stop,
             "Stop $"   : f"${stop_dollars:.2f}",
             "Live Bid" : f"{current}¢ ({'NO' if p.get('side','yes').lower()=='no' else 'YES'})" if current is not None else "—",
