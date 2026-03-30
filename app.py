@@ -545,9 +545,19 @@ if closed_kalshi:
                     "Result"        : result or "—",
                 })
             st.dataframe(pd.DataFrame(debug_rows), hide_index=True, use_container_width=True)
-            if _raw_sample:
-                st.caption("Most recent raw fill:")
-                st.json(_raw_sample)
+
+            st.caption("Raw fills per ticker (expand to diagnose wrong P&L):")
+            for _tkr, _tkr_fills in _by_ticker.items():
+                with st.expander(_tkr):
+                    st.json([{
+                        "ts"           : f.get("ts") or f.get("created_time"),
+                        "action"       : f.get("action"),
+                        "side"         : f.get("side"),
+                        "count"        : _fill_count(f),
+                        "yes_price"    : _price_dollars(f, "yes_price"),
+                        "no_price"     : _price_dollars(f, "no_price"),
+                    } for f in sorted(_tkr_fills,
+                                      key=lambda f: f.get("ts") or f.get("created_time", ""))])
 
 st.divider()
 
