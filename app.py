@@ -1140,6 +1140,13 @@ with tab_dash:
             pm = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(pm)
 
+            # Debug: show Supabase connection status
+            _sb_client = db._get_client()
+            if _sb_client is None:
+                st.warning("Supabase not connected — check SUPABASE_URL / SUPABASE_KEY in Streamlit secrets.")
+            else:
+                st.caption(f"Supabase connected. Cache dir: {db._MODEL_CACHE_DIR}")
+
             summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
             if summary_path is None:
                 st.error("No ticker_summary.csv found. Run features.py or upload to Supabase Storage.")
@@ -1150,13 +1157,16 @@ with tab_dash:
                 eligible   = [t for t in summary["Ticker"]
                               if roc_map.get(t, 0) >= pm.MIN_ROC_AUC]
 
+                st.caption(f"{len(eligible)} eligible tickers. Downloading models from Supabase...")
                 signals = []
+                download_errors = []
                 prog = st.progress(0, text="Scanning...")
                 for i, ticker in enumerate(eligible):
                     prog.progress((i + 1) / len(eligible), text=f"Scanning {ticker}...")
                     model_path    = db.get_stock_file(f"model_{ticker}.joblib", ROOT)
                     features_path = db.get_stock_file(f"features_{ticker}.csv", ROOT)
                     if model_path is None or features_path is None:
+                        download_errors.append(ticker)
                         continue
                     model         = joblib.load(model_path)
                     feature_names = pd.read_csv(features_path, header=None)[0].tolist()
@@ -1165,6 +1175,8 @@ with tab_dash:
                     if result:
                         signals.append(result)
                 prog.empty()
+                if download_errors:
+                    st.warning(f"Failed to load models for {len(download_errors)}/{len(eligible)} tickers: {', '.join(download_errors[:5])}{'...' if len(download_errors) > 5 else ''}")
 
                 buy_signals = sorted(
                     [s for s in signals if s["signal"] and s["prob"] >= pm.MIN_PROB],
