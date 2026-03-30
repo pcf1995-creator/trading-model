@@ -1182,63 +1182,70 @@ with tab_dash:
                                "Run the scan locally with `streamlit run app.py`.")
                 elif not buy_signals:
                     st.info(f"No buy signals today. ({models_found}/{len(eligible)} models scanned)")
+                    st.session_state["stock_scan_signals"] = []
                 else:
-                    # Kelly sizing: win=+2%, loss=-2% stop (symmetric) → b=1
-                    # kelly_f = 2p - 1  →  clamp 0..1, scale to budget
                     def _kelly_alloc(prob, budget):
                         f = max(0.0, 2 * prob - 1.0)
                         return round(f * budget, 0)
 
                     total_kelly = sum(_kelly_alloc(s["prob"], stock_budget) for s in buy_signals)
-                    # Scale down if total exceeds budget
                     scale = min(1.0, stock_budget / total_kelly) if total_kelly > 0 else 1.0
 
-                    scan_rows = []
-                    for s in buy_signals:
-                        alloc = _kelly_alloc(s["prob"], stock_budget) * scale
-                        shares = int(alloc / s["close"]) if s["close"] > 0 else 0
-                        scan_rows.append({
-                            "Ticker"    : s["ticker"],
-                            "Close"     : f"${s['close']:.2f}",
-                            "Prob ≥2%"  : f"{s['prob']*100:.1f}%",
-                            "Edge"      : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
-                            "Suggested $": f"${alloc:,.0f}",
-                            "~Shares"   : shares if shares > 0 else "<1",
-                        })
-                    st.dataframe(pd.DataFrame(scan_rows), use_container_width=True, hide_index=True)
-                    st.caption(
-                        f"Scanned {len(eligible)} tickers · {models_found} scored · "
-                        f"Prob = chance of +2% in 5 days · "
-                        f"Edge = prob minus per-ticker signal threshold · "
-                        f"Suggested $ uses fractional Kelly (win +2% / stop −2%, min prob 60%)"
-                    )
-                    st.write("")
-                    for s in buy_signals:
-                        alloc_s = _kelly_alloc(s["prob"], stock_budget) * scale
-                        shares_s = int(alloc_s / s["close"]) if s["close"] > 0 else 0
-                        if st.button(f"📝 Paper Trade {s['ticker']}", key=f"pt_stock_{s['ticker']}"):
-                            import uuid
-                            db.add_stock_paper_trade({
-                                "id"          : str(uuid.uuid4()),
-                                "ticker"      : s["ticker"],
-                                "entry_price" : s["close"],
-                                "entry_date"  : s["date"],
-                                "shares"      : shares_s,
-                                "dollars"     : round(shares_s * s["close"], 2),
-                                "model_prob"  : s["prob"],
-                                "status"      : "open",
-                                "exit_reason" : None,
-                                "exit_price"  : None,
-                                "exit_date"   : None,
-                                "pnl_dollars" : None,
-                                "pnl_pct"     : None,
-                                "placed_at"   : datetime.now(timezone.utc).isoformat(),
-                            })
-                            st.success(f"Paper trade recorded: {s['ticker']} @ ${s['close']:.2f} × {shares_s} shares (${alloc_s*scale:.0f})")
+                    # Save to session state so paper trade buttons survive the rerun
+                    st.session_state["stock_scan_signals"] = [
+                        {**s, "alloc": _kelly_alloc(s["prob"], stock_budget) * scale,
+                         "shares": int(_kelly_alloc(s["prob"], stock_budget) * scale / s["close"])
+                                   if s["close"] > 0 else 0}
+                        for s in buy_signals
+                    ]
+                    st.session_state["stock_scan_eligible"] = len(eligible)
+                    st.session_state["stock_scan_scored"]   = models_found
 
         except Exception as e:
             st.error(f"Stock scan error: {e}")
             import traceback; st.code(traceback.format_exc())
+
+    # Render scan results + paper trade buttons from session state (persists across reruns)
+    if "stock_scan_signals" in st.session_state and st.session_state["stock_scan_signals"]:
+        _ss = st.session_state["stock_scan_signals"]
+        scan_rows = [{
+            "Ticker"     : s["ticker"],
+            "Close"      : f"${s['close']:.2f}",
+            "Prob ≥2%"   : f"{s['prob']*100:.1f}%",
+            "Edge"       : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
+            "Suggested $": f"${s['alloc']:,.0f}",
+            "~Shares"    : s["shares"] if s["shares"] > 0 else "<1",
+        } for s in _ss]
+        st.dataframe(pd.DataFrame(scan_rows), use_container_width=True, hide_index=True)
+        st.caption(
+            f"Scanned {st.session_state.get('stock_scan_eligible','?')} tickers · "
+            f"{st.session_state.get('stock_scan_scored','?')} scored · "
+            f"Prob = chance of +2% in 5 days · "
+            f"Edge = prob minus per-ticker signal threshold · "
+            f"Suggested $ uses fractional Kelly (win +2% / stop −2%, min prob 60%)"
+        )
+        st.write("")
+        for s in _ss:
+            if st.button(f"📝 Paper Trade {s['ticker']}", key=f"pt_stock_{s['ticker']}"):
+                import uuid
+                db.add_stock_paper_trade({
+                    "id"         : str(uuid.uuid4()),
+                    "ticker"     : s["ticker"],
+                    "entry_price": s["close"],
+                    "entry_date" : s["date"],
+                    "shares"     : s["shares"],
+                    "dollars"    : round(s["shares"] * s["close"], 2),
+                    "model_prob" : s["prob"],
+                    "status"     : "open",
+                    "exit_reason": None,
+                    "exit_price" : None,
+                    "exit_date"  : None,
+                    "pnl_dollars": None,
+                    "pnl_pct"    : None,
+                    "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                })
+                st.success(f"Recorded: {s['ticker']} @ ${s['close']:.2f} × {s['shares']} shares (${s['alloc']:.0f})")
+                st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
     st.divider()
