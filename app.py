@@ -1121,7 +1121,11 @@ with tab_dash:
     # STOCKS — SCAN
     # ══════════════════════════════════════════════════════════════════════════════
     st.header("Stocks — Daily Scan")
-    st.caption("Top 5 buy signals from the Random Forest model.")
+    st.caption("Top 5 buy signals from the Random Forest model. "
+               "Prob = model's confidence stock closes ≥2% higher in 5 trading days.")
+
+    stock_budget = st.number_input("Weekly stock budget ($)", min_value=100, max_value=100_000,
+                                   value=2_000, step=100, key="stock_budget")
 
     if st.button("Run Stock Scan", type="primary", key="scan_stocks"):
         try:
@@ -1140,33 +1144,23 @@ with tab_dash:
             pm = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(pm)
 
-            # Debug: show Supabase connection status
-            _sb_client = db._get_client()
-            if _sb_client is None:
-                st.warning("Supabase not connected — check SUPABASE_URL / SUPABASE_KEY in Streamlit secrets.")
-            else:
-                st.caption(f"Supabase connected. Cache dir: {db._MODEL_CACHE_DIR}")
-
             summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
             if summary_path is None:
-                st.error("No ticker_summary.csv found. Run features.py or upload to Supabase Storage.")
+                st.error("No ticker_summary.csv found.")
             else:
-                summary   = pd.read_csv(summary_path)
+                summary    = pd.read_csv(summary_path)
                 thresh_map = dict(zip(summary["Ticker"], summary["CV_Threshold"]))
                 roc_map    = dict(zip(summary["Ticker"], summary["CV_ROC_AUC"]))
                 eligible   = [t for t in summary["Ticker"]
                               if roc_map.get(t, 0) >= pm.MIN_ROC_AUC]
 
-                st.caption(f"{len(eligible)} eligible tickers. Downloading models from Supabase...")
                 signals = []
-                download_errors = []
                 prog = st.progress(0, text="Scanning...")
                 for i, ticker in enumerate(eligible):
                     prog.progress((i + 1) / len(eligible), text=f"Scanning {ticker}...")
                     model_path    = db.get_stock_file(f"model_{ticker}.joblib", ROOT)
                     features_path = db.get_stock_file(f"features_{ticker}.csv", ROOT)
                     if model_path is None or features_path is None:
-                        download_errors.append(ticker)
                         continue
                     model         = joblib.load(model_path)
                     feature_names = pd.read_csv(features_path, header=None)[0].tolist()
@@ -1175,19 +1169,13 @@ with tab_dash:
                     if result:
                         signals.append(result)
                 prog.empty()
-                if download_errors:
-                    st.warning(f"Failed to load models for {len(download_errors)}/{len(eligible)} tickers: {', '.join(download_errors[:5])}{'...' if len(download_errors) > 5 else ''}")
 
                 buy_signals = sorted(
                     [s for s in signals if s["signal"] and s["prob"] >= pm.MIN_PROB],
                     key=lambda x: x["prob"], reverse=True,
                 )[:5]
 
-                def _model_available(ticker):
-                    if (ROOT / f"model_{ticker}.joblib").exists():
-                        return True
-                    return (db._MODEL_CACHE_DIR / f"model_{ticker}.joblib").exists()
-                models_found = sum(1 for t in eligible if _model_available(t))
+                models_found = len(signals)
                 if models_found == 0:
                     st.warning("No stock model files found on this server. "
                                "Stock models are trained locally and not deployed. "
@@ -1195,19 +1183,36 @@ with tab_dash:
                 elif not buy_signals:
                     st.info(f"No buy signals today. ({models_found}/{len(eligible)} models scanned)")
                 else:
-                    scan_rows = [
-                        {
-                            "Ticker"   : s["ticker"],
-                            "Close $"  : f"${s['close']:.2f}",
-                            "Prob"     : f"{s['prob']*100:.1f}%",
-                            "Threshold": f"{s['threshold']*100:.0f}%",
-                            "Signal"   : "✓ BUY",
-                        }
-                        for s in buy_signals
-                    ]
-                    st.dataframe(pd.DataFrame(scan_rows), width="stretch", hide_index=True)
-                    st.caption(f"Scanned {len(eligible)} eligible tickers "
-                               f"({len(signals)} returned signals)")
+                    # Kelly sizing: win=+2%, loss=-3% stop → b=2/3
+                    # kelly_f = (p*b - q) / b  →  clamp 0..1, scale to budget
+                    def _kelly_alloc(prob, budget):
+                        b = 2 / 3
+                        f = max(0.0, (prob * b - (1 - prob)) / b)
+                        return round(f * budget, 0)
+
+                    total_kelly = sum(_kelly_alloc(s["prob"], stock_budget) for s in buy_signals)
+                    # Scale down if total exceeds budget
+                    scale = min(1.0, stock_budget / total_kelly) if total_kelly > 0 else 1.0
+
+                    scan_rows = []
+                    for s in buy_signals:
+                        alloc = _kelly_alloc(s["prob"], stock_budget) * scale
+                        shares = int(alloc / s["close"]) if s["close"] > 0 else 0
+                        scan_rows.append({
+                            "Ticker"    : s["ticker"],
+                            "Close"     : f"${s['close']:.2f}",
+                            "Prob ≥2%"  : f"{s['prob']*100:.1f}%",
+                            "Edge"      : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
+                            "Suggested $": f"${alloc:,.0f}",
+                            "~Shares"   : shares if shares > 0 else "<1",
+                        })
+                    st.dataframe(pd.DataFrame(scan_rows), use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"Scanned {len(eligible)} tickers · {models_found} scored · "
+                        f"Prob = chance of +2% in 5 days · "
+                        f"Edge = prob minus per-ticker signal threshold · "
+                        f"Suggested $ uses fractional Kelly (win +2% / stop −3%)"
+                    )
 
         except Exception as e:
             st.error(f"Stock scan error: {e}")
