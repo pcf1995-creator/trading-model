@@ -1335,28 +1335,45 @@ with tab_dash:
         # ── Open trades ──────────────────────────────────────────────────────
         if _open_sp:
             st.subheader(f"Open ({len(_open_sp)})")
-            _sp_open_rows = []
+            # Build rows keyed by id so we can match edits back to DB records
+            _cur_prices = {}
             for _sp in _open_sp:
-                _ep = float(_sp["entry_price"])
                 try:
-                    _cur = float(_closes[_sp["ticker"]].dropna().iloc[-1])
+                    _cur_prices[_sp["ticker"]] = float(_closes[_sp["ticker"]].dropna().iloc[-1])
                 except Exception:
-                    _cur = None
-                try:
-                    _entry_d = date.fromisoformat(_sp.get("entry_date", ""))
-                    _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
-                except Exception:
-                    _days = 0
-                _sp_open_rows.append({
-                    "_id"       : _sp["id"],
-                    "Ticker"    : _sp["ticker"],
-                    "Entry $"   : _ep,
-                    "Shares"    : int(_sp.get("shares", 0)),
-                    "Entry Date": _sp.get("entry_date", ""),
-                    "Cur Price" : round(_cur, 2) if _cur else None,
-                    "Days Held" : _days,
-                    "Prob"      : f"{_sp.get('model_prob', 0)*100:.1f}%",
-                })
+                    _cur_prices[_sp["ticker"]] = None
+
+            # Only rebuild from DB when trade list changes (new trade added / settled)
+            _sp_ids = tuple(t["id"] for t in _open_sp)
+            if st.session_state.get("sp_open_ids") != _sp_ids:
+                st.session_state["sp_open_ids"] = _sp_ids
+                _sp_open_rows = []
+                for _sp in _open_sp:
+                    _ep = float(_sp["entry_price"])
+                    _cur = _cur_prices.get(_sp["ticker"])
+                    try:
+                        _entry_d = date.fromisoformat(_sp.get("entry_date", ""))
+                        _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
+                    except Exception:
+                        _days = 0
+                    _sp_open_rows.append({
+                        "_id"       : _sp["id"],
+                        "Ticker"    : _sp["ticker"],
+                        "Entry $"   : _ep,
+                        "Shares"    : float(_sp.get("shares") or 0),
+                        "Entry Date": _sp.get("entry_date", ""),
+                        "Cur Price" : round(_cur, 2) if _cur else None,
+                        "Days Held" : _days,
+                        "Prob"      : f"{_sp.get('model_prob', 0)*100:.1f}%",
+                    })
+                st.session_state["sp_open_rows"] = _sp_open_rows
+            else:
+                _sp_open_rows = st.session_state["sp_open_rows"]
+                # Update live prices without resetting editable fields
+                for row in _sp_open_rows:
+                    _cur = _cur_prices.get(row["Ticker"])
+                    row["Cur Price"] = round(_cur, 2) if _cur else None
+
             _sp_df = pd.DataFrame(_sp_open_rows)
             _edited_sp = st.data_editor(
                 _sp_df,
@@ -1405,6 +1422,7 @@ with tab_dash:
                         "shares"     : _sh2,
                         "dollars"    : round(_ep2 * _sh2, 2),
                     }).eq("id", _sp_open_rows[i]["_id"]).execute()
+                st.session_state.pop("sp_open_ids", None)  # force reload on next run
                 st.success("Saved.")
                 st.rerun()
 
