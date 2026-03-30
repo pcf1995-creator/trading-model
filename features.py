@@ -99,6 +99,8 @@ def download_data(ticker: str, period: str) -> pd.DataFrame:
 # ── Helper: Wilder smoothing (used in RSI, ATR, ADX) ─────────────────────────
 def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
     result = series.copy() * np.nan
+    if len(series) < period:
+        return result
     result.iloc[period - 1] = series.iloc[:period].mean()
     for i in range(period, len(series)):
         result.iloc[i] = result.iloc[i - 1] * (1 - 1 / period) + series.iloc[i] / period
