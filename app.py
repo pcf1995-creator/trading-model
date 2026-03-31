@@ -1078,18 +1078,22 @@ with tab_dash:
 
             _bk_rows = []
             for _b, _bps in sorted(_buckets.items()):
-                _bwins = sum(1 for p in _bps if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
-                _bpnl  = sum(p.get("pnl_dollars", 0) for p in _bps)
-                _bpred = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
+                # yes_rate: market settled YES — matches what cal_prob predicts
+                _byes    = sum(1 for p in _bps if p.get("result", "").lower() == "yes")
+                # profit_rate: trade was profitable (accounts for NO-side bets)
+                _bwins   = sum(1 for p in _bps if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
+                _bpnl    = sum(p.get("pnl_dollars", 0) for p in _bps)
+                _bpred   = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
                 _avg_pnl = _bpnl / len(_bps)
                 _bk_rows.append({
-                    "Bucket"         : _b,
-                    "Trades"         : len(_bps),
-                    "Actual Win Rate": f"{_bwins/len(_bps):.0%}",
-                    "Pred Win Rate"  : f"{_bpred:.0%}",
-                    "Edge"           : f"{(_bwins/len(_bps) - _bpred)*100:+.1f}pp",
-                    "Total P&L"      : f"${_bpnl:+.2f}",
-                    "Avg P&L/Trade"  : f"${_avg_pnl:+.2f}",
+                    "Bucket"       : _b,
+                    "Trades"       : len(_bps),
+                    "Profit Rate"  : f"{_bwins/len(_bps):.0%}",
+                    "YES Rate"     : f"{_byes/len(_bps):.0%}",
+                    "Pred YES Rate": f"{_bpred:.0%}",
+                    "Edge"         : f"{(_byes/len(_bps) - _bpred)*100:+.1f}pp",
+                    "Total P&L"    : f"${_bpnl:+.2f}",
+                    "Avg P&L/Trade": f"${_avg_pnl:+.2f}",
                 })
             st.dataframe(
                 pd.DataFrame(_bk_rows).style.map(
@@ -1102,13 +1106,14 @@ with tab_dash:
 
             # Overall totals
             _wins      = sum(1 for p in _resolved if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
+            _yes_rate  = sum(1 for p in _resolved if p.get("result", "").lower() == "yes") / len(_resolved)
             _total_pnl = sum(p.get("pnl_dollars", 0) for p in _resolved)
             _pred_wr   = sum(p.get("cal_prob", 0.5) for p in _resolved) / len(_resolved)
             _c1, _c2, _c3, _c4 = st.columns(4)
             _c1.metric("Total Settled", len(_resolved))
-            _c2.metric("Overall Win Rate", f"{_wins/len(_resolved):.0%}")
-            _c3.metric("Predicted Win Rate", f"{_pred_wr:.0%}",
-                       delta=f"{(_wins/len(_resolved) - _pred_wr)*100:+.1f}pp")
+            _c2.metric("Profit Rate", f"{_wins/len(_resolved):.0%}")
+            _c3.metric("YES Rate vs Predicted", f"{_yes_rate:.0%}",
+                       delta=f"{(_yes_rate - _pred_wr)*100:+.1f}pp")
             _c4.metric("Total P&L", f"${_total_pnl:+.2f}")
 
     st.divider()
