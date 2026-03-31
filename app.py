@@ -1078,7 +1078,7 @@ with tab_dash:
 
             _bk_rows = []
             for _b, _bps in sorted(_buckets.items()):
-                _bwins = sum(1 for p in _bps if p.get("pnl_dollars", 0) > 0)
+                _bwins = sum(1 for p in _bps if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
                 _bpnl  = sum(p.get("pnl_dollars", 0) for p in _bps)
                 _bpred = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
                 _avg_pnl = _bpnl / len(_bps)
@@ -1101,7 +1101,7 @@ with tab_dash:
             )
 
             # Overall totals
-            _wins      = sum(1 for p in _resolved if p.get("pnl_dollars", 0) > 0)
+            _wins      = sum(1 for p in _resolved if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
             _total_pnl = sum(p.get("pnl_dollars", 0) for p in _resolved)
             _pred_wr   = sum(p.get("cal_prob", 0.5) for p in _resolved) / len(_resolved)
             _c1, _c2, _c3, _c4 = st.columns(4)

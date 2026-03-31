@@ -515,7 +515,7 @@ def recalibrate_from_paper_trades(paper_trades_path: str) -> dict:
     now_utc  = datetime.now(timezone.utc)
     buckets  = {}
 
-    for bucket in ("daily", "intraday"):
+    for bucket in ("daily", "weekly"):
         bt = [t for t in settled if t.get("bucket") == bucket]
         if len(bt) < 5:
             buckets[bucket] = {"skipped": True, "reason": f"Only {len(bt)} settled trades (need ≥5)"}
