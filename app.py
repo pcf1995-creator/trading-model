@@ -1407,12 +1407,21 @@ with tab_dash:
                         _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
                     except Exception:
                         _days = 0
+                    _placed = _sp.get("placed_at", "")
+                    try:
+                        _placed_dt = datetime.fromisoformat(_placed.replace("Z", "+00:00"))
+                        from zoneinfo import ZoneInfo
+                        _placed_et = _placed_dt.astimezone(ZoneInfo("America/New_York"))
+                        _placed_str = _placed_et.strftime("%m/%d %I:%M %p ET")
+                    except Exception:
+                        _placed_str = _placed[:16] if _placed else "—"
                     _sp_open_rows.append({
                         "_id"       : _sp["id"],
                         "Ticker"    : _sp["ticker"],
                         "Entry $"   : _ep,
                         "Shares"    : float(_sp.get("shares") or 0),
                         "Entry Date": _sp.get("entry_date", ""),
+                        "Entered"   : _placed_str,
                         "Cur Price" : round(_cur, 2) if _cur else None,
                         "Days Held" : _days,
                         "Prob"      : f"{_sp.get('model_prob', 0)*100:.1f}%",
@@ -1467,6 +1476,7 @@ with tab_dash:
                 _orig = _sp_open_rows[i]
                 _summary_rows.append({
                     "Ticker"    : row["Ticker"],
+                    "Entered"   : _orig["Entered"],
                     "Entry $"   : f"${_ep2:.2f}",
                     "Shares"    : f"{_sh2:.2f}",
                     "Invested"  : f"${_inv:.2f}",
