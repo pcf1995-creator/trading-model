@@ -1279,13 +1279,18 @@ with tab_dash:
         for s in _ss:
             if st.button(f"📝 Paper Trade {s['ticker']}", key=f"pt_stock_{s['ticker']}"):
                 import uuid, traceback as _tb
+                try:
+                    _live = yf.Ticker(s["ticker"]).fast_info
+                    _live_price = round(float(_live["lastPrice"]), 2)
+                except Exception:
+                    _live_price = s["close"]
                 _trade = {
                     "id"         : str(uuid.uuid4()),
                     "ticker"     : s["ticker"],
-                    "entry_price": s["close"],
-                    "entry_date" : s["date"],
+                    "entry_price": _live_price,
+                    "entry_date" : date.today().isoformat(),
                     "shares"     : s["shares"],
-                    "dollars"    : round(s["shares"] * s["close"], 2),
+                    "dollars"    : round(s["shares"] * _live_price, 2),
                     "model_prob" : s["prob"],
                     "status"     : "open",
                     "exit_reason": None,
