@@ -1058,10 +1058,14 @@ with tab_dash:
                 ) / len(_bps)
                 _bet_tot = sum(p.get("bet_dollars", 0) for p in _bps)
                 _ob_rows.append({
-                    "Bucket"        : _b,
-                    "Open Trades"   : len(_bps),
-                    "Proj Win Rate" : f"{_proj_wr:.0%}",
-                    "Total Bet $"   : f"${_bet_tot:.0f}",
+                    "Bucket"         : _b,
+                    "Trades"         : len(_bps),
+                    "Actual Win Rate": "—",
+                    "Proj Win Rate"  : f"{_proj_wr:.0%}",
+                    "Edge"           : "—",
+                    "Total P&L"      : "—",
+                    "Avg P&L/Trade"  : "—",
+                    "Total Bet $"    : f"${_bet_tot:.0f}",
                 })
             st.dataframe(pd.DataFrame(_ob_rows), hide_index=True, use_container_width=True)
 
