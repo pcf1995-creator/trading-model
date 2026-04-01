@@ -835,14 +835,21 @@ with tab_dash:
                 under24 = [r for r in all_results if r["hours_to_expiry"] <= 24]
                 over24  = [r for r in all_results if r["hours_to_expiry"] > 24]
 
-                st.session_state["scan_daily_port"]  = build_bucket(under24, DAILY_BUDGET)
-                st.session_state["scan_weekly_port"] = build_bucket(over24,  WEEKLY_BUDGET)
+                _daily_port  = build_bucket(under24, DAILY_BUDGET)
+                _weekly_port = build_bucket(over24,  WEEKLY_BUDGET)
+                st.session_state["scan_daily_port"]  = _daily_port
+                st.session_state["scan_weekly_port"] = _weekly_port
                 st.session_state["scan_under24"]     = under24
                 st.session_state["scan_over24"]      = over24
                 st.session_state["scan_debug"]       = (
                     " · ".join(scan_debug)
                     + f" · {len(all_results)//2} contracts · {len(all_results)} sides scored"
                 )
+                # Auto-record all scan results as paper trades
+                if _daily_port:
+                    save_paper_trades(_daily_port, "daily")
+                if _weekly_port:
+                    save_paper_trades(_weekly_port, "weekly")
 
         except Exception as e:
             st.error(f"Scan error: {e}")
@@ -861,8 +868,6 @@ with tab_dash:
         st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (≤24h)")
         if daily_port:
             st.dataframe(make_portfolio_table(daily_port), use_container_width=True, hide_index=True)
-            if st.button("📝 Paper Trade Daily Plays", key="paper_daily"):
-                save_paper_trades(daily_port, "daily")
         else:
             st.info("No daily contracts meet the thresholds right now.")
 
@@ -870,8 +875,6 @@ with tab_dash:
         st.subheader(f"Weekly Plays — ${WEEKLY_BUDGET:.0f} budget (>24h)")
         if weekly_port:
             st.dataframe(make_portfolio_table(weekly_port), use_container_width=True, hide_index=True)
-            if st.button("📝 Paper Trade Weekly Plays", key="paper_weekly"):
-                save_paper_trades(weekly_port, "weekly")
         else:
             st.info("No weekly contracts available right now.")
 
