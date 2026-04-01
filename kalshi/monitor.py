@@ -41,6 +41,16 @@ def load_positions() -> list[dict]:
 def save_positions(positions: list[dict]) -> None:
     with open(POSITIONS_FILE, "w") as f:
         json.dump(positions, f, indent=2)
+    # Also sync open positions to Supabase so the dashboard picks them up
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import db
+        open_pos = {p["ticker"]: p for p in positions if p.get("status") == "open"}
+        if open_pos:
+            db.save_position_overrides(open_pos)
+    except Exception as _e:
+        logger.warning(f"Could not sync positions to Supabase: {_e}")
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
