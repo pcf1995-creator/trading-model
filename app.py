@@ -498,6 +498,40 @@ with tab_dash:
         need_settlement = tuple(p["ticker"] for p in closed_kalshi)
         settlement_map  = fetch_settlements(need_settlement) if need_settlement else {}
 
+        # ── Auto-settle matching paper trades ─────────────────────────────────
+        _open_pts      = [t for t in db.load_paper_trades() if t.get("status") == "open"]
+        _open_pt_map   = {t["ticker"]: t for t in _open_pts}
+        _auto_settled  = 0
+        for _cp in closed_kalshi:
+            _tkr  = _cp["ticker"]
+            _pt   = _open_pt_map.get(_tkr)
+            if not _pt:
+                continue
+            _buy_cost  = _cp.get("buy_cost", 0)
+            _sell_proc = _cp.get("sell_proceeds", 0)
+            _remaining = _cp.get("rem_yes", 0) + _cp.get("rem_no", 0)
+            _total     = _cp.get("contracts", 1)
+            _result    = settlement_map.get(_tkr)  # "yes" / "no" / None
+            # Determine settlement value for any remaining contracts
+            if _result is not None and _remaining > 0:
+                _side = _cp.get("side", "yes")
+                _settle_val = _remaining * 1.0 if (
+                    (_side == "yes" and _result == "yes") or
+                    (_side == "no"  and _result == "no")
+                ) else 0.0
+                _pnl = round(_sell_proc - _buy_cost + _settle_val, 2)
+            elif _remaining == 0:
+                _pnl = round(_sell_proc - _buy_cost, 2)
+                _result = _result  # keep if known, else None
+            else:
+                continue  # still open contracts, can't settle yet
+            # Use market result if known; otherwise infer from P&L
+            _pt_result = _result if _result in ("yes", "no") else ("yes" if _pnl > 0 else "no")
+            db.settle_paper_trade(_pt["id"], _pt_result, _pnl)
+            _auto_settled += 1
+        if _auto_settled:
+            st.toast(f"Auto-settled {_auto_settled} paper trade(s) from fills.", icon="✅")
+
         with st.expander(f"Closed / Settled Positions ({len(closed_kalshi)})"):
 
             rows = []
