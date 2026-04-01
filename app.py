@@ -197,7 +197,10 @@ with tab_dash:
                 if not _tkr or not (_tkr.startswith("KXBTC") or _tkr.startswith("KXETH")):
                     continue
                 # Match monitor.py: position_fp is same scale as position (no /100 needed)
-                _net_pos = _pos.get("position") or round(float(_pos.get("position_fp", 0) or 0))
+                _pos_val = _pos.get("position")
+                _net_pos = _pos_val if _pos_val is not None else round(float(_pos.get("position_fp", 0) or 0))
+                if _net_pos == 0:
+                    continue  # fully closed position, skip
                 _side  = "yes" if _net_pos > 0 else "no"
                 _local = _local_by_ticker.get(_tkr, {})
                 _mkt   = _client.get_market(_tkr)
