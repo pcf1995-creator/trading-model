@@ -200,6 +200,47 @@ def sync_positions(client: KalshiClient) -> None:
         print(f"  Added: {ticker}  {side.upper()}  {contracts} contracts  "
               f"entry {entry_cents}¢ ({entry_source})  stop {position['stop_cents']}¢")
 
+        # Auto-create matching paper trade so real trades feed into calibration
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            import db as _db
+            _existing_pts = _db.load_paper_trades()
+            _already = any(t.get("ticker") == ticker and t.get("status") == "open"
+                           for t in _existing_pts)
+            if not _already:
+                # Estimate hours to expiry
+                _hrs_to_exp = None
+                if close_time:
+                    try:
+                        from datetime import timezone as _tz
+                        _close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+                        _hrs_to_exp = (_close_dt - datetime.now(_tz.utc)).total_seconds() / 3600
+                    except Exception:
+                        pass
+                _bucket = "daily" if (_hrs_to_exp is not None and _hrs_to_exp <= 24) else "weekly"
+                _db.add_paper_trade({
+                    "ticker"      : ticker,
+                    "side"        : side,
+                    "price_cents" : entry_cents,
+                    "contracts"   : contracts,
+                    "bet_dollars" : round(contracts * entry_cents / 100, 2),
+                    "model_prob"  : 0.0,   # real trade — no model prob available
+                    "cal_prob"    : 0.0,
+                    "ev"          : 0.0,
+                    "hours_to_exp": _hrs_to_exp,
+                    "close_time"  : close_time,
+                    "bucket"      : _bucket,
+                    "placed_at"   : datetime.now(timezone.utc).isoformat(),
+                    "status"      : "open",
+                    "result"      : None,
+                    "pnl_dollars" : None,
+                    "real_trade"  : True,
+                })
+                print(f"  Paper trade created for {ticker} ({_bucket})")
+        except Exception as _e:
+            print(f"  Warning: could not create paper trade for {ticker}: {_e}")
+
     # Re-check entry price for existing open positions that used a proxy
     updated = 0
     for pos in existing:
