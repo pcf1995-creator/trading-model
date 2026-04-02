@@ -187,6 +187,37 @@ with tab_dash:
     _client          = make_kalshi_client()
     _local_by_ticker = db.load_position_overrides()   # {ticker: {entry_cents, stop_cents, contracts}}
 
+    # Pre-fetch fills to compute avg entry prices from actual buy fills
+    _fills_index: dict[str, dict] = {}   # ticker -> {yes: cents, no: cents}
+    if not _client.dry_run:
+        try:
+            _prefetch_fills = _client.get_fills(limit=2000)
+            _ticker_buy_fills: dict[str, list] = {}
+            for _pf in _prefetch_fills:
+                _pt = _pf.get("market_ticker") or _pf.get("ticker", "")
+                if _pt and (_pt.startswith("KXBTC") or _pt.startswith("KXETH")):
+                    _ticker_buy_fills.setdefault(_pt, []).append(_pf)
+            for _pt, _pf_list in _ticker_buy_fills.items():
+                _yes_cost = _yes_cnt = _no_cost = _no_cnt = 0.0
+                for _pf in _pf_list:
+                    if _pf.get("action", "buy") != "buy":
+                        continue
+                    _cnt = abs(float(_pf.get("count") or _pf.get("count_fp") or 0))
+                    _fside = _pf.get("side", "yes")
+                    _yp = float(_pf.get("yes_price_dollars") or _pf.get("yes_price") or 0)
+                    if _yp > 1: _yp /= 100
+                    _np = max(0.0, 1.0 - _yp) if _yp > 0 else 0.0
+                    if _fside == "yes":
+                        _yes_cost += _cnt * _yp; _yes_cnt += _cnt
+                    else:
+                        _no_cost += _cnt * _np; _no_cnt += _cnt
+                _fills_index[_pt] = {
+                    "yes": round(_yes_cost / _yes_cnt * 100) if _yes_cnt else None,
+                    "no":  round(_no_cost  / _no_cnt  * 100) if _no_cnt  else None,
+                }
+        except Exception:
+            pass
+
     if not _client.dry_run:
         try:
             _api_positions = _client.get_positions()
@@ -205,10 +236,11 @@ with tab_dash:
                 _local = _local_by_ticker.get(_tkr, {})
                 _mkt   = _client.get_market(_tkr)
                 _hrs   = hours_left(_mkt.get("close_time", ""))
-                # Use saved entry if present and non-zero; fall back to current live bid as proxy
-                _proxy_entry = get_bid_cents(_mkt, _side) or 0
+                # Priority: saved entry → fills-based avg → live bid proxy
                 _saved_entry = _local.get("entry_cents")
-                _entry = _saved_entry if _saved_entry else _proxy_entry
+                _fills_entry = _fills_index.get(_tkr, {}).get(_side)
+                _proxy_entry = get_bid_cents(_mkt, _side) or 0
+                _entry = _saved_entry if _saved_entry else (_fills_entry if _fills_entry else _proxy_entry)
                 # Use saved stop if present and non-zero; fall back to 50% of entry
                 _saved_stop = _local.get("stop_cents")
                 _stop = _saved_stop if _saved_stop else round(_entry * 0.5)
@@ -221,7 +253,7 @@ with tab_dash:
                     "contracts"   : _local.get("contracts") or _api_contracts,
                     "entry_cents" : _entry,
                     "stop_cents"  : _stop,
-                    "_entry_proxy": not bool(_saved_entry),
+                    "_entry_proxy": not bool(_saved_entry or _fills_entry),
                     "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
                     "_hrs"        : _hrs,
                 })
