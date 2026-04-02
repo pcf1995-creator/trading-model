@@ -300,7 +300,7 @@ class KalshiClient:
         fills  = []
         cursor = None
         while True:
-            params = {"limit": 1000}   # max per page
+            params = {"limit": 200}   # API max per page
             if cursor:
                 params["cursor"] = cursor
             data   = self._request("GET", "/portfolio/fills", params=params)

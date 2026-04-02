@@ -180,17 +180,25 @@ def close_stock_paper_trade(trade_id: str, exit_price: float, exit_date: str,
 # ── Position overrides ─────────────────────────────────────────────────────────
 def load_position_overrides() -> dict[str, dict]:
     """Returns {ticker: {ticker, contracts, entry_cents, stop_cents}}"""
+    # Always load local JSON as a fallback layer for missing field values
+    local_rows = _load_json(_POSITIONS_JSON)
+    local = {r["ticker"]: r for r in local_rows if isinstance(r, dict) and "ticker" in r}
+
     client = _get_client()
     if client:
         try:
             resp = client.table("position_overrides").select("*").execute()
-            return {row["ticker"]: row for row in (resp.data or [])}
+            remote = {row["ticker"]: row for row in (resp.data or [])}
+            # Fill in missing/zero entry_cents and stop_cents from local JSON
+            for ticker, row in remote.items():
+                if not row.get("entry_cents") and ticker in local:
+                    row["entry_cents"] = local[ticker].get("entry_cents", 0)
+                if not row.get("stop_cents") and ticker in local:
+                    row["stop_cents"] = local[ticker].get("stop_cents", 0)
+            return remote
         except Exception as e:
             logger.warning(f"load_position_overrides failed: {e}")
-    rows = _load_json(_POSITIONS_JSON)
-    if isinstance(rows, list):
-        return {r["ticker"]: r for r in rows if "ticker" in r}
-    return {}
+    return local
 
 
 def save_position_overrides(overrides: dict[str, dict]) -> None:
