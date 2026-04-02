@@ -776,18 +776,20 @@ with tab_dash:
     def make_portfolio_table(portfolio: list) -> pd.DataFrame:
         rows = []
         for p in portfolio:
+            sd = p.get("strike_distance")  # % from current price (+ = above, - = below)
             rows.append({
-                "Ticker"   : p["ticker"],
-                "Side"     : p["side"],
-                "Hrs Left" : (f"{int(p['hours_to_expiry'] * 60)}m"
-                              if p['hours_to_expiry'] < 1
-                              else f"{p['hours_to_expiry']:.0f}h"),
-                "Price"    : f"{p['price']}¢",
-                "Cal Prob" : f"{(1-p['calibrated_prob'] if p['side'].lower()=='no' else p['calibrated_prob'])*100:.1f}%",
-                "EV"       : f"{p['ev']:+.3f}",
-                "Bet $"    : f"${p['kelly_dollars']:.0f}",
-                "Contracts": p["contracts_suggested"],
-                "Model"    : p.get("model_type", "daily"),
+                "Ticker"      : p["ticker"],
+                "Side"        : p["side"],
+                "Hrs Left"    : (f"{int(p['hours_to_expiry'] * 60)}m"
+                                  if p['hours_to_expiry'] < 1
+                                  else f"{p['hours_to_expiry']:.0f}h"),
+                "% to Strike" : f"{sd:+.1f}%" if sd is not None else "—",
+                "Price"       : f"{p['price']}¢",
+                "Cal Prob"    : f"{(1-p['calibrated_prob'] if p['side'].lower()=='no' else p['calibrated_prob'])*100:.1f}%",
+                "EV"          : f"{p['ev']:+.3f}",
+                "Bet $"       : f"${p['kelly_dollars']:.0f}",
+                "Contracts"   : p["contracts_suggested"],
+                "Model"       : p.get("model_type", "daily"),
             })
         return pd.DataFrame(rows)
 
