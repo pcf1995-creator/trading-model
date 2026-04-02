@@ -447,6 +447,7 @@ with tab_dash:
         _total_bought_no  = 0.0
         _buy_cost      = 0.0
         _sell_proceeds = 0.0
+        _total_fees    = 0.0
 
         for _f in _sorted_fills:
             _cnt    = _fill_count(_f)
@@ -454,6 +455,23 @@ with tab_dash:
             _fside  = _f.get("side", "yes")
             _yp     = _price_dollars(_f, "yes_price")
             _np     = _no_price_dollars(_f)
+            # Accumulate fees (stored as dollars in fee / fee_dollars / fee_fp/100)
+            for _fee_field in ("fee", "fee_dollars"):
+                _fv = _f.get(_fee_field)
+                if _fv is not None:
+                    try:
+                        _fval = float(_fv)
+                        _total_fees += _fval / 100 if _fval > 1 else _fval
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            else:
+                _fee_fp = _f.get("fee_fp")
+                if _fee_fp is not None:
+                    try:
+                        _total_fees += float(_fee_fp) / 100
+                    except (ValueError, TypeError):
+                        pass
 
             if _act == "buy" and _fside == "yes":
                 _buy_cost += _cnt * _yp
@@ -486,6 +504,7 @@ with tab_dash:
             "rem_no"        : int(round(_rem_no)),
             "buy_cost"      : _buy_cost,
             "sell_proceeds" : _sell_proceeds,
+            "total_fees"    : round(_total_fees, 4),
             "entry_cents"   : round(_buy_cost / _total_bought * 100),
             "side"          : _primary_side,
             "status"        : "settled",
@@ -547,6 +566,7 @@ with tab_dash:
                 remaining = rem_yes + rem_no
                 buy_cost  = p.get("buy_cost", 0)
                 sell_proc = p.get("sell_proceeds", 0)
+                fees      = p.get("total_fees", 0)
                 entry     = p.get("entry_cents", 0)
                 result    = settlement_map.get(p["ticker"])
 
@@ -566,9 +586,9 @@ with tab_dash:
                     exit_label = "partial sell + " + (exit_label if settle_val is not None else "pending")
 
                 if settle_val is not None:
-                    pnl = sell_proc - buy_cost + settle_val
+                    pnl = sell_proc - buy_cost + settle_val - fees
                 elif remaining == 0:
-                    pnl = sell_proc - buy_cost
+                    pnl = sell_proc - buy_cost - fees
                     exit_label = "sold"
                 else:
                     pnl = None
@@ -591,6 +611,7 @@ with tab_dash:
                     "Entry ¢"  : entry,
                     "Exit ¢"   : exit_cents if exit_cents is not None else "—",
                     "Exit"     : exit_label,
+                    "Fees $"   : f"${fees:.2f}" if fees else "—",
                     "P&L $"    : (f"${pnl:+.2f}" if pnl is not None else "—"),
                 })
 
@@ -1623,12 +1644,13 @@ with tab_perf:
             remaining = rem_yes + rem_no
             buy_cost  = p.get("buy_cost", 0)
             sell_proc = p.get("sell_proceeds", 0)
+            fees      = p.get("total_fees", 0)
 
             if result is not None:
                 settle_val = (rem_yes if result == "yes" else 0) + (rem_no if result == "no" else 0)
-                pnl = sell_proc - buy_cost + settle_val
+                pnl = sell_proc - buy_cost + settle_val - fees
             elif remaining == 0:
-                pnl = sell_proc - buy_cost
+                pnl = sell_proc - buy_cost - fees
             else:
                 pnl = None
 
