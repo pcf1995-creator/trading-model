@@ -851,6 +851,7 @@ with tab_dash:
             from kalshi_crypto import (
                 load_crypto_models, score_contract,
                 download_crypto, download_crypto_hourly,
+                fetch_binance_minute_closes, BINANCE_SYMBOLS,
                 CRYPTO_ASSETS, KALSHI_SERIES, INFERENCE_PERIOD,
             )
 
@@ -872,9 +873,11 @@ with tab_dash:
                 asset_dfs_by_symbol = {}
                 with st.spinner("Fetching crypto prices..."):
                     for symbol in CRYPTO_ASSETS:
-                        daily_df  = download_crypto(symbol, INFERENCE_PERIOD)
-                        hourly_df = download_crypto_hourly(symbol) if has_intraday else None
-                        asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df}
+                        daily_df      = download_crypto(symbol, INFERENCE_PERIOD)
+                        hourly_df     = download_crypto_hourly(symbol) if has_intraday else None
+                        binance_sym   = BINANCE_SYMBOLS.get(symbol)
+                        minute_closes = fetch_binance_minute_closes(binance_sym) if binance_sym else []
+                        asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df, "minute": minute_closes}
 
                 all_results = []
                 scan_debug  = []
@@ -890,11 +893,14 @@ with tab_dash:
                                 scored += 1
                         scan_debug.append(f"{series}: {len(markets)} markets, {scored} scored")
 
-                under24 = [r for r in all_results if r["hours_to_expiry"] <= 24]
+                sub1hr  = [r for r in all_results if r["hours_to_expiry"] < 1]
+                under24 = [r for r in all_results if 1 <= r["hours_to_expiry"] <= 24]
                 over24  = [r for r in all_results if r["hours_to_expiry"] > 24]
 
+                _vol_port    = build_bucket(sub1hr,  20)
                 _daily_port  = build_bucket(under24, DAILY_BUDGET)
                 _weekly_port = build_bucket(over24,  WEEKLY_BUDGET)
+                st.session_state["scan_vol_port"]    = _vol_port
                 st.session_state["scan_daily_port"]  = _daily_port
                 st.session_state["scan_weekly_port"] = _weekly_port
                 st.session_state["scan_under24"]     = under24
@@ -903,7 +909,7 @@ with tab_dash:
                     " · ".join(scan_debug)
                     + f" · {len(all_results)//2} contracts · {len(all_results)} sides scored"
                 )
-                # Auto-record all scan results as paper trades
+                # Auto-record ML plays as paper trades; skip vol model (<1hr) — too noisy
                 if _daily_port:
                     save_paper_trades(_daily_port, "daily")
                 if _weekly_port:
@@ -915,6 +921,7 @@ with tab_dash:
 
     # ── Render scan results (persists across reruns via session_state) ─────────────
     if "scan_daily_port" in st.session_state:
+        vol_port    = st.session_state.get("scan_vol_port", [])
         daily_port  = st.session_state["scan_daily_port"]
         weekly_port = st.session_state["scan_weekly_port"]
         under24     = st.session_state["scan_under24"]
@@ -922,8 +929,16 @@ with tab_dash:
 
         st.caption(st.session_state.get("scan_debug", ""))
 
+        # ── Vol model plays (<1hr) ──
+        st.subheader("< 1hr Plays — $20 budget (vol model)")
+        st.caption("Priced via realized-vol binary option model (Binance 1m data). Not recorded as paper trades.")
+        if vol_port:
+            st.dataframe(make_portfolio_table(vol_port), use_container_width=True, hide_index=True)
+        else:
+            st.info("No <1hr vol model plays meet the thresholds right now.")
+
         # ── Daily plays ──
-        st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (≤24h)")
+        st.subheader(f"Daily Plays — ${DAILY_BUDGET:.0f} budget (1–24h)")
         if daily_port:
             st.dataframe(make_portfolio_table(daily_port), use_container_width=True, hide_index=True)
         else:

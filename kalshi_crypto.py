@@ -30,10 +30,12 @@ import warnings
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import requests
 import joblib
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from scipy import stats
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 
@@ -71,6 +73,15 @@ MODEL_INTRADAY_PATH    = "model_crypto_intraday.joblib"
 FEATURES_INTRADAY_PATH = "features_crypto_intraday.csv"
 METADATA_INTRADAY_PATH = "model_crypto_intraday_meta.json"
 
+# Vol model (contracts < 1 hour to expiry)
+VOL_MODEL_HOURS      = 1.0   # use vol model below this threshold
+VOL_MODEL_WINDOW     = 30    # minutes of 1m data for realized vol
+BINANCE_SYMBOLS      = {"BTC-USD": "BTCUSDT", "ETH-USD": "ETHUSDT"}
+
+# 1–3hr distance filter
+DIST_FILTER_MAX_HOURS = 3.0
+DIST_FILTER_MIN_PCT   = 0.01  # YES: strike ≥1% above current; NO: ≥1% below
+
 # Paper-trade calibration (Platt scaling fitted on live outcomes)
 CALIBRATION_PATH   = "model_crypto_calibration.json"
 
@@ -102,6 +113,44 @@ def download_crypto_hourly(symbol: str) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+
+def fetch_binance_minute_closes(symbol: str, limit: int = 60) -> list[float]:
+    """Fetch last `limit` 1-min closing prices. Tries Binance US then global."""
+    for base_url in ("https://api.binance.us/api/v3/klines",
+                     "https://api.binance.com/api/v3/klines"):
+        try:
+            resp = requests.get(
+                base_url,
+                params={"symbol": symbol, "interval": "1m", "limit": limit},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return [float(c[4]) for c in resp.json()]
+        except Exception:
+            continue
+    logger.warning(f"Binance 1m fetch failed for {symbol} (tried US + global)")
+    return []
+
+
+def realized_vol_annual(closes: list[float], window: int = VOL_MODEL_WINDOW) -> float:
+    """Annualized realized vol from the last `window` 1-min log returns."""
+    if len(closes) < 2:
+        return 0.60
+    log_ret = np.diff(np.log(closes[-(window + 1):]))
+    if len(log_ret) < 2:
+        return 0.60
+    return float(log_ret.std() * math.sqrt(525_600))  # 525,600 min/year
+
+
+def vol_model_yes_prob(current_price: float, strike: float,
+                       minutes_left: float, sigma: float) -> float:
+    """P(price >= strike at expiry) via binary option log-normal model."""
+    T = minutes_left / 525_600
+    if T <= 0 or sigma <= 0 or current_price <= 0:
+        return 1.0 if current_price >= strike else 0.0
+    d2 = math.log(current_price / strike) / (sigma * math.sqrt(T))
+    return float(stats.norm.cdf(d2))
 
 
 def hist_vol(close: pd.Series, window: int = HIST_VOL_WINDOW) -> pd.Series:
@@ -777,6 +826,65 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
 
     hours_left = hours_to_close if hours_to_close is not None else max(1, (expiry - date.today()).days) * 24
 
+    # ── Vol model path for contracts < 1 hour to expiry ───────────────────────
+    if hours_left < VOL_MODEL_HOURS:
+        minute_closes = asset_dfs.get("minute", [])
+        if len(minute_closes) < 10:
+            return []
+        current_price = minute_closes[-1]
+        sigma         = realized_vol_annual(minute_closes)
+        strike_dist   = (strike / current_price) - 1
+        minutes_left  = hours_left * 60
+
+        yes_ask = market.get("yes_ask") or market.get("last_price")
+        yes_bid = market.get("yes_bid")
+        no_ask  = market.get("no_ask")
+        if yes_ask is None:
+            return []
+        yes_ask_cents = int(yes_ask)
+        no_ask_cents  = (int(no_ask) if no_ask is not None
+                         else (100 - int(yes_bid) if yes_bid is not None
+                               else 100 - yes_ask_cents))
+        if not (1 <= yes_ask_cents <= 99) or not (1 <= no_ask_cents <= 99):
+            return []
+
+        prob_yes = vol_model_yes_prob(current_price, strike, minutes_left, sigma)
+        prob_no  = 1.0 - prob_yes
+
+        base_vol = {
+            "ticker"         : ticker,
+            "asset"          : parsed["asset"],
+            "expiry"         : str(expiry),
+            "close_time"     : close_time_str,
+            "strike"         : strike,
+            "current_price"  : round(current_price, 2),
+            "strike_distance": round(strike_dist * 100, 1),
+            "days_to_expiry" : max(1, (expiry - date.today()).days),
+            "hours_to_expiry": round(hours_left, 1),
+            "model_prob"     : round(prob_yes, 4),
+            "base_rate"      : round(prob_yes, 4),
+            "calibrated_prob": round(prob_yes, 4),
+            "model_type"     : "vol_model",
+        }
+        vol_results = []
+        ev_yes    = compute_ev(prob_yes, yes_ask_cents)
+        kelly_yes = compute_kelly(prob_yes, yes_ask_cents)
+        edge_yes  = prob_yes - yes_ask_cents / 100
+        vol_results.append({**base_vol,
+            "side": "YES", "price": yes_ask_cents,
+            "edge": round(edge_yes, 4), "ev": round(ev_yes, 4),
+            "kelly_pct": round(kelly_yes * 100, 1),
+        })
+        ev_no    = compute_ev_no(prob_yes, no_ask_cents)
+        kelly_no = compute_kelly_no(prob_yes, no_ask_cents)
+        edge_no  = prob_no - no_ask_cents / 100
+        vol_results.append({**base_vol,
+            "side": "NO", "price": no_ask_cents,
+            "edge": round(edge_no, 4), "ev": round(ev_no, 4),
+            "kelly_pct": round(kelly_no * 100, 1),
+        })
+        return vol_results
+
     # Get prices
     yes_ask = market.get("yes_ask") or market.get("last_price")
     yes_bid = market.get("yes_bid")
@@ -896,27 +1004,33 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
 
     results = []
 
+    # 1–3hr distance filter: YES needs strike ≥1% above current, NO needs ≥1% below
+    _dist_filter = VOL_MODEL_HOURS <= hours_left <= DIST_FILTER_MAX_HOURS
+    _sd = (strike / current_price) - 1  # recompute cleanly here
+
     ev_yes    = compute_ev(cal_prob, yes_ask_cents)
     kelly_yes = compute_kelly(cal_prob, yes_ask_cents)
     edge_yes  = cal_prob - yes_ask_cents / 100
-    results.append({**base,
-        "side"      : "YES",
-        "price"     : yes_ask_cents,
-        "edge"      : round(edge_yes, 4),
-        "ev"        : round(ev_yes, 4),
-        "kelly_pct" : round(kelly_yes * 100, 1),
-    })
+    if not (_dist_filter and _sd < DIST_FILTER_MIN_PCT):
+        results.append({**base,
+            "side"      : "YES",
+            "price"     : yes_ask_cents,
+            "edge"      : round(edge_yes, 4),
+            "ev"        : round(ev_yes, 4),
+            "kelly_pct" : round(kelly_yes * 100, 1),
+        })
 
     ev_no    = compute_ev_no(cal_prob, no_ask_cents)
     kelly_no = compute_kelly_no(cal_prob, no_ask_cents)
     edge_no  = (1 - cal_prob) - no_ask_cents / 100
-    results.append({**base,
-        "side"      : "NO",
-        "price"     : no_ask_cents,
-        "edge"      : round(edge_no, 4),
-        "ev"        : round(ev_no, 4),
-        "kelly_pct" : round(kelly_no * 100, 1),
-    })
+    if not (_dist_filter and _sd > -DIST_FILTER_MIN_PCT):
+        results.append({**base,
+            "side"      : "NO",
+            "price"     : no_ask_cents,
+            "edge"      : round(edge_no, 4),
+            "ev"        : round(ev_no, 4),
+            "kelly_pct" : round(kelly_no * 100, 1),
+        })
 
     return results
 
@@ -978,7 +1092,11 @@ def main():
         if has_intraday:
             logger.info(f"Fetching {symbol} hourly data ...")
             hourly_df = download_crypto_hourly(symbol)
-        asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df}
+        binance_sym   = BINANCE_SYMBOLS.get(symbol)
+        minute_closes = fetch_binance_minute_closes(binance_sym) if binance_sym else []
+        logger.info(f"  {symbol} Binance 1m: {len(minute_closes)} bars, "
+                    f"last={minute_closes[-1]:,.2f}" if minute_closes else f"  {symbol} Binance 1m: unavailable")
+        asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df, "minute": minute_closes}
 
     # ── Score contracts ──
     recommendations = []
