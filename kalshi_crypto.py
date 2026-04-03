@@ -78,9 +78,9 @@ VOL_MODEL_HOURS      = 1.0   # use vol model below this threshold
 VOL_MODEL_WINDOW     = 30    # minutes of 1m data for realized vol
 BINANCE_SYMBOLS      = {"BTC-USD": "BTCUSDT", "ETH-USD": "ETHUSDT"}
 
-# 1–3hr distance filter
+# 1–3hr distance filter (vol-dynamic)
 DIST_FILTER_MAX_HOURS = 3.0
-DIST_FILTER_MIN_PCT   = 0.01  # YES: strike ≥1% above current; NO: ≥1% below
+DIST_FILTER_SIGMA_K   = 0.5   # require strike ≥ 0.5σ away from current price
 
 # Paper-trade calibration (Platt scaling fitted on live outcomes)
 CALIBRATION_PATH   = "model_crypto_calibration.json"
@@ -1004,14 +1004,22 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
 
     results = []
 
-    # 1–3hr distance filter: YES needs strike ≥1% above current, NO needs ≥1% below
+    # Dynamic distance filter for 1–3hr: require strike ≥ 0.5σ from current price.
+    # Uses Binance 1m realized vol if available, else falls back to intraday hourly vol.
+    # This adapts to market conditions — tighter in low-vol, looser in high-vol.
     _dist_filter = VOL_MODEL_HOURS <= hours_left <= DIST_FILTER_MAX_HOURS
-    _sd = (strike / current_price) - 1  # recompute cleanly here
+    _sd = (strike / current_price) - 1
+    if _dist_filter:
+        _minute_closes = asset_dfs.get("minute", [])
+        _sigma = realized_vol_annual(_minute_closes) if len(_minute_closes) >= 2 else 0.5
+        _dist_threshold = DIST_FILTER_SIGMA_K * _sigma * math.sqrt(hours_left / 8760)
+    else:
+        _dist_threshold = 0.0
 
     ev_yes    = compute_ev(cal_prob, yes_ask_cents)
     kelly_yes = compute_kelly(cal_prob, yes_ask_cents)
     edge_yes  = cal_prob - yes_ask_cents / 100
-    if not (_dist_filter and _sd < DIST_FILTER_MIN_PCT):
+    if not (_dist_filter and _sd < _dist_threshold):
         results.append({**base,
             "side"      : "YES",
             "price"     : yes_ask_cents,
@@ -1023,7 +1031,7 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
     ev_no    = compute_ev_no(cal_prob, no_ask_cents)
     kelly_no = compute_kelly_no(cal_prob, no_ask_cents)
     edge_no  = (1 - cal_prob) - no_ask_cents / 100
-    if not (_dist_filter and _sd > -DIST_FILTER_MIN_PCT):
+    if not (_dist_filter and _sd > -_dist_threshold):
         results.append({**base,
             "side"      : "NO",
             "price"     : no_ask_cents,
