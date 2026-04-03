@@ -463,84 +463,93 @@ with tab_dash:
             return max(0.0, 1.0 - yp)
         return 0.0
 
-    # Kalshi fills API quirk: "Sell YES at X¢" is recorded as action="sell", side="no",
-    # no_price=(1-X).  To determine whether a side="no" sell is closing a YES position
-    # or an actual NO position, we process fills chronologically and track net position.
-    # Kalshi fills only carry yes_price; for NO fills we derive no_price = 1 - yes_price.
+    # Process fills per ticker, tracking YES and NO positions separately.
+    # Kalshi fill convention: "sell yes" = closing a NO position (proceeds = no_price);
+    #                         "sell no"  = closing a YES position (proceeds = yes_price).
+    # Fills with identical (ts, action, side, count, price) are deduplicated — Kalshi
+    # sometimes emits duplicate records for the same fill.
     api_closed = []
     for _tkr, _tkr_fills in _by_ticker.items():
+        # Deduplicate fills
+        _seen_keys: set = set()
+        _deduped: list  = []
+        for _f in _tkr_fills:
+            _dk = (
+                _f.get("ts") or _f.get("created_time", ""),
+                _f.get("action", ""),
+                _f.get("side", ""),
+                _fill_count(_f),
+                round(_price_dollars(_f, "yes_price") * 10000),
+            )
+            if _dk not in _seen_keys:
+                _seen_keys.add(_dk)
+                _deduped.append(_f)
+
         _sorted_fills = sorted(
-            _tkr_fills,
+            _deduped,
             key=lambda f: f.get("ts") or f.get("created_time", "")
         )
-        _yes_pos = 0.0
-        _no_pos  = 0.0
-        _total_bought_yes = 0.0
-        _total_bought_no  = 0.0
-        _buy_cost      = 0.0
-        _sell_proceeds = 0.0
-        _total_fees    = 0.0
+
+        # YES side: buy yes + sell no (YES exits)
+        _yes_buy_cost      = 0.0
+        _yes_sell_proceeds = 0.0
+        _yes_bought        = 0.0
+        _yes_pos           = 0.0
+
+        # NO side: buy no + sell yes (NO exits)
+        _no_buy_cost       = 0.0
+        _no_sell_proceeds  = 0.0
+        _no_bought         = 0.0
+        _no_pos            = 0.0
 
         for _f in _sorted_fills:
-            _cnt    = _fill_count(_f)
-            _act    = _fill_action(_f)
-            _fside  = _f.get("side", "yes")
-            _yp     = _price_dollars(_f, "yes_price")
-            _np     = _no_price_dollars(_f)
-            # Accumulate fees (stored as dollars in fee / fees / fee_dollars / fee_fp/100)
-            for _fee_field in ("fee", "fees", "fee_dollars"):
-                _fv = _f.get(_fee_field)
-                if _fv is not None:
-                    try:
-                        _fval = float(_fv)
-                        _total_fees += _fval / 100 if _fval > 1 else _fval
-                        break
-                    except (ValueError, TypeError):
-                        pass
-            else:
-                _fee_fp = _f.get("fee_fp")
-                if _fee_fp is not None:
-                    try:
-                        _total_fees += float(_fee_fp) / 100
-                    except (ValueError, TypeError):
-                        pass
+            _cnt   = _fill_count(_f)
+            _act   = _fill_action(_f)
+            _fside = _f.get("side", "yes")
+            _yp    = _price_dollars(_f, "yes_price")
+            _np    = _no_price_dollars(_f)
 
             if _act == "buy" and _fside == "yes":
-                _buy_cost += _cnt * _yp
-                _yes_pos  += _cnt
-                _total_bought_yes += _cnt
+                _yes_buy_cost += _cnt * _yp
+                _yes_pos      += _cnt
+                _yes_bought   += _cnt
+            elif _act == "sell" and _fside == "no":
+                # Closing a YES position — Kalshi records as sell/no, price = yes_price
+                _yes_sell_proceeds += _cnt * _yp
+                _yes_pos           -= _cnt
             elif _act == "buy" and _fside == "no":
-                _buy_cost += _cnt * _np
-                _no_pos   += _cnt
-                _total_bought_no += _cnt
+                _no_buy_cost += _cnt * _np
+                _no_pos      += _cnt
+                _no_bought   += _cnt
             elif _act == "sell" and _fside == "yes":
-                # Kalshi records closing a NO position as action="sell", side="yes";
-                # proceeds = no_price = 1 - yes_price
-                _sell_proceeds += _cnt * _np
-                _no_pos -= _cnt
-            else:  # sell, side="no" — closing a YES position
-                _sell_proceeds += _cnt * _yp
-                _yes_pos -= _cnt
+                # Closing a NO position — Kalshi records as sell/yes, price = no_price
+                _no_sell_proceeds += _cnt * _np
+                _no_pos           -= _cnt
 
-        _total_bought = _total_bought_yes + _total_bought_no
-        if _total_bought == 0:
-            continue
-
-        _rem_yes = max(0.0, _yes_pos)
-        _rem_no  = max(0.0, _no_pos)
-        _primary_side = "yes" if _total_bought_yes >= _total_bought_no else "no"
-        api_closed.append({
-            "ticker"        : _tkr,
-            "contracts"     : int(_total_bought),
-            "rem_yes"       : int(round(_rem_yes)),
-            "rem_no"        : int(round(_rem_no)),
-            "buy_cost"      : _buy_cost,
-            "sell_proceeds" : _sell_proceeds,
-            "total_fees"    : round(_total_fees, 4),
-            "entry_cents"   : round(_buy_cost / _total_bought * 100),
-            "side"          : _primary_side,
-            "status"        : "settled",
-        })
+        if _yes_bought > 0:
+            api_closed.append({
+                "ticker"        : _tkr,
+                "contracts"     : int(_yes_bought),
+                "rem_yes"       : int(round(max(0.0, _yes_pos))),
+                "rem_no"        : 0,
+                "buy_cost"      : _yes_buy_cost,
+                "sell_proceeds" : _yes_sell_proceeds,
+                "entry_cents"   : round(_yes_buy_cost / _yes_bought * 100),
+                "side"          : "yes",
+                "status"        : "settled",
+            })
+        if _no_bought > 0:
+            api_closed.append({
+                "ticker"        : _tkr,
+                "contracts"     : int(_no_bought),
+                "rem_yes"       : 0,
+                "rem_no"        : int(round(max(0.0, _no_pos))),
+                "buy_cost"      : _no_buy_cost,
+                "sell_proceeds" : _no_sell_proceeds,
+                "entry_cents"   : round(_no_buy_cost / _no_bought * 100),
+                "side"          : "no",
+                "status"        : "settled",
+            })
 
     closed_kalshi  = api_closed
     settlement_map = {}
@@ -553,12 +562,12 @@ with tab_dash:
         settlement_map  = fetch_settlements(need_settlement) if need_settlement else {}
 
         # ── Auto-settle matching paper trades ─────────────────────────────────
-        _open_pts      = [t for t in db.load_paper_trades() if t.get("status") == "open"]
-        _open_pt_map   = {t["ticker"]: t for t in _open_pts}
-        _auto_settled  = 0
+        _open_pts    = [t for t in db.load_paper_trades() if t.get("status") == "open"]
+        _open_pt_map = {(t["ticker"], t.get("side", "yes").lower()): t for t in _open_pts}
+        _auto_settled = 0
         for _cp in closed_kalshi:
             _tkr  = _cp["ticker"]
-            _pt   = _open_pt_map.get(_tkr)
+            _pt   = _open_pt_map.get((_tkr, _cp.get("side", "yes").lower()))
             if not _pt:
                 continue
             _buy_cost  = _cp.get("buy_cost", 0)
