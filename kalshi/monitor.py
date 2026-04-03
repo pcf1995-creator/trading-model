@@ -18,8 +18,12 @@ Config:
 import argparse
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Ensure parent directory is on the path so we import the canonical kalshi_api
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kalshi_api import KalshiClient
 
@@ -34,8 +38,13 @@ STOP_LOSS_PCT  = 0.50   # alert if price drops 50% from entry
 def load_positions() -> list[dict]:
     if not POSITIONS_FILE.exists():
         return []
-    with open(POSITIONS_FILE) as f:
-        return json.load(f)
+    try:
+        with open(POSITIONS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("positions_kalshi.json is corrupt or empty — skipping this run")
+        return []
 
 
 def save_positions(positions: list[dict]) -> None:
@@ -303,7 +312,11 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
                 except Exception:
                     pass
 
-        market  = client.get_market(ticker)
+        try:
+            market = client.get_market(ticker)
+        except Exception as e:
+            print(f"  {ticker}: get_market error — {e}")
+            continue
         if not market:
             print(f"  {ticker}: could not fetch market data")
             continue
