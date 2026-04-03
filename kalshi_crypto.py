@@ -564,8 +564,14 @@ def recalibrate_from_paper_trades(paper_trades_path: str) -> dict:
     now_utc  = datetime.now(timezone.utc)
     buckets  = {}
 
-    for bucket in ("daily", "weekly"):
-        bt = [t for t in settled if t.get("bucket") == bucket]
+    # Map paper-trade bucket names → model_type keys used in score_contract calibration lookup.
+    # Paper trades: "daily" = 1–24hr contracts (intraday model), "weekly" = >24hr (daily model).
+    # Calibration is keyed by model_type so score_contract can look it up directly.
+    bucket_to_model = {"daily": "intraday", "weekly": "daily"}
+
+    for pt_bucket, model_key in bucket_to_model.items():
+        bt = [t for t in settled if t.get("bucket") == pt_bucket]
+        bucket = model_key   # use model_type as the calibration key
         if len(bt) < 5:
             buckets[bucket] = {"skipped": True, "reason": f"Only {len(bt)} settled trades (need ≥5)"}
             continue
