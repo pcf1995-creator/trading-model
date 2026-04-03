@@ -487,8 +487,8 @@ with tab_dash:
             _fside  = _f.get("side", "yes")
             _yp     = _price_dollars(_f, "yes_price")
             _np     = _no_price_dollars(_f)
-            # Accumulate fees (stored as dollars in fee / fee_dollars / fee_fp/100)
-            for _fee_field in ("fee", "fee_dollars"):
+            # Accumulate fees (stored as dollars in fee / fees / fee_dollars / fee_fp/100)
+            for _fee_field in ("fee", "fees", "fee_dollars"):
                 _fv = _f.get(_fee_field)
                 if _fv is not None:
                     try:
@@ -634,6 +634,7 @@ with tab_dash:
                 else:
                     exit_cents = None
 
+                pnl_pct = (pnl / buy_cost * 100) if (pnl is not None and buy_cost > 0) else None
                 rows.append({
                     "Asset"    : asset,
                     "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
@@ -641,15 +642,16 @@ with tab_dash:
                     "Side"     : side.upper(),
                     "Contracts": ctrs,
                     "Entry ¢"  : entry,
+                    "Entry $"  : f"${buy_cost:.2f}",
                     "Exit ¢"   : exit_cents if exit_cents is not None else "—",
                     "Exit"     : exit_label,
-                    "Fees $"   : f"${fees:.2f}" if fees else "—",
                     "P&L $"    : (f"${pnl:+.2f}" if pnl is not None else "—"),
+                    "P&L %"    : (f"{pnl_pct:+.1f}%" if pnl_pct is not None else "—"),
                 })
 
             df_closed = pd.DataFrame(rows)
-            st.dataframe(df_closed.style.map(color_pnl, subset=["P&L $"]),
-                         width="stretch", hide_index=True)
+            st.dataframe(df_closed.style.map(color_pnl, subset=["P&L $", "P&L %"]),
+                         hide_index=True, use_container_width=True)
 
             resolved = [r for r in rows if r["P&L $"] != "—"]
             if resolved:
@@ -694,6 +696,10 @@ with tab_dash:
                             "count"        : _fill_count(f),
                             "yes_price"    : _price_dollars(f, "yes_price"),
                             "no_price"     : _price_dollars(f, "no_price"),
+                            "fee"          : f.get("fee"),
+                            "fees"         : f.get("fees"),
+                            "fee_dollars"  : f.get("fee_dollars"),
+                            "fee_fp"       : f.get("fee_fp"),
                         } for f in sorted(_tkr_fills,
                                           key=lambda f: f.get("ts") or f.get("created_time", ""))])
 
@@ -1158,30 +1164,45 @@ with tab_dash:
         # ── Performance summary ───────────────────────────────────────────────────
         _resolved = [p for p in _settled_paper if p.get("pnl_dollars") is not None]
 
+        def _time_bucket(hours):
+            """Derive a display bucket from hours_to_exp."""
+            if hours is None:
+                return "unknown"
+            if hours < 1:
+                return "<1hr"
+            if hours < 3:
+                return "1-3hr"
+            if hours < 8:
+                return "3-8hr"
+            if hours < 24:
+                return "8-24hr"
+            return ">24hr"
+
+        def _win_prob(p):
+            """Model's predicted probability of the side we BET ON winning."""
+            cp = p.get("cal_prob", 0.5)
+            return (1 - cp) if p.get("side", "yes").lower() == "no" else cp
+
         # Open trades summary by bucket
         if _open_paper:
             st.subheader("Open — By Bucket")
             _open_buckets = {}
             for _p in _open_paper:
-                _b = _p.get("bucket", "other")
+                _b = _time_bucket(_p.get("hours_to_exp"))
                 _open_buckets.setdefault(_b, []).append(_p)
             _ob_rows = []
-            for _b, _bps in sorted(_open_buckets.items()):
-                _proj_wr = sum(
-                    (1 - p.get("cal_prob", 0.5)) if p.get("side", "yes").lower() == "no"
-                    else p.get("cal_prob", 0.5)
-                    for p in _bps
-                ) / len(_bps)
+            _bucket_order = ["<1hr", "1-3hr", "3-8hr", "8-24hr", ">24hr", "unknown"]
+            for _b in _bucket_order:
+                _bps = _open_buckets.get(_b)
+                if not _bps:
+                    continue
+                _proj_wr = sum(_win_prob(p) for p in _bps) / len(_bps)
                 _bet_tot = sum(p.get("bet_dollars", 0) for p in _bps)
                 _ob_rows.append({
-                    "Bucket"         : _b,
-                    "Trades"         : len(_bps),
-                    "Actual Win Rate": "—",
-                    "Proj Win Rate"  : f"{_proj_wr:.0%}",
-                    "Edge"           : "—",
-                    "Total P&L"      : "—",
-                    "Avg P&L/Trade"  : "—",
-                    "Total Bet $"    : f"${_bet_tot:.0f}",
+                    "Bucket"        : _b,
+                    "Trades"        : len(_bps),
+                    "Avg Win Prob"  : f"{_proj_wr:.0%}",
+                    "Total Bet $"   : f"${_bet_tot:.0f}",
                 })
             st.dataframe(pd.DataFrame(_ob_rows), hide_index=True, use_container_width=True)
 
@@ -1189,48 +1210,46 @@ with tab_dash:
             st.subheader("Settled — By Bucket")
             _buckets = {}
             for _p in _resolved:
-                _b = _p.get("bucket", "other")
+                _b = _time_bucket(_p.get("hours_to_exp"))
                 _buckets.setdefault(_b, []).append(_p)
 
             _bk_rows = []
-            for _b, _bps in sorted(_buckets.items()):
-                # yes_rate: market settled YES — matches what cal_prob predicts
-                _byes    = sum(1 for p in _bps if p.get("result", "").lower() == "yes")
-                # profit_rate: trade was profitable (accounts for NO-side bets)
-                _bwins   = sum(1 for p in _bps if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
+            _bucket_order = ["<1hr", "1-3hr", "3-8hr", "8-24hr", ">24hr", "unknown"]
+            for _b in _bucket_order:
+                _bps = _buckets.get(_b)
+                if not _bps:
+                    continue
+                _bwins   = sum(1 for p in _bps if (p.get("pnl_dollars") or 0) > 0)
                 _bpnl    = sum(p.get("pnl_dollars", 0) for p in _bps)
-                _bpred   = sum(p.get("cal_prob", 0.5) for p in _bps) / len(_bps)
+                _bbet    = sum(p.get("bet_dollars", 0) for p in _bps)
+                _avg_win = sum(_win_prob(p) for p in _bps) / len(_bps)
                 _avg_pnl = _bpnl / len(_bps)
+                _pnl_pct = (_bpnl / _bbet * 100) if _bbet > 0 else 0
                 _bk_rows.append({
-                    "Bucket"       : _b,
-                    "Trades"       : len(_bps),
-                    "Profit Rate"  : f"{_bwins/len(_bps):.0%}",
-                    "YES Rate"     : f"{_byes/len(_bps):.0%}",
-                    "Pred YES Rate": f"{_bpred:.0%}",
-                    "Edge"         : f"{(_byes/len(_bps) - _bpred)*100:+.1f}pp",
-                    "Total P&L"    : f"${_bpnl:+.2f}",
-                    "Avg P&L/Trade": f"${_avg_pnl:+.2f}",
+                    "Bucket"        : _b,
+                    "Trades"        : len(_bps),
+                    "Win Rate"      : f"{_bwins/len(_bps):.0%}",
+                    "Avg Win Prob"  : f"{_avg_win:.0%}",
+                    "P&L %"         : f"{_pnl_pct:+.1f}%",
+                    "Total P&L"     : f"${_bpnl:+.2f}",
+                    "Avg P&L/Trade" : f"${_avg_pnl:+.2f}",
                 })
             st.dataframe(
-                pd.DataFrame(_bk_rows).style.map(
-                    lambda v: "color: green" if isinstance(v, str) and v.startswith("+") else
-                              "color: red"   if isinstance(v, str) and v.startswith("-") else "",
-                    subset=["Edge", "Total P&L", "Avg P&L/Trade"]
-                ),
+                pd.DataFrame(_bk_rows).style.map(color_pnl, subset=["P&L %", "Total P&L", "Avg P&L/Trade"]),
                 hide_index=True, use_container_width=True
             )
 
             # Overall totals
-            _wins      = sum(1 for p in _resolved if p.get("pnl_dollars") is not None and p.get("pnl_dollars", 0) > 0)
-            _yes_rate  = sum(1 for p in _resolved if p.get("result", "").lower() == "yes") / len(_resolved)
+            _wins      = sum(1 for p in _resolved if (p.get("pnl_dollars") or 0) > 0)
             _total_pnl = sum(p.get("pnl_dollars", 0) for p in _resolved)
-            _pred_wr   = sum(p.get("cal_prob", 0.5) for p in _resolved) / len(_resolved)
+            _total_bet = sum(p.get("bet_dollars", 0) for p in _resolved)
+            _avg_win_p = sum(_win_prob(p) for p in _resolved) / len(_resolved)
+            _pnl_pct   = (_total_pnl / _total_bet * 100) if _total_bet > 0 else 0
             _c1, _c2, _c3, _c4 = st.columns(4)
             _c1.metric("Total Settled", len(_resolved))
-            _c2.metric("Profit Rate", f"{_wins/len(_resolved):.0%}")
-            _c3.metric("YES Rate vs Predicted", f"{_yes_rate:.0%}",
-                       delta=f"{(_yes_rate - _pred_wr)*100:+.1f}pp")
-            _c4.metric("Total P&L", f"${_total_pnl:+.2f}")
+            _c2.metric("Win Rate", f"{_wins/len(_resolved):.0%}")
+            _c3.metric("Avg Win Prob (Model)", f"{_avg_win_p:.0%}")
+            _c4.metric("Total P&L", f"${_total_pnl:+.2f}", delta=f"{_pnl_pct:+.1f}% on bets")
 
     st.divider()
 
