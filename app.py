@@ -776,14 +776,20 @@ with tab_dash:
     def make_portfolio_table(portfolio: list) -> pd.DataFrame:
         rows = []
         for p in portfolio:
-            sd = p.get("strike_distance")  # % from current price (+ = above, - = below)
+            sd = p.get("strike_distance")  # raw: (strike/current - 1) * 100
+            # Make side-aware: + = in the money, - = need a move to win
+            if sd is not None:
+                itm = -sd if p["side"].upper() == "YES" else sd
+                pct_str = f"{itm:+.1f}%"
+            else:
+                pct_str = "—"
             rows.append({
                 "Ticker"      : p["ticker"],
                 "Side"        : p["side"],
                 "Hrs Left"    : (f"{int(p['hours_to_expiry'] * 60)}m"
                                   if p['hours_to_expiry'] < 1
                                   else f"{p['hours_to_expiry']:.0f}h"),
-                "% to Strike" : f"{sd:+.1f}%" if sd is not None else "—",
+                "% to Strike" : pct_str,
                 "Price"       : f"{p['price']}¢",
                 "Cal Prob"    : f"{(1-p['calibrated_prob'] if p['side'].lower()=='no' else p['calibrated_prob'])*100:.1f}%",
                 "EV"          : f"{p['ev']:+.3f}",
