@@ -1224,8 +1224,10 @@ with tab_dash:
                     continue
                 _wins_b  = [p for p in _bps if (p.get("pnl_dollars") or 0) > 0]
                 _loss_b  = [p for p in _bps if (p.get("pnl_dollars") or 0) <= 0]
+                def _bet(p):
+                    return p.get("bet_dollars") or (p.get("contracts", 1) * p.get("price_cents", 0) / 100)
                 _bpnl    = sum(p.get("pnl_dollars", 0) for p in _bps)
-                _bbet    = sum(p.get("bet_dollars", 0) for p in _bps)
+                _bbet    = sum(_bet(p) for p in _bps)
                 _pnl_pct = (_bpnl / _bbet * 100) if _bbet > 0 else 0
                 _avg_w   = sum(p.get("pnl_dollars", 0) for p in _wins_b) / len(_wins_b) if _wins_b else 0
                 _avg_l   = sum(p.get("pnl_dollars", 0) for p in _loss_b) / len(_loss_b) if _loss_b else 0
@@ -1247,7 +1249,7 @@ with tab_dash:
             # Overall totals
             _wins      = sum(1 for p in _resolved if (p.get("pnl_dollars") or 0) > 0)
             _total_pnl = sum(p.get("pnl_dollars", 0) for p in _resolved)
-            _total_bet = sum(p.get("bet_dollars", 0) for p in _resolved)
+            _total_bet = sum(_bet(p) for p in _resolved)
             _pnl_pct   = (_total_pnl / _total_bet * 100) if _total_bet > 0 else 0
             _c1, _c2, _c3, _c4 = st.columns(4)
             _c1.metric("Total Settled", len(_resolved))
