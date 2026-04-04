@@ -1222,23 +1222,25 @@ with tab_dash:
                 _bps = _buckets.get(_b)
                 if not _bps:
                     continue
-                _bwins   = sum(1 for p in _bps if (p.get("pnl_dollars") or 0) > 0)
+                _wins_b  = [p for p in _bps if (p.get("pnl_dollars") or 0) > 0]
+                _loss_b  = [p for p in _bps if (p.get("pnl_dollars") or 0) <= 0]
                 _bpnl    = sum(p.get("pnl_dollars", 0) for p in _bps)
                 _bbet    = sum(p.get("bet_dollars", 0) for p in _bps)
-                _avg_win = sum(_win_prob(p) for p in _bps) / len(_bps)
-                _avg_pnl = _bpnl / len(_bps)
                 _pnl_pct = (_bpnl / _bbet * 100) if _bbet > 0 else 0
+                _avg_w   = sum(p.get("pnl_dollars", 0) for p in _wins_b) / len(_wins_b) if _wins_b else 0
+                _avg_l   = sum(p.get("pnl_dollars", 0) for p in _loss_b) / len(_loss_b) if _loss_b else 0
                 _bk_rows.append({
-                    "Bucket"        : _b,
-                    "Trades"        : len(_bps),
-                    "Win Rate"      : f"{_bwins/len(_bps):.0%}",
-                    "Avg Win Prob"  : f"{_avg_win:.0%}",
-                    "P&L %"         : f"{_pnl_pct:+.1f}%",
-                    "Total P&L"     : f"${_bpnl:+.2f}",
-                    "Avg P&L/Trade" : f"${_avg_pnl:+.2f}",
+                    "Bucket"       : _b,
+                    "Trades"       : len(_bps),
+                    "Total Bet $"  : f"${_bbet:.0f}",
+                    "Win Rate"     : f"{len(_wins_b)/len(_bps):.0%}",
+                    "Avg Win $"    : f"${_avg_w:+.2f}" if _wins_b else "—",
+                    "Avg Loss $"   : f"${_avg_l:+.2f}" if _loss_b else "—",
+                    "P&L %"        : f"{_pnl_pct:+.1f}%",
+                    "Total P&L"    : f"${_bpnl:+.2f}",
                 })
             st.dataframe(
-                pd.DataFrame(_bk_rows).style.map(color_pnl, subset=["P&L %", "Total P&L", "Avg P&L/Trade"]),
+                pd.DataFrame(_bk_rows).style.map(color_pnl, subset=["Avg Win $", "Avg Loss $", "P&L %", "Total P&L"]),
                 hide_index=True, use_container_width=True
             )
 
@@ -1246,13 +1248,12 @@ with tab_dash:
             _wins      = sum(1 for p in _resolved if (p.get("pnl_dollars") or 0) > 0)
             _total_pnl = sum(p.get("pnl_dollars", 0) for p in _resolved)
             _total_bet = sum(p.get("bet_dollars", 0) for p in _resolved)
-            _avg_win_p = sum(_win_prob(p) for p in _resolved) / len(_resolved)
             _pnl_pct   = (_total_pnl / _total_bet * 100) if _total_bet > 0 else 0
             _c1, _c2, _c3, _c4 = st.columns(4)
             _c1.metric("Total Settled", len(_resolved))
             _c2.metric("Win Rate", f"{_wins/len(_resolved):.0%}")
-            _c3.metric("Avg Win Prob (Model)", f"{_avg_win_p:.0%}")
-            _c4.metric("Total P&L", f"${_total_pnl:+.2f}", delta=f"{_pnl_pct:+.1f}% on bets")
+            _c3.metric("Return on Bets", f"{_pnl_pct:+.1f}%")
+            _c4.metric("Total P&L", f"${_total_pnl:+.2f}")
 
     st.divider()
 
