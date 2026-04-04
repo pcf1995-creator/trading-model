@@ -372,6 +372,17 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
             print(f"      P&L         : {pnl_pct:+.1f}%")
             print(f"      Selling     : {count} {side.upper()} contracts at {current_cents}¢ ...")
             if not dry_run_sell:
+                # Re-read file immediately to guard against concurrent cron processes
+                # that may have already triggered this stop-loss
+                _fresh = load_positions()
+                _fresh_p = next((x for x in _fresh if x["ticker"] == ticker), None)
+                if _fresh_p and _fresh_p.get("status") not in ("open",):
+                    print(f"      SKIPPED — position already {_fresh_p.get('status')} (concurrent process)")
+                    continue
+                # Mark as "stopping" on disk BEFORE placing the order so any other
+                # concurrent cron process will see it and skip
+                p["status"] = "stopping"
+                save_positions(positions)
                 try:
                     result = client.sell_position(ticker, side, count, current_cents)
                     print(f"      Order placed: {result}")
@@ -381,6 +392,8 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
                     changed = True
                 except Exception as e:
                     print(f"      ERROR placing sell order: {e}")
+                    p["status"] = "open"   # revert so next run can retry
+                    changed = True
             else:
                 print(f"      (dry run — pass --execute to place real order)")
         else:
