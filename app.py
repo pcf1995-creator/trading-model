@@ -1105,6 +1105,14 @@ with tab_dash:
         if _newly_settled:
             st.success(f"Auto-settled {_newly_settled} paper trade(s).")
 
+        def _time_bucket(hours):
+            if hours is None: return "unknown"
+            if hours < 1:  return "<1hr"
+            if hours < 3:  return "1-3hr"
+            if hours < 8:  return "3-8hr"
+            if hours < 24: return "8-24hr"
+            return ">24hr"
+
         # ── Open paper trades ─────────────────────────────────────────────────────
         if _open_paper:
             st.subheader(f"Open Paper Trades ({len(_open_paper)})")
@@ -1127,7 +1135,7 @@ with tab_dash:
                 _pt_rows.append({
                     "Ticker"    : _pt["ticker"],
                     "Side"      : _pt.get("side", "yes"),
-                    "Bucket"    : _pt.get("bucket", ""),
+                    "Bucket"    : _time_bucket(_pt.get("hours_to_exp")),
                     "Entry ¢"   : _entry,
                     "Live Bid"  : f"{_bid}¢" if _bid is not None else "—",
                     "Contracts" : _ctrs,
@@ -1154,7 +1162,7 @@ with tab_dash:
                     _s_rows.append({
                         "Ticker"   : _pt["ticker"],
                         "Side"     : _pt.get("side", "yes"),
-                        "Bucket"   : _pt.get("bucket", ""),
+                        "Bucket"   : _time_bucket(_pt.get("hours_to_exp")),
                         "At Rec"   : (f"{int(_rec_h*60)}m" if _rec_h is not None and _rec_h < 1
                                       else f"{_rec_h:.0f}h" if _rec_h is not None else "—"),
                         "Contracts": _pt.get("contracts", 1),
@@ -1172,20 +1180,6 @@ with tab_dash:
 
         # ── Performance summary ───────────────────────────────────────────────────
         _resolved = [p for p in _settled_paper if p.get("pnl_dollars") is not None]
-
-        def _time_bucket(hours):
-            """Derive a display bucket from hours_to_exp."""
-            if hours is None:
-                return "unknown"
-            if hours < 1:
-                return "<1hr"
-            if hours < 3:
-                return "1-3hr"
-            if hours < 8:
-                return "3-8hr"
-            if hours < 24:
-                return "8-24hr"
-            return ">24hr"
 
         def _win_prob(p):
             """Model's predicted probability of the side we BET ON winning."""
