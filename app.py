@@ -779,6 +779,8 @@ with tab_dash:
         portfolio = []
         for r, raw_dollars, d in zip(picks, raw, discounts):
             dollars   = round(raw_dollars * scale, 2)
+            if dollars < 1.0:
+                continue   # correlation-discounted to nothing — skip
             contracts = max(1, int(dollars / (r["price"] / 100)))
             portfolio.append({**r,
                 "kelly_dollars"      : dollars,
