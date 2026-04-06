@@ -295,6 +295,18 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+    # Separate today's intraday bar (if present) from confirmed daily closes.
+    # Model was trained on confirmed end-of-day data, so we strip today's
+    # partial bar before computing features. We keep it as current_price so
+    # the caller can show both "signal close" and "current price" side-by-side.
+    _today = date.today()
+    if len(df) and df.index[-1].date() == _today:
+        current_price = round(float(df["Close"].iloc[-1]), 4)
+        df = df.iloc[:-1]
+    else:
+        current_price = None   # run after hours; close IS current
+
     if len(df) < 210:
         return None
 
@@ -308,12 +320,13 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
     as_of_date = df.index[-1].date()
 
     return {
-        "ticker"   : ticker,
-        "date"     : str(as_of_date),
-        "close"    : round(close, 4),
-        "prob"     : round(prob, 4),
-        "threshold": threshold,
-        "signal"   : prob >= threshold,
+        "ticker"        : ticker,
+        "date"          : str(as_of_date),
+        "close"         : round(close, 4),
+        "current_price" : current_price,
+        "prob"          : round(prob, 4),
+        "threshold"     : threshold,
+        "signal"        : prob >= threshold,
     }
 
 
@@ -451,8 +464,11 @@ def main():
                 flag = " WEAK"   # passed ticker threshold but prob < 0.50
             else:
                 flag = "     "
+            _cur = result.get("current_price")
+            _price_str = (f"close={result['close']}  now=${_cur}"
+                          if _cur is not None else f"close={result['close']}")
             print(f"  {flag} {ticker:6s}  prob={result['prob']:.3f}  "
-                  f"thresh={threshold:.2f}  close={result['close']}")
+                  f"thresh={threshold:.2f}  {_price_str}")
 
     # ── 4. New entries ──
     buy_signals = sorted([s for s in signals if s["signal"] and s["prob"] >= MIN_PROB],
@@ -482,10 +498,12 @@ def main():
                 shares, cost = frac_shares, position_size
             else:
                 shares, cost = whole_shares, whole_cost
+            _cur = sig.get("current_price")
+            _now_str = f"  now=${_cur}" if _cur is not None else ""
             print(f"  BUY    {sig['ticker']:6s}  prob={sig['prob']:.3f}  "
-                  f"close=${sig['close']}  "
+                  f"close=${sig['close']}{_now_str}  "
                   f"shares={shares}  cost=${cost:,.2f}"
-                  f"{frac_note}  →  PLACE MOC BUY ORDER")
+                  f"{frac_note}  →  PLACE MOC BUY ORDER 15min before close")
             new_entries.append({
                 "ticker"      : sig["ticker"],
                 "entry_date"  : sig["date"],

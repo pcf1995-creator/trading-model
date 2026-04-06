@@ -1209,8 +1209,46 @@ with tab_dash:
                 })
             st.dataframe(pd.DataFrame(_ob_rows), hide_index=True, use_container_width=True)
 
+        def _bet(p):
+            return p.get("bet_dollars") or (p.get("contracts", 1) * p.get("price_cents", 0) / 100)
+
+        def _bet_range(dollars):
+            if dollars is None or dollars < 0:
+                return "unknown"
+            if dollars < 3:
+                return "$0–3"
+            if dollars < 8:
+                return "$3–8"
+            if dollars < 15:
+                return "$8–15"
+            return "$15+"
+
+        def _bucket_stats(group_label, items):
+            _wins_g  = [p for p in items if (p.get("pnl_dollars") or 0) > 0]
+            _loss_g  = [p for p in items if (p.get("pnl_dollars") or 0) <= 0]
+            _gpnl    = sum(p.get("pnl_dollars", 0) for p in items)
+            _gbet    = sum(_bet(p) for p in items)
+            _pnl_pct = (_gpnl / _gbet * 100) if _gbet > 0 else 0
+            _avg_wp  = sum(_win_prob(p) for p in items) / len(items)
+            _avg_w   = sum(p.get("pnl_dollars", 0) for p in _wins_g) / len(_wins_g) if _wins_g else 0
+            _avg_l   = sum(p.get("pnl_dollars", 0) for p in _loss_g) / len(_loss_g) if _loss_g else 0
+            return {
+                group_label    : None,  # placeholder; caller overwrites key
+                "Trades"       : len(items),
+                "Total Bet $"  : f"${_gbet:.0f}",
+                "Win Rate"     : f"{len(_wins_g)/len(items):.0%}",
+                "Avg Win Prob" : f"{_avg_wp:.0%}",
+                "Avg Win $"    : f"${_avg_w:+.2f}" if _wins_g else "—",
+                "Avg Loss $"   : f"${_avg_l:+.2f}" if _loss_g else "—",
+                "P&L %"        : f"{_pnl_pct:+.1f}%",
+                "Total P&L"    : f"${_gpnl:+.2f}",
+            }
+
         if _resolved:
-            st.subheader("Settled — By Bucket")
+            _color_cols = ["Avg Win $", "Avg Loss $", "P&L %", "Total P&L"]
+
+            # ── By time bucket ────────────────────────────────────────────────
+            st.subheader("Settled — By Time Bucket")
             _buckets = {}
             for _p in _resolved:
                 _b = _time_bucket(_p.get("hours_to_exp"))
@@ -1222,28 +1260,33 @@ with tab_dash:
                 _bps = _buckets.get(_b)
                 if not _bps:
                     continue
-                _wins_b  = [p for p in _bps if (p.get("pnl_dollars") or 0) > 0]
-                _loss_b  = [p for p in _bps if (p.get("pnl_dollars") or 0) <= 0]
-                def _bet(p):
-                    return p.get("bet_dollars") or (p.get("contracts", 1) * p.get("price_cents", 0) / 100)
-                _bpnl    = sum(p.get("pnl_dollars", 0) for p in _bps)
-                _bbet    = sum(_bet(p) for p in _bps)
-                _pnl_pct = (_bpnl / _bbet * 100) if _bbet > 0 else 0
-                _avg_w   = sum(p.get("pnl_dollars", 0) for p in _wins_b) / len(_wins_b) if _wins_b else 0
-                _avg_l   = sum(p.get("pnl_dollars", 0) for p in _loss_b) / len(_loss_b) if _loss_b else 0
-                _bk_rows.append({
-                    "Bucket"       : _b,
-                    "Trades"       : len(_bps),
-                    "Total Bet $"  : f"${_bbet:.0f}",
-                    "Win Rate"     : f"{len(_wins_b)/len(_bps):.0%}",
-                    "Avg Win $"    : f"${_avg_w:+.2f}" if _wins_b else "—",
-                    "Avg Loss $"   : f"${_avg_l:+.2f}" if _loss_b else "—",
-                    "P&L %"        : f"{_pnl_pct:+.1f}%",
-                    "Total P&L"    : f"${_bpnl:+.2f}",
-                })
+                _row = _bucket_stats("Bucket", _bps)
+                _row["Bucket"] = _b
+                _bk_rows.append(_row)
             st.dataframe(
-                pd.DataFrame(_bk_rows).style.map(color_pnl, subset=["Avg Win $", "Avg Loss $", "P&L %", "Total P&L"]),
-                hide_index=True, use_container_width=True
+                pd.DataFrame(_bk_rows).style.map(color_pnl, subset=_color_cols),
+                hide_index=True, use_container_width=True,
+            )
+
+            # ── By bet range ──────────────────────────────────────────────────
+            st.subheader("Settled — By Bet Range (Kelly Size)")
+            _ranges = {}
+            for _p in _resolved:
+                _r = _bet_range(_bet(_p))
+                _ranges.setdefault(_r, []).append(_p)
+
+            _br_rows = []
+            _range_order = ["$0–3", "$3–8", "$8–15", "$15+", "unknown"]
+            for _r in _range_order:
+                _rps = _ranges.get(_r)
+                if not _rps:
+                    continue
+                _row = _bucket_stats("Bet Range", _rps)
+                _row["Bet Range"] = _r
+                _br_rows.append(_row)
+            st.dataframe(
+                pd.DataFrame(_br_rows).style.map(color_pnl, subset=_color_cols),
+                hide_index=True, use_container_width=True,
             )
 
             # Overall totals
@@ -1320,6 +1363,31 @@ with tab_dash:
     st.header("Stocks — Daily Scan")
     st.caption("Top 5 buy signals from the Random Forest model. "
                "Prob = model's confidence stock closes ≥2% higher in 5 trading days.")
+
+    # ── Upload local models to Supabase (one-time, after retraining) ──────────
+    with st.expander("⬆️ Upload local models to cloud (run after retraining)"):
+        st.caption("Use this after running features.py locally to push new/updated models to Supabase Storage so the hosted app can use them.")
+        if st.button("Upload all local model files", key="upload_models"):
+            _local_root = ROOT
+            _files_to_upload = (
+                list(_local_root.glob("model_*.joblib")) +
+                list(_local_root.glob("features_*.csv")) +
+                [_local_root / "ticker_summary.csv"]
+            )
+            _upload_prog = st.progress(0)
+            _results = []
+            for _i, _fp in enumerate(_files_to_upload):
+                if _fp.exists():
+                    _ok = db.upload_stock_file(_fp.name, _fp)
+                    _results.append(("✅" if _ok else "❌", _fp.name))
+                _upload_prog.progress((_i + 1) / len(_files_to_upload))
+            _upload_prog.empty()
+            _fails = [n for s, n in _results if s == "❌"]
+            _ok_ct = sum(1 for s, _ in _results if s == "✅")
+            if _fails:
+                st.warning(f"Uploaded {_ok_ct} files. Failed: {', '.join(_fails)}")
+            else:
+                st.success(f"Uploaded {_ok_ct} files successfully. Refresh and run the scan.")
 
     stock_budget = st.number_input("Weekly stock budget ($)", min_value=100, max_value=100_000,
                                    value=2_000, step=100, key="stock_budget")
@@ -1750,6 +1818,7 @@ with tab_perf:
             else:
                 exit_cents = None
 
+            pnl_pct = (pnl / buy_cost * 100) if (pnl is not None and buy_cost and buy_cost > 0) else None
             perf_data.append({
                 "ticker"     : p["ticker"],
                 "asset"      : asset,
@@ -1762,6 +1831,8 @@ with tab_perf:
                 "entry_cents": entry,
                 "exit_cents" : exit_cents,
                 "pnl"        : pnl,
+                "pnl_pct"    : pnl_pct,
+                "buy_cost"   : buy_cost,
             })
 
         resolved = [d for d in perf_data if d["pnl"] is not None]
@@ -1784,25 +1855,34 @@ with tab_perf:
         st.divider()
 
         # ── P&L bar charts by week ────────────────────────────────────────────
-        def _make_weekly_chart(data_subset, title):
+        def _make_weekly_chart(data_subset, title, pct=False):
             from collections import defaultdict as _dd
-            week_pnl = _dd(float)
+            week_val  = _dd(float)
+            week_cost = _dd(float)
             week_order = {}
             for d in data_subset:
                 if d["pnl"] is None:
                     continue
                 wk = d["week"]
-                week_pnl[wk] += d["pnl"]
+                week_val[wk]  += d["pnl"]
+                week_cost[wk] += d.get("buy_cost", 0)
                 if wk not in week_order and d["expiry_dt"] is not None:
                     monday = d["expiry_dt"] - timedelta(days=d["expiry_dt"].weekday())
                     week_order[wk] = monday
 
-            if not week_pnl:
+            if not week_val:
                 return None
 
-            sorted_weeks = sorted(week_pnl.keys(),
+            sorted_weeks = sorted(week_val.keys(),
                                   key=lambda w: week_order.get(w, datetime.min))
-            values = [week_pnl[w] for w in sorted_weeks]
+            if pct:
+                values = [(week_val[w] / week_cost[w] * 100) if week_cost[w] > 0 else 0
+                          for w in sorted_weeks]
+                ylabel = "P&L (%)"
+            else:
+                values = [week_val[w] for w in sorted_weeks]
+                ylabel = "P&L ($)"
+
             colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in values]
 
             fig, ax = plt.subplots(figsize=(6, 3))
@@ -1810,7 +1890,7 @@ with tab_perf:
             ax.axhline(0, color="white", linewidth=0.8, alpha=0.5)
             ax.set_title(title, color="white", fontsize=11)
             ax.set_xlabel("Week of", color="white", fontsize=9)
-            ax.set_ylabel("P&L ($)", color="white", fontsize=9)
+            ax.set_ylabel(ylabel, color="white", fontsize=9)
             ax.tick_params(colors="white", labelsize=8)
             ax.set_facecolor("#0e1117")
             fig.patch.set_facecolor("#0e1117")
@@ -1823,47 +1903,75 @@ with tab_perf:
         btc_data = [d for d in perf_data if d["asset"] == "BTC"]
         eth_data = [d for d in perf_data if d["asset"] == "ETH"]
 
+        # Row 1: $ charts
         col_btc, col_eth = st.columns(2)
         with col_btc:
-            fig_btc = _make_weekly_chart(btc_data, "BTC — P&L by Week")
+            fig_btc = _make_weekly_chart(btc_data, "BTC — P&L by Week ($)")
             if fig_btc:
                 st.pyplot(fig_btc)
                 plt.close(fig_btc)
             else:
                 st.caption("No BTC closed positions with P&L yet.")
-
         with col_eth:
-            fig_eth = _make_weekly_chart(eth_data, "ETH — P&L by Week")
+            fig_eth = _make_weekly_chart(eth_data, "ETH — P&L by Week ($)")
             if fig_eth:
                 st.pyplot(fig_eth)
                 plt.close(fig_eth)
             else:
                 st.caption("No ETH closed positions with P&L yet.")
 
+        # Row 2: % charts
+        col_btc_pct, col_eth_pct = st.columns(2)
+        with col_btc_pct:
+            fig_btc_pct = _make_weekly_chart(btc_data, "BTC — P&L by Week (%)", pct=True)
+            if fig_btc_pct:
+                st.pyplot(fig_btc_pct)
+                plt.close(fig_btc_pct)
+        with col_eth_pct:
+            fig_eth_pct = _make_weekly_chart(eth_data, "ETH — P&L by Week (%)", pct=True)
+            if fig_eth_pct:
+                st.pyplot(fig_eth_pct)
+                plt.close(fig_eth_pct)
+
         st.divider()
 
         # ── Side breakdown (YES vs NO P&L) ────────────────────────────────────
-        yes_pnl = sum(d["pnl"] for d in resolved if d["side"] == "YES")
-        no_pnl  = sum(d["pnl"] for d in resolved if d["side"] == "NO")
+        yes_trades  = [d for d in resolved if d["side"] == "YES"]
+        no_trades   = [d for d in resolved if d["side"] == "NO"]
+        yes_pnl     = sum(d["pnl"] for d in yes_trades)
+        no_pnl      = sum(d["pnl"] for d in no_trades)
+        yes_cost    = sum(d.get("buy_cost", 0) for d in yes_trades)
+        no_cost     = sum(d.get("buy_cost", 0) for d in no_trades)
+        yes_pnl_pct = (yes_pnl / yes_cost * 100) if yes_cost > 0 else 0
+        no_pnl_pct  = (no_pnl  / no_cost  * 100) if no_cost  > 0 else 0
 
-        if resolved:
-            fig_side, ax_s = plt.subplots(figsize=(4, 2.5))
-            bars = ax_s.bar(["YES", "NO"], [yes_pnl, no_pnl],
-                            color=["#2ecc71" if yes_pnl >= 0 else "#e74c3c",
-                                   "#2ecc71" if no_pnl  >= 0 else "#e74c3c"])
-            ax_s.axhline(0, color="white", linewidth=0.8, alpha=0.5)
-            ax_s.set_title("P&L by Side", color="white", fontsize=11)
-            ax_s.set_ylabel("P&L ($)", color="white", fontsize=9)
-            ax_s.tick_params(colors="white", labelsize=9)
-            ax_s.set_facecolor("#0e1117")
-            fig_side.patch.set_facecolor("#0e1117")
-            for spine in ax_s.spines.values():
+        def _side_bar(labels, values, title, ylabel):
+            colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in values]
+            fig, ax = plt.subplots(figsize=(4, 2.5))
+            ax.bar(labels, values, color=colors)
+            ax.axhline(0, color="white", linewidth=0.8, alpha=0.5)
+            ax.set_title(title, color="white", fontsize=11)
+            ax.set_ylabel(ylabel, color="white", fontsize=9)
+            ax.tick_params(colors="white", labelsize=9)
+            ax.set_facecolor("#0e1117")
+            fig.patch.set_facecolor("#0e1117")
+            for spine in ax.spines.values():
                 spine.set_edgecolor("#444")
             plt.tight_layout()
-            _col_side, _ = st.columns([1, 2])
-            with _col_side:
+            return fig
+
+        if resolved:
+            _sc1, _sc2, _ = st.columns([1, 1, 1])
+            with _sc1:
+                fig_side = _side_bar(["YES", "NO"], [yes_pnl, no_pnl],
+                                     "P&L by Side ($)", "P&L ($)")
                 st.pyplot(fig_side)
-            plt.close(fig_side)
+                plt.close(fig_side)
+            with _sc2:
+                fig_side_pct = _side_bar(["YES", "NO"], [yes_pnl_pct, no_pnl_pct],
+                                         "P&L by Side (%)", "P&L (%)")
+                st.pyplot(fig_side_pct)
+                plt.close(fig_side_pct)
 
         st.divider()
 

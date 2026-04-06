@@ -51,6 +51,7 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 import joblib
+from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     classification_report, accuracy_score, roc_auc_score,
@@ -59,24 +60,30 @@ from sklearn.metrics import (
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 TICKERS       = [
-    # ── Original ──────────────────────────────────────────
+    # ── Mega-cap tech ──────────────────────────────────────
     "AAPL", "MSFT", "TSLA", "GOOGL", "AMZN", "NVDA", "META", "NFLX",
-    "JPM", "JNJ", "XOM", "WMT",
-    # ── Broad ETFs ────────────────────────────────────────
+    # ── High-beta / high-volatility ────────────────────────
+    "PLTR", "COIN", "SHOP", "XYZ", "ROKU", "SNAP", "HOOD", "MSTR",
+    "RIVN", "UBER", "LYFT", "RBLX",
+    # ── Broad ETFs ─────────────────────────────────────────
     "SPY", "QQQ", "IWM",           # S&P 500, Nasdaq 100, Russell 2000
-    "GLD", "TLT",                  # gold, long bonds
-    # ── Semiconductors / Tech ─────────────────────────────
-    "AMD", "QCOM", "ORCL", "CRM", "ADBE",
-    # ── Finance ───────────────────────────────────────────
-    "GS", "BAC", "V", "MA",
-    # ── Healthcare / Biotech ──────────────────────────────
-    "UNH", "PFE", "ABBV", "AMGN",
-    # ── Industrials / Aerospace ───────────────────────────
-    "CAT", "BA", "HON", "GE",
-    # ── Energy ────────────────────────────────────────────
-    "CVX", "COP",
-    # ── Consumer ──────────────────────────────────────────
-    "MCD", "NKE", "HD", "COST",
+    "GLD", "TLT", "SLV",           # gold, long bonds, silver
+    # ── Sector ETFs ────────────────────────────────────────
+    "XLF", "XLK", "XLE", "XLV", "XLI", "ARKK",
+    # ── Semiconductors ─────────────────────────────────────
+    "AMD", "QCOM", "INTC", "MU", "AMAT", "AVGO", "ARM", "KLAC",
+    # ── Software / Cloud ───────────────────────────────────
+    "ORCL", "CRM", "ADBE", "SNOW", "DDOG", "NET", "ZS",
+    # ── Finance ────────────────────────────────────────────
+    "JPM", "GS", "BAC", "MS", "WFC", "V", "MA", "SCHW", "BX",
+    # ── Healthcare / Biotech ───────────────────────────────
+    "JNJ", "UNH", "LLY", "PFE", "ABBV", "AMGN", "MRK", "MRNA", "GILD",
+    # ── Industrials / Aerospace ────────────────────────────
+    "CAT", "BA", "HON", "GE", "LMT", "RTX", "DE", "UPS",
+    # ── Energy ─────────────────────────────────────────────
+    "XOM", "CVX", "COP", "SLB", "MPC",
+    # ── Consumer ───────────────────────────────────────────
+    "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "TGT", "DIS",
 ]
 PERIOD        = "10y"       # history to download
 FUTURE_DAYS   = 5           # days ahead for label
@@ -576,10 +583,26 @@ def plot_summary(summary: list[dict]):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
+    retrain_all = "--retrain" in sys.argv
+
+    # Load existing summary so we can reuse rows for skipped tickers
+    _summary_path = Path("ticker_summary.csv")
+    existing_summary: dict[str, dict] = {}
+    if _summary_path.exists() and not retrain_all:
+        _es = pd.read_csv(_summary_path)
+        existing_summary = {row["Ticker"]: row.to_dict() for _, row in _es.iterrows()}
+
     summary    = []
     cv_results = {}
 
     for ticker in TICKERS:
+        model_path = Path(f"model_{ticker}.joblib")
+        if model_path.exists() and not retrain_all and ticker in existing_summary:
+            print(f"\n[SKIP] {ticker} — model exists (use --retrain to force)")
+            summary.append(existing_summary[ticker])
+            continue
+
         print(f"\nDownloading {ticker} ({PERIOD}) ...")
         df = download_data(ticker, PERIOD)
         print(f"  {len(df)} rows, {df.index[0].date()} → {df.index[-1].date()}")
@@ -627,5 +650,6 @@ if __name__ == "__main__":
     summary_df.to_csv("ticker_summary.csv", index=False)
     print("\nSummary saved → ticker_summary.csv")
 
-    plot_cv_results(cv_results)
+    if cv_results:
+        plot_cv_results(cv_results)
     plot_summary(summary)
