@@ -1473,14 +1473,20 @@ with tab_dash:
     # Render scan results + paper trade buttons from session state (persists across reruns)
     if "stock_scan_signals" in st.session_state and st.session_state["stock_scan_signals"]:
         _ss = st.session_state["stock_scan_signals"]
-        scan_rows = [{
-            "Ticker"     : s["ticker"],
-            "Close"      : f"${s['close']:.2f}",
-            "Prob ≥2%"   : f"{s['prob']*100:.1f}%",
-            "Edge"       : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
-            "Suggested $": f"${s['alloc']:,.0f}",
-            "~Shares"    : s["shares"] if s["shares"] > 0 else "<1",
-        } for s in _ss]
+        scan_rows = []
+        for s in _ss:
+            _cur = s.get("current_price")
+            _chg = ((_cur - s["close"]) / s["close"] * 100) if _cur else None
+            scan_rows.append({
+                "Ticker"     : s["ticker"],
+                "Signal Close": f"${s['close']:.2f}",
+                "Now"        : f"${_cur:.2f}" if _cur else "—",
+                "Move"       : (f"{_chg:+.1f}%" if _chg is not None else "—"),
+                "Prob ≥2%"   : f"{s['prob']*100:.1f}%",
+                "Edge"       : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
+                "Suggested $": f"${s['alloc']:,.0f}",
+                "~Shares"    : s["shares"] if s["shares"] > 0 else "<1",
+            })
         st.dataframe(pd.DataFrame(scan_rows), use_container_width=True, hide_index=True)
         st.caption(
             f"Scanned {st.session_state.get('stock_scan_eligible','?')} tickers · "
