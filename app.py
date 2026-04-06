@@ -1036,6 +1036,12 @@ with tab_dash:
 
     _paper = db.load_paper_trades()
 
+    with st.expander("🔍 Debug: Raw DB (last 10 trades)", expanded=False):
+        _debug_rows = sorted(_paper, key=lambda x: x.get("placed_at", ""), reverse=True)[:10]
+        st.json([{k: v for k, v in t.items()
+                  if k in ("ticker","side","status","price_cents","close_time","placed_at","result","pnl_dollars")}
+                 for t in _debug_rows])
+
     if not _paper:
         st.info("No paper trades recorded yet. Run the Kalshi Scan and click '📝 Paper Trade' to start tracking.")
     else:
