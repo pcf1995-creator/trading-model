@@ -935,7 +935,9 @@ with tab_dash:
                     " · ".join(scan_debug)
                     + f" · {len(all_results)//2} contracts · {len(all_results)} sides scored"
                 )
-                # Auto-record ML plays as paper trades; skip vol model (<1hr) — too noisy
+                # Auto-record all plays as paper trades, bucketed by model type
+                if _vol_port:
+                    save_paper_trades(_vol_port, "vol")
                 if _daily_port:
                     save_paper_trades(_daily_port, "daily")
                 if _weekly_port:
@@ -957,7 +959,7 @@ with tab_dash:
 
         # ── Vol model plays (<1hr) ──
         st.subheader("< 1hr Plays — $20 budget (vol model)")
-        st.caption("Priced via realized-vol binary option model (Binance 1m data). Not recorded as paper trades.")
+        st.caption("Priced via realized-vol binary option model (Binance 1m data). Recorded as paper trades in the \"vol\" bucket.")
         if vol_port:
             st.dataframe(make_portfolio_table(vol_port), use_container_width=True, hide_index=True)
         else:
