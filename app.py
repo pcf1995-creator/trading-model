@@ -856,7 +856,12 @@ with tab_dash:
                     "ev"           : p["ev"],
                     "hours_to_exp" : p["hours_to_expiry"],
                     "close_time"   : p.get("close_time", ""),
-                    "bucket"       : bucket,
+                    "bucket"       : (
+                        "vol"             if p["hours_to_expiry"] < 1
+                        else "intraday_short" if p["hours_to_expiry"] < 8
+                        else "intraday_long"  if p["hours_to_expiry"] <= 24
+                        else "weekly"
+                    ),
                     "placed_at"    : datetime.now(timezone.utc).isoformat(),
                     "status"       : "open",
                     "result"       : None,
@@ -1026,10 +1031,20 @@ with tab_dash:
 
     if _cal_data:
         _bkts = _cal_data.get("buckets", {})
+        _cal_labels = {
+            "vol"            : "<1hr (vol)",
+            "intraday_short" : "1-8hr",
+            "intraday_long"  : "8-24hr",
+            "weekly"         : ">24hr",
+            # legacy keys
+            "intraday": "1-24hr (legacy)",
+            "daily"   : ">24hr (legacy)",
+        }
         _status_parts = []
         for _bn, _bd in _bkts.items():
             if not _bd.get("skipped"):
-                _status_parts.append(f"**{_bn}** {_bd['n_trades']} trades (actual {_bd['win_rate']:.0%} vs pred {_bd['pred_rate']:.0%})")
+                _label = _cal_labels.get(_bn, _bn)
+                _status_parts.append(f"**{_label}** {_bd['n_trades']} trades (actual {_bd['win_rate']:.0%} vs pred {_bd['pred_rate']:.0%})")
         if _status_parts:
             _updated = _cal_data.get("updated_at", "")[:10]
             st.caption(f"Active calibration (updated {_updated}): " + " · ".join(_status_parts))

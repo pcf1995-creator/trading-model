@@ -564,14 +564,27 @@ def recalibrate_from_paper_trades(paper_trades_path: str) -> dict:
     now_utc  = datetime.now(timezone.utc)
     buckets  = {}
 
-    # Map paper-trade bucket names → model_type keys used in score_contract calibration lookup.
-    # Paper trades: "daily" = 1–24hr contracts (intraday model), "weekly" = >24hr (daily model).
-    # Calibration is keyed by model_type so score_contract can look it up directly.
-    bucket_to_model = {"daily": "intraday", "weekly": "daily"}
+    # Calibration groups and which trades belong to each.
+    # New bucket names (granular): "vol" <1hr, "intraday_short" 1-8hr,
+    #   "intraday_long" 8-24hr, "weekly" >24hr.
+    # Backward compat: old "daily" records (1-24hr) are split by hours_to_exp.
+    def _cal_group(t: dict) -> str:
+        b = t.get("bucket", "")
+        if b == "vol":             return "vol"
+        if b == "intraday_short":  return "intraday_short"
+        if b == "intraday_long":   return "intraday_long"
+        if b == "weekly":          return "weekly"
+        # Legacy "daily" bucket: split by hours_to_exp
+        h = t.get("hours_to_exp")
+        if h is None:              return "intraday_long"   # safe default
+        if h < 8:                  return "intraday_short"
+        return "intraday_long"
 
-    for pt_bucket, model_key in bucket_to_model.items():
-        bt = [t for t in settled if t.get("bucket") == pt_bucket]
-        bucket = model_key   # use model_type as the calibration key
+    cal_groups = ["vol", "intraday_short", "intraday_long", "weekly"]
+
+    for cal_key in cal_groups:
+        bt = [t for t in settled if _cal_group(t) == cal_key]
+        bucket = cal_key
         if len(bt) < 5:
             buckets[bucket] = {"skipped": True, "reason": f"Only {len(bt)} settled trades (need ≥5)"}
             continue
@@ -855,6 +868,12 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
             return []
 
         prob_yes = vol_model_yes_prob(current_price, strike, minutes_left, sigma)
+        # Apply vol-model Platt calibration if available
+        _cal_v = models.get("calibration")
+        if _cal_v:
+            _vbp = _cal_v.get("buckets", {}).get("vol", {})
+            if _vbp and not _vbp.get("skipped") and "coef" in _vbp:
+                prob_yes = _apply_platt(prob_yes, _vbp["coef"], _vbp["intercept"])
         prob_no  = 1.0 - prob_yes
 
         base_vol = {
@@ -976,10 +995,13 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
 
     model_prob   = float(model.predict_proba(row)[0][1])
 
-    # Apply paper-trade Platt calibration if available for this bucket
+    # Apply paper-trade Platt calibration keyed by time horizon
     _cal = models.get("calibration")
     if _cal:
-        _bp = _cal.get("buckets", {}).get(model_type, {})
+        _cal_key = ("intraday_short" if hours_left < 8
+                    else "intraday_long" if hours_left <= 24
+                    else "weekly")
+        _bp = _cal.get("buckets", {}).get(_cal_key, {})
         if _bp and not _bp.get("skipped") and "coef" in _bp:
             model_prob = _apply_platt(model_prob, _bp["coef"], _bp["intercept"])
 
