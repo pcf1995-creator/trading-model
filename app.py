@@ -844,24 +844,27 @@ with tab_dash:
             if key in existing_keys:
                 skipped += 1
                 continue
-            db.add_paper_trade({
-                "ticker"       : p["ticker"],
-                "side"         : p["side"],
-                "price_cents"  : p["price"],
-                "contracts"    : p["contracts_suggested"],
-                "bet_dollars"  : p["kelly_dollars"],
-                "model_prob"   : p["model_prob"],
-                "cal_prob"     : p["calibrated_prob"],
-                "ev"           : p["ev"],
-                "hours_to_exp" : p["hours_to_expiry"],
-                "close_time"   : p.get("close_time", ""),
-                "bucket"       : bucket,
-                "placed_at"    : datetime.now(timezone.utc).isoformat(),
-                "status"       : "open",
-                "result"       : None,
-                "pnl_dollars"  : None,
-            })
-            added += 1
+            try:
+                db.add_paper_trade({
+                    "ticker"       : p["ticker"],
+                    "side"         : p["side"],
+                    "price_cents"  : p["price"],
+                    "contracts"    : p["contracts_suggested"],
+                    "bet_dollars"  : p["kelly_dollars"],
+                    "model_prob"   : p["model_prob"],
+                    "cal_prob"     : p["calibrated_prob"],
+                    "ev"           : p["ev"],
+                    "hours_to_exp" : p["hours_to_expiry"],
+                    "close_time"   : p.get("close_time", ""),
+                    "bucket"       : bucket,
+                    "placed_at"    : datetime.now(timezone.utc).isoformat(),
+                    "status"       : "open",
+                    "result"       : None,
+                    "pnl_dollars"  : None,
+                })
+                added += 1
+            except Exception as _db_err:
+                st.warning(f"Failed to save paper trade {p['ticker']} {p['side']}: {_db_err}")
         if added:
             st.success(f"Recorded {added} new paper trade(s)." +
                        (f" ({skipped} already tracked.)" if skipped else ""))
@@ -1119,7 +1122,8 @@ with tab_dash:
         if _open_paper:
             st.subheader(f"Open Paper Trades ({len(_open_paper)})")
             _open_tickers_pt = tuple(p["ticker"] for p in _open_paper)
-            _pt_live = fetch_live_prices(_open_tickers_pt) if not _client.dry_run else {}
+            _open_sides_pt   = tuple(p.get("side", "yes").lower() for p in _open_paper)
+            _pt_live = fetch_live_prices(_open_tickers_pt, _open_sides_pt) if not _client.dry_run else {}
 
             _pt_rows = []
             for _pt in _open_paper:

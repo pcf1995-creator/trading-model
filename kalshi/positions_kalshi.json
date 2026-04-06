@@ -1,38 +1,13 @@
 [
   {
-    "ticker": "KXETHD-26APR0317-T1959.99",
+    "ticker": "KXBTCD-26APR1017-T66999.99",
     "side": "yes",
-    "contracts": 72,
-    "entry_cents": 67,
-    "stop_cents": 34,
-    "close_time": "2026-04-03T21:00:00Z",
-    "entered_at": "2026-03-30T00:20:01.953688+00:00",
+    "contracts": 7,
+    "entry_cents": 55,
+    "stop_cents": 28,
+    "close_time": "2026-04-10T21:00:00Z",
+    "entered_at": "2026-04-04T20:20:39.300543+00:00",
     "status": "open",
-    "synced": true,
-    "entry_from_fills": true
-  },
-  {
-    "ticker": "KXETHD-26APR0317-T2039.99",
-    "side": "yes",
-    "contracts": 81,
-    "entry_cents": 60,
-    "stop_cents": 30,
-    "close_time": "2026-04-03T21:00:00Z",
-    "entered_at": "2026-03-30T11:30:02.181430+00:00",
-    "status": "open",
-    "synced": true,
-    "entry_from_fills": true
-  },
-  {
-    "ticker": "KXBTCD-26APR0317-T67299.99",
-    "side": "yes",
-    "contracts": 75,
-    "entry_cents": 65,
-    "stop_cents": 32,
-    "close_time": "2026-04-03T21:00:00Z",
-    "entered_at": "2026-04-01T06:50:30.839750+00:00",
-    "status": "open",
-    "synced": true,
-    "entry_from_fills": true
+    "synced": true
   }
 ]
