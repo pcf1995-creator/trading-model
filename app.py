@@ -1144,6 +1144,7 @@ with tab_dash:
         # ── Open paper trades ─────────────────────────────────────────────────────
         if _open_paper:
             st.subheader(f"Open Paper Trades ({len(_open_paper)})")
+            _open_paper = sorted(_open_paper, key=lambda x: x.get("placed_at", ""), reverse=True)
             _open_tickers_pt = tuple(p["ticker"] for p in _open_paper)
             _open_sides_pt   = tuple(p.get("side", "yes").lower() for p in _open_paper)
             _pt_live = fetch_live_prices(_open_tickers_pt, _open_sides_pt) if not _client.dry_run else {}
