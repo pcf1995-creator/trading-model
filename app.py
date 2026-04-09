@@ -46,7 +46,7 @@ PAPER_TRADES     = ROOT / "paper_trades.json"
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Trading Dashboard")
 
-tab_dash, tab_perf = st.tabs(["📊 Dashboard", "📈 Performance"])
+tab_dash, tab_lt, tab_perf = st.tabs(["📊 Dashboard", "📈 Long-Term L/S", "📉 Performance"])
 
 with tab_dash:
 
@@ -1791,6 +1791,275 @@ with tab_dash:
                 c2.metric("Win Rate", f"{_wins/len(_with_pnl):.0%}")
                 c3.metric("Avg P&L", f"{_avg_pnl:+.1f}%")
                 c4.metric("Total P&L", f"${_total_pnl:+.2f}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LONG-TERM L/S TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_lt:
+    st.header("Long-Term L/S Portfolio")
+    st.caption(
+        "Factor-scored (momentum · quality · value). "
+        "Top 5 → LONG, Bottom 5 → SHORT. "
+        "Reassessment-based exits — no fixed hold period."
+    )
+
+    # ── Load long-term module lazily ─────────────────────────────────────────
+    _lt_mod = None
+    try:
+        _lt_spec = importlib.util.spec_from_file_location(
+            "longterm", ROOT / "stocks" / "longterm.py"
+        )
+        _lt_mod = importlib.util.module_from_spec(_lt_spec)
+        _lt_spec.loader.exec_module(_lt_mod)
+    except Exception as _lt_err:
+        st.warning(f"Could not load longterm module: {_lt_err}")
+
+    if _lt_mod:
+        # ── Open long-term positions ──────────────────────────────────────────
+        _lt_positions = _lt_mod.load_lt_positions()
+        _lt_open   = [p for p in _lt_positions if p.get("status") == "open"]
+        _lt_closed = [p for p in _lt_positions if p.get("status") == "closed"]
+
+        if _lt_open:
+            _lt_rows = []
+            for _lp in _lt_open:
+                _pnl   = _lp.get("pnl_pct", 0)
+                _score = _lp.get("current_score")
+                _flag  = ""
+                if _lp.get("exit_signal") == "HARD_STOP":
+                    _flag = "🚨 HARD STOP"
+                elif _lp.get("reassess_signal"):
+                    _flag = f"⚠️ {_lp['reassess_signal']}"
+                _lt_rows.append({
+                    "Ticker"    : _lp["ticker"],
+                    "Dir"       : _lp["direction"],
+                    "Entry $"   : f"${_lp['entry_price']:.2f}",
+                    "Cur $"     : f"${_lp.get('current_price', _lp['entry_price']):.2f}",
+                    "Days"      : _lp.get("days_held", "—"),
+                    "P&L"       : f"{_pnl:+.2f}%",
+                    "Score"     : f"{_score:.3f}" if _score is not None else "—",
+                    "Status"    : _flag or "✓ Hold",
+                })
+            st.dataframe(
+                pd.DataFrame(_lt_rows).style.map(color_pnl, subset=["P&L"]),
+                hide_index=True, use_container_width=True,
+            )
+        else:
+            st.info("No open long-term positions. Run a scan to get recommendations.")
+
+        # ── Scan controls ─────────────────────────────────────────────────────
+        _lt_budget = st.number_input(
+            "Portfolio size ($)", min_value=1_000, max_value=1_000_000,
+            value=50_000, step=1_000, key="lt_budget",
+        )
+
+        if st.button("Run Long-Term Scan", type="primary", key="lt_scan"):
+            _summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
+            if _summary_path is None and (ROOT / "stocks" / "ticker_summary.csv").exists():
+                _summary_path = ROOT / "stocks" / "ticker_summary.csv"
+            if _summary_path is None and (ROOT / "ticker_summary.csv").exists():
+                _summary_path = ROOT / "ticker_summary.csv"
+
+            if _summary_path is None:
+                st.error("ticker_summary.csv not found — run the stock model training first.")
+            else:
+                _lt_tickers = pd.read_csv(_summary_path)["Ticker"].tolist()
+                _lt_progress = st.progress(0, text="Fetching factor data…")
+
+                def _lt_cb(i, n, t):
+                    _lt_progress.progress((i + 1) / n, text=f"Scoring {t} ({i+1}/{n})")
+
+                try:
+                    _lt_df = _lt_mod.run_lt_scan(_lt_tickers, _lt_cb)
+                    _lt_progress.empty()
+                    st.session_state["lt_scan_result"] = _lt_df
+                    st.session_state["lt_scan_budget"]  = _lt_budget
+                except Exception as _lt_scan_err:
+                    _lt_progress.empty()
+                    st.error(f"Long-term scan error: {_lt_scan_err}")
+
+        # ── Display scan results ──────────────────────────────────────────────
+        if "lt_scan_result" in st.session_state:
+            _lt_df = st.session_state["lt_scan_result"]
+            _lt_budget_used = st.session_state.get("lt_scan_budget", _lt_budget)
+
+            if not _lt_df.empty:
+                # Show full ranked table in expander
+                with st.expander("Full ranked universe", expanded=False):
+                    _display_cols = ["rank", "ticker", "direction", "composite_score",
+                                     "mom_12_1", "mom_1m", "roe", "gross_margin",
+                                     "fwd_pe", "pb", "current_price"]
+                    _display_cols = [c for c in _display_cols if c in _lt_df.columns]
+                    _lt_display = _lt_df[_display_cols].copy()
+                    for _pct_col in ["mom_12_1", "mom_1m", "roe", "gross_margin"]:
+                        if _pct_col in _lt_display.columns:
+                            _lt_display[_pct_col] = _lt_display[_pct_col].apply(
+                                lambda x: f"{x*100:+.1f}%" if pd.notna(x) else "—"
+                            )
+                    for _mul_col in ["fwd_pe", "pb"]:
+                        if _mul_col in _lt_display.columns:
+                            _lt_display[_mul_col] = _lt_display[_mul_col].apply(
+                                lambda x: f"{x:.1f}x" if pd.notna(x) else "—"
+                            )
+                    st.dataframe(_lt_display, hide_index=True, use_container_width=True)
+
+                # LONG recommendations
+                _lt_longs  = _lt_df[_lt_df["direction"] == "LONG"]
+                _lt_shorts = _lt_df[_lt_df["direction"] == "SHORT"]
+
+                st.subheader("LONG Recommendations")
+                _existing_lt_tickers = {p["ticker"] for p in _lt_open}
+                _alloc_per_side = _lt_budget_used / 2
+                _per_long = _alloc_per_side / max(len(_lt_longs), 1)
+
+                for _, _lr in _lt_longs.iterrows():
+                    _tk = _lr["ticker"]
+                    _already = _tk in _existing_lt_tickers
+                    _shares = int(_per_long / _lr["current_price"]) if _lr["current_price"] else 0
+                    _col1, _col2 = st.columns([3, 1])
+                    with _col1:
+                        _mom_str = f"{_lr['mom_12_1']*100:+.1f}%" if pd.notna(_lr.get("mom_12_1")) else "—"
+                        _m1_str  = f"{_lr['mom_1m']*100:+.1f}%"  if pd.notna(_lr.get("mom_1m"))   else "—"
+                        _roe_str = f"{_lr['roe']*100:.1f}%"        if pd.notna(_lr.get("roe"))      else "—"
+                        st.markdown(
+                            f"**{_tk}** · Score {_lr['composite_score']:.3f} · "
+                            f"${_lr['current_price']} · "
+                            f"Mom(12-1): {_mom_str} · 1m: {_m1_str} · ROE: {_roe_str}"
+                        )
+                    with _col2:
+                        if _already:
+                            st.caption("Already held")
+                        elif st.button(f"📈 Record Long {_tk}", key=f"lt_long_{_tk}"):
+                            _new_lt = {
+                                "ticker"      : _tk,
+                                "direction"   : "LONG",
+                                "entry_price" : _lr["current_price"],
+                                "entry_date"  : str(date.today()),
+                                "shares"      : _shares,
+                                "cost"        : round(_shares * _lr["current_price"], 2),
+                                "status"      : "open",
+                                "composite_score": float(_lr["composite_score"]),
+                                "pnl_pct"     : 0.0,
+                                "days_held"   : 0,
+                                "exit_signal" : None,
+                                "reassess_signal": None,
+                            }
+                            _lt_positions.append(_new_lt)
+                            _lt_mod.save_lt_positions(_lt_positions)
+                            st.success(f"Recorded LONG {_tk} @ ${_lr['current_price']}")
+                            st.rerun()
+
+                st.subheader("SHORT Recommendations")
+                _per_short = _alloc_per_side / max(len(_lt_shorts), 1)
+                for _, _sr in _lt_shorts.iterrows():
+                    _tk = _sr["ticker"]
+                    _already = _tk in _existing_lt_tickers
+                    _shares = int(_per_short / _sr["current_price"]) if _sr["current_price"] else 0
+                    _col1, _col2 = st.columns([3, 1])
+                    with _col1:
+                        _mom_str = f"{_sr['mom_12_1']*100:+.1f}%" if pd.notna(_sr.get("mom_12_1")) else "—"
+                        _m1_str  = f"{_sr['mom_1m']*100:+.1f}%"  if pd.notna(_sr.get("mom_1m"))   else "—"
+                        st.markdown(
+                            f"**{_tk}** · Score {_sr['composite_score']:.3f} · "
+                            f"${_sr['current_price']} · "
+                            f"Mom(12-1): {_mom_str} · 1m: {_m1_str}"
+                        )
+                    with _col2:
+                        if _already:
+                            st.caption("Already held")
+                        elif st.button(f"📉 Record Short {_tk}", key=f"lt_short_{_tk}"):
+                            _new_lt = {
+                                "ticker"      : _tk,
+                                "direction"   : "SHORT",
+                                "entry_price" : _sr["current_price"],
+                                "entry_date"  : str(date.today()),
+                                "shares"      : _shares,
+                                "cost"        : round(_shares * _sr["current_price"], 2),
+                                "status"      : "open",
+                                "composite_score": float(_sr["composite_score"]),
+                                "pnl_pct"     : 0.0,
+                                "days_held"   : 0,
+                                "exit_signal" : None,
+                                "reassess_signal": None,
+                            }
+                            _lt_positions.append(_new_lt)
+                            _lt_mod.save_lt_positions(_lt_positions)
+                            st.success(f"Recorded SHORT {_tk} @ ${_sr['current_price']}")
+                            st.rerun()
+
+        # ── Reassess open positions ───────────────────────────────────────────
+        if _lt_open and "lt_scan_result" in st.session_state:
+            if st.button("Reassess Open Positions", key="lt_reassess"):
+                _lt_updated = _lt_mod.assess_open_positions(
+                    _lt_open, st.session_state["lt_scan_result"]
+                )
+                # Merge back into full positions list
+                _lt_by_ticker = {p["ticker"]: p for p in _lt_updated}
+                _lt_positions = [
+                    _lt_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
+                    for p in _lt_positions
+                ]
+                _lt_mod.save_lt_positions(_lt_positions)
+                st.success("Positions reassessed.")
+                st.rerun()
+
+        # ── Close a position manually ─────────────────────────────────────────
+        if _lt_open:
+            with st.expander("Close a position"):
+                _lt_close_ticker = st.selectbox(
+                    "Ticker", [p["ticker"] for p in _lt_open], key="lt_close_sel"
+                )
+                _lt_close_price = st.number_input(
+                    "Exit price ($)", min_value=0.01, value=100.0, key="lt_close_price"
+                )
+                _lt_close_reason = st.selectbox(
+                    "Reason", ["reassessment", "hard_stop", "manual"], key="lt_close_reason"
+                )
+                if st.button("Close Position", key="lt_close_btn"):
+                    for _lp in _lt_positions:
+                        if _lp["ticker"] == _lt_close_ticker and _lp["status"] == "open":
+                            _ep = _lp["entry_price"]
+                            if _lp["direction"] == "LONG":
+                                _pnl_pct = (_lt_close_price - _ep) / _ep * 100
+                                _pnl_d   = (_lt_close_price - _ep) * _lp.get("shares", 0)
+                            else:
+                                _pnl_pct = (_ep - _lt_close_price) / _ep * 100
+                                _pnl_d   = (_ep - _lt_close_price) * _lp.get("shares", 0)
+                            _lp.update({
+                                "status"      : "closed",
+                                "exit_price"  : _lt_close_price,
+                                "exit_date"   : str(date.today()),
+                                "exit_reason" : _lt_close_reason,
+                                "pnl_pct"     : round(_pnl_pct, 2),
+                                "pnl_dollars" : round(_pnl_d, 2),
+                            })
+                            break
+                    _lt_mod.save_lt_positions(_lt_positions)
+                    st.success(f"Closed {_lt_close_ticker}.")
+                    st.rerun()
+
+        # ── Closed positions ──────────────────────────────────────────────────
+        if _lt_closed:
+            with st.expander(f"Closed long-term positions ({len(_lt_closed)})"):
+                _lt_c_rows = []
+                for _lp in sorted(_lt_closed, key=lambda x: x.get("exit_date", ""), reverse=True):
+                    _pnl = _lp.get("pnl_pct", 0)
+                    _lt_c_rows.append({
+                        "Ticker"    : _lp["ticker"],
+                        "Dir"       : _lp["direction"],
+                        "Entry $"   : f"${_lp['entry_price']:.2f}",
+                        "Exit $"    : f"${_lp.get('exit_price', 0):.2f}",
+                        "Entry Date": _lp.get("entry_date", ""),
+                        "Exit Date" : _lp.get("exit_date", ""),
+                        "Days"      : _lp.get("days_held", "—"),
+                        "Reason"    : _lp.get("exit_reason", "—"),
+                        "P&L %"     : f"{_pnl:+.2f}%",
+                        "P&L $"     : f"${_lp.get('pnl_dollars', 0):+.2f}",
+                    })
+                st.dataframe(
+                    pd.DataFrame(_lt_c_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                    hide_index=True, use_container_width=True,
+                )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB

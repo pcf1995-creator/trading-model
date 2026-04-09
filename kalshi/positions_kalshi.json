@@ -9,5 +9,60 @@
     "entered_at": "2026-04-04T20:20:39.300543+00:00",
     "status": "open",
     "synced": true
+  },
+  {
+    "ticker": "KXBTCD-26APR1017-T67499.99",
+    "side": "yes",
+    "contracts": 7,
+    "entry_cents": 65,
+    "stop_cents": 32,
+    "close_time": "2026-04-10T21:00:00Z",
+    "entered_at": "2026-04-07T05:33:07.128759+00:00",
+    "status": "open",
+    "synced": true
+  },
+  {
+    "ticker": "KXBTCD-26APR1017-T67999.99",
+    "side": "yes",
+    "contracts": 16,
+    "entry_cents": 59,
+    "stop_cents": 30,
+    "close_time": "2026-04-10T21:00:00Z",
+    "entered_at": "2026-04-07T05:33:07.784322+00:00",
+    "status": "open",
+    "synced": true
+  },
+  {
+    "ticker": "KXETHD-26APR1017-T2049.99",
+    "side": "yes",
+    "contracts": 7,
+    "entry_cents": 69,
+    "stop_cents": 34,
+    "close_time": "2026-04-10T21:00:00Z",
+    "entered_at": "2026-04-07T05:33:08.067974+00:00",
+    "status": "open",
+    "synced": true
+  },
+  {
+    "ticker": "KXETHD-26APR1017-T2089.99",
+    "side": "yes",
+    "contracts": 83,
+    "entry_cents": 58,
+    "stop_cents": 29,
+    "close_time": "2026-04-10T21:00:00Z",
+    "entered_at": "2026-04-07T05:33:08.262866+00:00",
+    "status": "open",
+    "synced": true
+  },
+  {
+    "ticker": "KXBTCD-26APR1017-T69499.99",
+    "side": "yes",
+    "contracts": 62,
+    "entry_cents": 79,
+    "stop_cents": 40,
+    "close_time": "2026-04-10T21:00:00Z",
+    "entered_at": "2026-04-09T08:33:01.426346+00:00",
+    "status": "open",
+    "synced": true
   }
 ]
