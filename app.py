@@ -1800,7 +1800,8 @@ with tab_lt:
     st.caption(
         "Factor-scored (momentum · quality · value). "
         "Top 5 → LONG, Bottom 5 → SHORT. "
-        "Reassessment-based exits — no fixed hold period."
+        "Portfolio split 50/50 long-short, equal-weighted per side. "
+        "Reassessment-based exits — no fixed hold period, re-score monthly."
     )
 
     # ── Load long-term module lazily ─────────────────────────────────────────
@@ -1850,7 +1851,7 @@ with tab_lt:
         # ── Scan controls ─────────────────────────────────────────────────────
         _lt_budget = st.number_input(
             "Portfolio size ($)", min_value=1_000, max_value=1_000_000,
-            value=50_000, step=1_000, key="lt_budget",
+            value=5_000, step=500, key="lt_budget",
         )
 
         if st.button("Run Long-Term Scan", type="primary", key="lt_scan"):
