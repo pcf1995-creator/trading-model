@@ -287,25 +287,48 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Core logic ────────────────────────────────────────────────────────────────
+def _is_after_330_et() -> bool:
+    """Return True if it's currently after 3:30 PM ET on a weekday."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import time as dtime
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        return now_et.weekday() < 5 and now_et.time() >= dtime(15, 30)
+    except Exception:
+        return False
+
+
 def get_latest_signal(ticker: str, model, feature_names: list[str],
                       threshold: float) -> dict | None:
-    """Download recent data, compute features, return signal dict or None."""
+    """Download recent data, compute features, return signal dict or None.
+
+    Before 3:30 PM ET: strips today's partial bar and signals off yesterday's
+    confirmed close (safe for a MOC order placed at end of day).
+
+    After 3:30 PM ET: keeps today's mature bar as the signal row — 95%+ of
+    volume is in by then, so the features reflect today's actual trading.
+    This lets you place a same-day MOC order with an updated signal.
+    """
     df = yf.download(ticker, period=f"{HISTORY_DAYS}d",
                      auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-    # Separate today's intraday bar (if present) from confirmed daily closes.
-    # Model was trained on confirmed end-of-day data, so we strip today's
-    # partial bar before computing features. We keep it as current_price so
-    # the caller can show both "signal close" and "current price" side-by-side.
-    _today = date.today()
+    _today    = date.today()
+    after_330 = _is_after_330_et()
+    intraday  = False
+
     if len(df) and df.index[-1].date() == _today:
         current_price = round(float(df["Close"].iloc[-1]), 4)
-        df = df.iloc[:-1]
+        if after_330:
+            # Today's bar is mature — use it as the signal row
+            intraday = True
+        else:
+            # Strip partial bar; signal off yesterday's confirmed close
+            df = df.iloc[:-1]
     else:
-        current_price = None   # run after hours; close IS current
+        current_price = None   # after hours; yesterday's close IS current
 
     if len(df) < 210:
         return None
@@ -327,6 +350,7 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
         "prob"          : round(prob, 4),
         "threshold"     : threshold,
         "signal"        : prob >= threshold,
+        "intraday"      : intraday,
     }
 
 

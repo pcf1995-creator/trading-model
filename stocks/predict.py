@@ -287,6 +287,16 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Core logic ────────────────────────────────────────────────────────────────
+def _is_after_330_et() -> bool:
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import time as dtime
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        return now_et.weekday() < 5 and now_et.time() >= dtime(15, 30)
+    except Exception:
+        return False
+
+
 def get_latest_signal(ticker: str, model, feature_names: list[str],
                       threshold: float) -> dict | None:
     """Download recent data, compute features, return signal dict or None."""
@@ -296,16 +306,18 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
         df.columns = df.columns.get_level_values(0)
     df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-    # Separate today's intraday bar (if present) from confirmed daily closes.
-    # Model was trained on confirmed end-of-day data, so we strip today's
-    # partial bar before computing features. We keep it as current_price so
-    # the caller can show both "signal close" and "current price" side-by-side.
-    _today = date.today()
+    _today    = date.today()
+    after_330 = _is_after_330_et()
+    intraday  = False
+
     if len(df) and df.index[-1].date() == _today:
         current_price = round(float(df["Close"].iloc[-1]), 4)
-        df = df.iloc[:-1]
+        if after_330:
+            intraday = True   # mature enough to signal off today's bar
+        else:
+            df = df.iloc[:-1]
     else:
-        current_price = None   # run after hours; close IS current
+        current_price = None
 
     if len(df) < 210:
         return None
@@ -323,10 +335,11 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
         "ticker"        : ticker,
         "date"          : str(as_of_date),
         "close"         : round(close, 4),
-        "current_price" : current_price,   # None if run after market close
+        "current_price" : current_price,
         "prob"          : round(prob, 4),
-        "threshold": threshold,
-        "signal"   : prob >= threshold,
+        "threshold"     : threshold,
+        "signal"        : prob >= threshold,
+        "intraday"      : intraday,
     }
 
 
