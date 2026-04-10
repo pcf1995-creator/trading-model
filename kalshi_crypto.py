@@ -593,7 +593,14 @@ def recalibrate_from_paper_trades(paper_trades_path: str) -> dict:
         for t in bt:
             mp     = float(t.get("model_prob", 0.5))
             result = t.get("result", "").lower()
-            # outcome = 1 if market settled YES (independent of side bet)
+            side   = t.get("side", "yes").lower()
+
+            # outcome = 1 if the model's YES prediction was correct.
+            # For YES bets: model said YES, so outcome=1 if settled YES.
+            # For NO bets:  model said YES was unlikely (prob_yes = mp, which is low),
+            #               so outcome=1 if settled YES still — mp already reflects this.
+            # IMPORTANT: model_prob is always P(market settles YES). Calibrate
+            # on that consistently so YES and NO bets contribute correctly.
             outcome = 1 if result == "yes" else 0
 
             placed_str = t.get("placed_at", "")
@@ -651,9 +658,18 @@ def recalibrate_from_paper_trades(paper_trades_path: str) -> dict:
     return result
 
 
-def _apply_platt(model_prob: float, coef: float, intercept: float) -> float:
-    """Apply Platt scaling: sigmoid(coef * model_prob + intercept)."""
-    return float(1 / (1 + math.exp(-(coef * model_prob + intercept))))
+def _apply_platt(model_prob: float, coef: float, intercept: float,
+                 max_shift: float = 0.25) -> float:
+    """Apply Platt scaling: sigmoid(coef * model_prob + intercept).
+
+    Capped so the calibrated probability cannot deviate more than `max_shift`
+    from the raw model probability. This prevents extreme extrapolation when
+    the logistic regression was trained on a narrow or biased sample range —
+    in particular it stops a negative coefficient from inverting the prediction
+    for inputs well outside the training distribution.
+    """
+    calibrated = float(1 / (1 + math.exp(-(coef * model_prob + intercept))))
+    return float(np.clip(calibrated, model_prob - max_shift, model_prob + max_shift))
 
 
 # ── Base rate ─────────────────────────────────────────────────────────────────
