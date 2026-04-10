@@ -1822,24 +1822,45 @@ with tab_lt:
         _lt_closed = [p for p in _lt_positions if p.get("status") == "closed"]
 
         if _lt_open:
+            # Batch-fetch live prices for all open positions
+            import yfinance as _yf
+            _lt_tks = [p["ticker"] for p in _lt_open]
+            try:
+                _lt_live_df = _yf.download(
+                    _lt_tks, period="5d", auto_adjust=True, progress=False, group_by="ticker"
+                )
+                def _lt_live_price(tk):
+                    try:
+                        if len(_lt_tks) == 1:
+                            return round(float(_lt_live_df["Close"].dropna().iloc[-1]), 2)
+                        return round(float(_lt_live_df[tk]["Close"].dropna().iloc[-1]), 2)
+                    except Exception:
+                        return None
+            except Exception:
+                def _lt_live_price(tk): return None
+
             _lt_rows = []
             for _lp in _lt_open:
-                _pnl   = _lp.get("pnl_pct", 0)
+                _ep    = _lp["entry_price"]
+                _cur   = _lt_live_price(_lp["ticker"]) or _ep
+                _dir   = _lp["direction"]
+                _pnl   = ((_cur - _ep) / _ep * 100) if _dir == "LONG" else ((_ep - _cur) / _ep * 100)
                 _score = _lp.get("current_score")
+                _days  = (date.today() - date.fromisoformat(_lp["entry_date"])).days
                 _flag  = ""
                 if _lp.get("exit_signal") == "HARD_STOP":
                     _flag = "🚨 HARD STOP"
                 elif _lp.get("reassess_signal"):
                     _flag = f"⚠️ {_lp['reassess_signal']}"
                 _lt_rows.append({
-                    "Ticker"    : _lp["ticker"],
-                    "Dir"       : _lp["direction"],
-                    "Entry $"   : f"${_lp['entry_price']:.2f}",
-                    "Cur $"     : f"${_lp.get('current_price', _lp['entry_price']):.2f}",
-                    "Days"      : _lp.get("days_held", "—"),
-                    "P&L"       : f"{_pnl:+.2f}%",
-                    "Score"     : f"{_score:.3f}" if _score is not None else "—",
-                    "Status"    : _flag or "✓ Hold",
+                    "Ticker"  : _lp["ticker"],
+                    "Dir"     : _dir,
+                    "Entry $" : f"${_ep:.2f}",
+                    "Cur $"   : f"${_cur:.2f}",
+                    "Days"    : _days,
+                    "P&L"     : f"{_pnl:+.2f}%",
+                    "Score"   : f"{_score:.3f}" if _score is not None else "—",
+                    "Status"  : _flag or "✓ Hold",
                 })
             st.dataframe(
                 pd.DataFrame(_lt_rows).style.map(color_pnl, subset=["P&L"]),
