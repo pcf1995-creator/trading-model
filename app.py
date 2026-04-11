@@ -1018,7 +1018,7 @@ with tab_dash:
                     continue
                 _sx_by_strike.setdefault(_strike, {})["_hrs"]  = _r.get("hours_to_expiry")
                 _sx_by_strike[_strike]["_pct"] = _r.get("pct_to_strike")
-                if _r.get("side") == "yes":
+                if _r.get("side", "").upper() == "YES":
                     _sx_by_strike[_strike]["yes_ask"]  = _r.get("yes_ask_cents")
                     _sx_by_strike[_strike]["cal_yes"]  = _r.get("calibrated_prob")
                     _sx_by_strike[_strike]["ev_yes"]   = _r.get("ev")
