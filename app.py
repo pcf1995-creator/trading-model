@@ -1913,7 +1913,12 @@ with tab_lt:
                 _cur   = _lt_live_price(_lp["ticker"]) or _ep
                 _dir   = _lp["direction"]
                 _pnl   = ((_cur - _ep) / _ep * 100) if _dir == "LONG" else ((_ep - _cur) / _ep * 100)
-                _cost  = _lp.get("cost", 0) or 0
+                _shares_held = _lp.get("shares", 0) or 0
+                _cost  = _lp.get("cost", 0) or (_shares_held * _ep)
+                # Fallback: if cost still 0 (old positions with int-truncated shares),
+                # estimate from entry price × shares; if shares also 0, use $500 allocation
+                if _cost == 0:
+                    _cost = 500.0
                 _pnl_d = _cost * _pnl / 100
                 _score = _lp.get("current_score")
                 _days  = (date.today() - date.fromisoformat(_lp["entry_date"])).days
@@ -2026,7 +2031,7 @@ with tab_lt:
                 for _, _lr in _lt_longs.iterrows():
                     _tk = _lr["ticker"]
                     _already = _tk in _existing_lt_tickers
-                    _shares = int(_per_long / _lr["current_price"]) if _lr["current_price"] else 0
+                    _shares = round(_per_long / _lr["current_price"], 4) if _lr["current_price"] else 0
                     _col1, _col2 = st.columns([3, 1])
                     with _col1:
                         _mom_str = f"{_lr['mom_12_1']*100:+.1f}%" if pd.notna(_lr.get("mom_12_1")) else "—"
@@ -2065,7 +2070,7 @@ with tab_lt:
                 for _, _sr in _lt_shorts.iterrows():
                     _tk = _sr["ticker"]
                     _already = _tk in _existing_lt_tickers
-                    _shares = int(_per_short / _sr["current_price"]) if _sr["current_price"] else 0
+                    _shares = round(_per_short / _sr["current_price"], 4) if _sr["current_price"] else 0
                     _col1, _col2 = st.columns([3, 1])
                     with _col1:
                         _mom_str = f"{_sr['mom_12_1']*100:+.1f}%" if pd.notna(_sr.get("mom_12_1")) else "—"
