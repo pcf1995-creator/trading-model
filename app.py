@@ -1840,11 +1840,15 @@ with tab_lt:
                 def _lt_live_price(tk): return None
 
             _lt_rows = []
+            _lt_pnl_dollars = []
+            _lt_costs = []
             for _lp in _lt_open:
                 _ep    = _lp["entry_price"]
                 _cur   = _lt_live_price(_lp["ticker"]) or _ep
                 _dir   = _lp["direction"]
                 _pnl   = ((_cur - _ep) / _ep * 100) if _dir == "LONG" else ((_ep - _cur) / _ep * 100)
+                _cost  = _lp.get("cost", 0) or 0
+                _pnl_d = _cost * _pnl / 100
                 _score = _lp.get("current_score")
                 _days  = (date.today() - date.fromisoformat(_lp["entry_date"])).days
                 _flag  = ""
@@ -1858,14 +1862,33 @@ with tab_lt:
                     "Entry $" : f"${_ep:.2f}",
                     "Cur $"   : f"${_cur:.2f}",
                     "Days"    : _days,
-                    "P&L"     : f"{_pnl:+.2f}%",
+                    "P&L %"   : f"{_pnl:+.2f}%",
+                    "P&L $"   : f"${_pnl_d:+.2f}",
                     "Score"   : f"{_score:.3f}" if _score is not None else "—",
                     "Status"  : _flag or "✓ Hold",
                 })
+                _lt_pnl_dollars.append(_pnl_d)
+                _lt_costs.append(_cost)
+
             st.dataframe(
-                pd.DataFrame(_lt_rows).style.map(color_pnl, subset=["P&L"]),
+                pd.DataFrame(_lt_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
                 hide_index=True, use_container_width=True,
             )
+
+            # ── Portfolio summary metrics ──────────────────────────────────────
+            _total_cost    = sum(_lt_costs)
+            _total_pnl_d   = sum(_lt_pnl_dollars)
+            _weighted_pnl  = (_total_pnl_d / _total_cost * 100) if _total_cost else 0
+            _longs  = [r for r in _lt_rows if r["Dir"] == "LONG"]
+            _shorts = [r for r in _lt_rows if r["Dir"] == "SHORT"]
+            _long_pnl  = sum(_lt_pnl_dollars[i] for i, r in enumerate(_lt_rows) if r["Dir"] == "LONG")
+            _short_pnl = sum(_lt_pnl_dollars[i] for i, r in enumerate(_lt_rows) if r["Dir"] == "SHORT")
+
+            _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+            _mc1.metric("Total P&L $",       f"${_total_pnl_d:+.2f}")
+            _mc2.metric("Weighted P&L %",    f"{_weighted_pnl:+.2f}%")
+            _mc3.metric("Long P&L $",        f"${_long_pnl:+.2f}")
+            _mc4.metric("Short P&L $",       f"${_short_pnl:+.2f}")
         else:
             st.info("No open long-term positions. Run a scan to get recommendations.")
 
