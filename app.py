@@ -984,6 +984,72 @@ with tab_dash:
         else:
             st.info("No weekly contracts available right now.")
 
+    # ── Strike Explorer ───────────────────────────────────────────────────────
+    with st.expander("🔍 Strike Explorer — browse all strikes for an expiry"):
+        # Reuses scored results already computed during the last scan
+        _sx_all_results = (
+            st.session_state.get("scan_under24", []) +
+            st.session_state.get("scan_over24",  [])
+        )
+        if not _sx_all_results:
+            st.info("Run the Kalshi Scan first — Strike Explorer filters from those results.")
+        else:
+            _sx_col1, _sx_col2, _sx_col3 = st.columns(3)
+            _sx_series = _sx_col1.selectbox("Series", ["KXBTCD", "KXETHD"], key="sx_series")
+            _sx_expiry = _sx_col2.text_input("Expiry code (e.g. 26APR1717)", value="26APR1717", key="sx_expiry")
+            _sx_col3a, _sx_col3b = _sx_col3.columns(2)
+            _sx_lo = float(_sx_col3a.number_input("Strike min $", value=71500, step=500, key="sx_lo"))
+            _sx_hi = float(_sx_col3b.number_input("Strike max $", value=77000, step=500, key="sx_hi"))
+
+            _sx_prefix = f"{_sx_series}-{_sx_expiry}-T"
+            _sx_filtered = [
+                r for r in _sx_all_results
+                if r.get("ticker", "").startswith(_sx_prefix)
+            ]
+
+            # Group by strike — one row per strike showing both YES and NO
+            _sx_by_strike = {}
+            for _r in _sx_filtered:
+                try:
+                    _strike = float(_r["ticker"].split("-T")[-1])
+                except Exception:
+                    continue
+                if not (_sx_lo <= _strike <= _sx_hi):
+                    continue
+                _sx_by_strike.setdefault(_strike, {})["_hrs"]  = _r.get("hours_to_expiry")
+                _sx_by_strike[_strike]["_pct"] = _r.get("pct_to_strike")
+                if _r.get("side") == "yes":
+                    _sx_by_strike[_strike]["yes_ask"]  = _r.get("yes_ask_cents")
+                    _sx_by_strike[_strike]["cal_yes"]  = _r.get("calibrated_prob")
+                    _sx_by_strike[_strike]["ev_yes"]   = _r.get("ev")
+                else:
+                    _sx_by_strike[_strike]["no_ask"]   = _r.get("no_ask_cents")
+                    _sx_by_strike[_strike]["cal_no"]   = _r.get("calibrated_prob")
+                    _sx_by_strike[_strike]["ev_no"]    = _r.get("ev")
+
+            _sx_rows = []
+            for _strike in sorted(_sx_by_strike):
+                _d = _sx_by_strike[_strike]
+                _cal_yes = _d.get("cal_yes")
+                _cal_no  = _d.get("cal_no")
+                _sx_rows.append({
+                    "Strike"     : f"${_strike:,.2f}",
+                    "Hrs Left"   : f"{_d['_hrs']:.0f}h" if _d.get("_hrs") else "—",
+                    "% to Strike": f"{_d['_pct']:+.1f}%" if _d.get("_pct") is not None else "—",
+                    "YES Ask"    : f"{_d.get('yes_ask', '—')}¢" if _d.get("yes_ask") else "—",
+                    "Cal P(YES)" : f"{_cal_yes*100:.1f}%" if _cal_yes is not None else "—",
+                    "EV (YES)"   : f"{_d['ev_yes']:+.3f}" if _d.get("ev_yes") is not None else "—",
+                    "NO Ask"     : f"{_d.get('no_ask', '—')}¢" if _d.get("no_ask") else "—",
+                    "Cal P(NO)"  : f"{_cal_no*100:.1f}%"  if _cal_no  is not None else "—",
+                    "EV (NO)"    : f"{_d['ev_no']:+.3f}"  if _d.get("ev_no")  is not None else "—",
+                })
+
+            if _sx_rows:
+                st.dataframe(pd.DataFrame(_sx_rows), hide_index=True, use_container_width=True)
+                st.caption(f"{len(_sx_rows)} strikes · {_sx_series}-{_sx_expiry} · ${_sx_lo:,.0f}–${_sx_hi:,.0f}")
+            else:
+                st.warning(f"No scored results found for {_sx_prefix} in that range. Check expiry code.")
+
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════════
