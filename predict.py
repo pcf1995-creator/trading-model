@@ -31,13 +31,14 @@ warnings.filterwarnings("ignore")
 # ── Config ────────────────────────────────────────────────────────────────────
 POSITIONS_FILE  = "positions.json"
 SUMMARY_FILE    = "ticker_summary.csv"
-MAX_POSITIONS   = 8
+MAX_POSITIONS   = 8       # combined long + short slots
 STOP_LOSS_PCT   = 0.02    # 2% hard stop (checked at EOD close)
 HOLD_DAYS       = 5       # trading days
 HISTORY_DAYS    = 300     # enough for 200-day MA + buffer
 DEFAULT_CAPITAL = 10_000
 MIN_ROC_AUC     = 0.55    # only trade tickers with CV ROC-AUC above this
-MIN_PROB        = 0.60    # break-even at 60% with symmetric 2%/2% win/loss
+MIN_PROB        = 0.60    # minimum probability for long signals
+MIN_PROB_SHORT  = 0.60    # minimum probability for short signals
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -65,9 +66,10 @@ def trading_days_between(start: date, end: date) -> int:
     return days
 
 
-def load_model_and_features(ticker: str):
-    model_path    = Path(f"model_{ticker}.joblib")
-    features_path = Path(f"features_{ticker}.csv")
+def load_model_and_features(ticker: str, side: str = "long"):
+    suffix        = "_short" if side == "short" else ""
+    model_path    = Path(f"model_{ticker}{suffix}.joblib")
+    features_path = Path(f"features_{ticker}{suffix}.csv")
     if not model_path.exists() or not features_path.exists():
         return None, None
     model         = joblib.load(model_path)
@@ -299,7 +301,7 @@ def _is_after_330_et() -> bool:
 
 
 def get_latest_signal(ticker: str, model, feature_names: list[str],
-                      threshold: float) -> dict | None:
+                      threshold: float, side: str = "long") -> dict | None:
     """Download recent data, compute features, return signal dict or None.
 
     Before 3:30 PM ET: strips today's partial bar and signals off yesterday's
@@ -344,6 +346,7 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
 
     return {
         "ticker"        : ticker,
+        "side"          : side,
         "date"          : str(as_of_date),
         "close"         : round(close, 4),
         "current_price" : current_price,
@@ -370,13 +373,18 @@ def check_exits(positions: list[dict], today: date) -> tuple[list[dict], list[di
         entry_date  = date.fromisoformat(pos["entry_date"])
         entry_price = pos["entry_price"]
         ticker      = pos["ticker"]
+        side        = pos.get("side", "long")
 
         # Fetch current price
         df = yf.download(ticker, period="5d", auto_adjust=True, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         current_price = float(df["Close"].iloc[-1])
-        pnl_pct       = (current_price - entry_price) / entry_price
+
+        if side == "short":
+            pnl_pct = (entry_price - current_price) / entry_price
+        else:
+            pnl_pct = (current_price - entry_price) / entry_price
 
         days_held = trading_days_between(entry_date, today)
 
@@ -419,6 +427,12 @@ def main():
     threshold_map = dict(zip(summary["Ticker"], summary["CV_Threshold"]))
     roc_auc_map   = dict(zip(summary["Ticker"], summary["CV_ROC_AUC"]))
 
+    # Short model thresholds — optional columns (absent if short models not yet trained)
+    _short_thresh  = summary["CV_Threshold_short"]  if "CV_Threshold_short"  in summary.columns else [0.30] * len(summary)
+    _short_roc_auc = summary["CV_ROC_AUC_short"]    if "CV_ROC_AUC_short"    in summary.columns else [0.00] * len(summary)
+    short_threshold_map = dict(zip(summary["Ticker"], _short_thresh))
+    short_roc_auc_map   = dict(zip(summary["Ticker"], _short_roc_auc))
+
     eligible = [t for t in tickers if roc_auc_map.get(t, 0) >= MIN_ROC_AUC]
     skipped  = [t for t in tickers if roc_auc_map.get(t, 0) <  MIN_ROC_AUC]
     print(f"\n  Quality filter (CV ROC-AUC >= {MIN_ROC_AUC}): "
@@ -439,12 +453,14 @@ def main():
     if open_positions:
         open_positions, to_close = check_exits(open_positions, today)
         for pos in to_close:
-            reason = "STOP LOSS" if pos["status"] == "closed_stop" else "TIME EXIT"
-            pnl    = pos["pnl_pct"]
-            sign   = "+" if pnl >= 0 else ""
-            print(f"  SELL {pos['ticker']:6s}  {reason}  "
+            reason   = "STOP LOSS" if pos["status"] == "closed_stop" else "TIME EXIT"
+            pnl      = pos["pnl_pct"]
+            sign     = "+" if pnl >= 0 else ""
+            side     = pos.get("side", "long")
+            action   = "COVER SHORT" if side == "short" else "SELL"
+            print(f"  {action} {pos['ticker']:6s}  {reason}  "
                   f"entry={pos['entry_price']}  exit={pos['exit_price']}  "
-                  f"P&L={sign}{pnl}%  →  PLACE MOC SELL ORDER")
+                  f"P&L={sign}{pnl}%  →  PLACE MOC {'BUY TO COVER' if side == 'short' else 'SELL'} ORDER")
         closed_positions.extend(to_close)
         if not to_close:
             print("  No exits today.")
@@ -457,65 +473,94 @@ def main():
         for pos in open_positions:
             pnl  = pos.get("pnl_pct", 0)
             sign = "+" if pnl >= 0 else ""
-            print(f"  {pos['ticker']:6s}  entry={pos['entry_date']}  "
+            side = pos.get("side", "long")
+            tag  = "SHORT" if side == "short" else "LONG "
+            print(f"  {tag} {pos['ticker']:6s}  entry={pos['entry_date']}  "
                   f"@ {pos['entry_price']}  now={pos.get('current_price','?')}  "
                   f"P&L={sign}{pnl}%  day {pos.get('days_held','?')}/{HOLD_DAYS}")
     else:
         print("  None")
 
     # ── 3. Scan for new signals ──
-    slots_available = MAX_POSITIONS - len(open_positions)
-    open_tickers    = {p["ticker"] for p in open_positions}
+    slots_available    = MAX_POSITIONS - len(open_positions)
+    open_long_tickers  = {p["ticker"] for p in open_positions if p.get("side", "long")  == "long"}
+    open_short_tickers = {p["ticker"] for p in open_positions if p.get("side", "short") == "short"}
 
-    print(f"\n[SCANNING {len(tickers)} TICKERS FOR BUY SIGNALS ...]")
-    signals = []
+    print(f"\n[SCANNING {len(tickers)} TICKERS FOR LONG/SHORT SIGNALS ...]")
+    long_signals  = []
+    short_signals = []
+
     for ticker in tickers:
-        model, feature_names = load_model_and_features(ticker)
-        if model is None:
-            print(f"  {ticker}: no saved model, skipping")
-            continue
-        if ticker in open_tickers:
-            continue    # already holding this one
-        threshold = threshold_map.get(ticker, 0.30)
-        result    = get_latest_signal(ticker, model, feature_names, threshold)
-        if result:
-            signals.append(result)
-            above_thresh = result["signal"]
-            above_min    = result["prob"] >= MIN_PROB
-            if above_thresh and above_min:
-                flag = "  BUY"
-            elif above_thresh and not above_min:
-                flag = " WEAK"   # passed ticker threshold but prob < 0.50
-            else:
-                flag = "     "
-            _cur = result.get("current_price")
-            _price_str = (f"close={result['close']}  now=${_cur}"
-                          if _cur is not None else f"close={result['close']}")
-            print(f"  {flag} {ticker:6s}  prob={result['prob']:.3f}  "
-                  f"thresh={threshold:.2f}  {_price_str}")
+        # ── Long model ──
+        if ticker not in open_long_tickers:
+            long_model, long_features = load_model_and_features(ticker, "long")
+            if long_model is not None:
+                threshold = threshold_map.get(ticker, 0.30)
+                result    = get_latest_signal(ticker, long_model, long_features, threshold, "long")
+                if result:
+                    long_signals.append(result)
+                    above_thresh = result["signal"]
+                    above_min    = result["prob"] >= MIN_PROB
+                    if above_thresh and above_min:
+                        flag = "  LONG"
+                    elif above_thresh and not above_min:
+                        flag = "  WEAK"
+                    else:
+                        flag = "      "
+                    _cur = result.get("current_price")
+                    _price_str = (f"close={result['close']}  now=${_cur}"
+                                  if _cur is not None else f"close={result['close']}")
+                    print(f"  {flag} {ticker:6s}  prob={result['prob']:.3f}  "
+                          f"thresh={threshold:.2f}  {_price_str}")
+
+        # ── Short model ──
+        if ticker not in open_short_tickers:
+            short_model, short_features = load_model_and_features(ticker, "short")
+            if short_model is not None:
+                short_thresh = short_threshold_map.get(ticker, 0.30)
+                short_roc    = short_roc_auc_map.get(ticker, 0.0)
+                if short_roc >= MIN_ROC_AUC:
+                    result = get_latest_signal(ticker, short_model, short_features, short_thresh, "short")
+                    if result:
+                        short_signals.append(result)
+                        above_thresh = result["signal"]
+                        above_min    = result["prob"] >= MIN_PROB_SHORT
+                        if above_thresh and above_min:
+                            flag = " SHORT"
+                        elif above_thresh and not above_min:
+                            flag = "  WEAK"
+                        else:
+                            flag = "      "
+                        _cur = result.get("current_price")
+                        _price_str = (f"close={result['close']}  now=${_cur}"
+                                      if _cur is not None else f"close={result['close']}")
+                        print(f"  {flag} {ticker:6s}  prob={result['prob']:.3f}  "
+                              f"thresh={short_thresh:.2f}  {_price_str}  [short]")
 
     # ── 4. New entries ──
-    buy_signals = sorted([s for s in signals if s["signal"] and s["prob"] >= MIN_PROB],
-                         key=lambda x: x["prob"], reverse=True)
+    actionable_longs  = [s for s in long_signals  if s["signal"] and s["prob"] >= MIN_PROB]
+    actionable_shorts = [s for s in short_signals if s["signal"] and s["prob"] >= MIN_PROB_SHORT]
+    all_signals       = sorted(actionable_longs + actionable_shorts,
+                               key=lambda x: x["prob"], reverse=True)
 
     print(f"\n[NEW ENTRIES]  ({slots_available} slot(s) available)")
     new_entries = []
-    if not buy_signals:
-        print("  No buy signals today.")
+    if not all_signals:
+        print("  No signals today.")
     elif slots_available == 0:
         print("  Portfolio full — no new entries.")
     else:
         position_size = round(portfolio / MAX_POSITIONS, 2)
         taken         = 0
-        for sig in buy_signals:
+        for sig in all_signals:
             if taken >= slots_available:
-                print(f"  SKIP   {sig['ticker']:6s}  prob={sig['prob']:.3f}  "
+                side_tag = "SHORT" if sig["side"] == "short" else "LONG "
+                print(f"  SKIP  {side_tag} {sig['ticker']:6s}  prob={sig['prob']:.3f}  "
                       f"(no slots remaining)")
                 continue
-            whole_shares    = int(position_size / sig["close"])
-            frac_shares     = round(position_size / sig["close"], 4)
-            whole_cost      = round(whole_shares * sig["close"], 2)
-            # Warn if can't afford even 1 whole share
+            whole_shares = int(position_size / sig["close"])
+            frac_shares  = round(position_size / sig["close"], 4)
+            whole_cost   = round(whole_shares * sig["close"], 2)
             frac_note = ""
             if whole_shares == 0:
                 frac_note = f"  [fractional: {frac_shares} shares @ ${position_size:.2f}]"
@@ -524,12 +569,19 @@ def main():
                 shares, cost = whole_shares, whole_cost
             _cur = sig.get("current_price")
             _now_str = f"  now=${_cur}" if _cur is not None else ""
-            print(f"  BUY    {sig['ticker']:6s}  prob={sig['prob']:.3f}  "
+            if sig["side"] == "short":
+                action = "SELL SHORT"
+                order  = "PLACE MOC SELL SHORT ORDER 15min before close"
+            else:
+                action = "BUY       "
+                order  = "PLACE MOC BUY ORDER 15min before close"
+            print(f"  {action} {sig['ticker']:6s}  prob={sig['prob']:.3f}  "
                   f"close=${sig['close']}{_now_str}  "
                   f"shares={shares}  cost=${cost:,.2f}"
-                  f"{frac_note}  →  PLACE MOC BUY ORDER 15min before close")
+                  f"{frac_note}  →  {order}")
             new_entries.append({
                 "ticker"      : sig["ticker"],
+                "side"        : sig["side"],
                 "entry_date"  : sig["date"],
                 "entry_price" : sig["close"],
                 "shares"      : shares,
@@ -539,9 +591,7 @@ def main():
             taken += 1
 
     # ── 5. P&L summary ──
-    all_closed = closed_positions + [p for p in to_close] \
-        if open_positions else closed_positions
-    closed_with_pnl = [p for p in all_closed if "pnl_pct" in p]
+    closed_with_pnl = [p for p in closed_positions if "pnl_pct" in p]
     if closed_with_pnl:
         avg_pnl = sum(p["pnl_pct"] for p in closed_with_pnl) / len(closed_with_pnl)
         wins    = sum(1 for p in closed_with_pnl if p["pnl_pct"] > 0)

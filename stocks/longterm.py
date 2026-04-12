@@ -8,6 +8,11 @@ Scores tickers across three factors:
   • Value     — inverse P/B for all; inverse forward P/E only for ≥$5B market cap
                 (small caps excluded from P/E to avoid penalising pre-profit growth)
 
+  Plus a macro regime overlay:
+  • Regime    — detects Contraction / Caution / Expansion using SPY vs 200dma
+                and SPY drawdown from 52-week high. In Contraction/Caution,
+                defensive tickers receive a score bonus to offset value penalties.
+
 Top N by composite score → LONG candidates.
 Bottom N by composite score → SHORT candidates.
 Exits are reassessment-based (monthly re-score) + 15% hard stop.
@@ -43,6 +48,23 @@ MOM_WINSOR_HIGH = 0.95       # 95th percentile
 
 # Exit threshold — leave top/bottom X% before flagging reassessment
 EXIT_DECILE = 0.30
+
+# ── Macro regime overlay ──────────────────────────────────────────────────────
+# Tickers considered defensive (benefit in slowdowns / recessions)
+DEFENSIVE_TICKERS = {
+    "WMT", "COST", "MCD", "JNJ", "PFE", "ABBV", "AMGN",
+    "UNH", "GLD", "TLT", "KO", "PG", "CVX", "XOM",
+}
+
+# Score bonus added to defensive tickers based on regime
+MACRO_BONUS = {
+    "Contraction": 0.40,   # both signals firing — full defensive tilt
+    "Caution":     0.20,   # one signal firing — partial tilt
+    "Expansion":   0.00,   # no adjustment
+}
+
+# Thresholds for regime signals
+SPY_DRAWDOWN_THRESHOLD = 0.10   # 10% off 52-week high triggers one signal
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -69,6 +91,49 @@ def _winsorise(series: pd.Series, low: float = 0.05, high: float = 0.95) -> pd.S
     lo = series.quantile(low)
     hi = series.quantile(high)
     return series.clip(lo, hi)
+
+
+def detect_macro_regime() -> tuple[str, dict]:
+    """
+    Returns (regime_label, signals_dict) using two SPY-based signals:
+      1. SPY price vs 200-day MA  (below = risk-off)
+      2. SPY drawdown from 52-week high  (> 10% = stress)
+
+    Contraction : both signals firing
+    Caution     : one signal firing
+    Expansion   : neither firing
+    """
+    signals = {"spy_below_200dma": False, "spy_drawdown_10pct": False}
+    try:
+        spy = yf.Ticker("SPY")
+        df  = spy.history(period="400d", auto_adjust=True)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        close = df["Close"].dropna()
+
+        if len(close) >= 200:
+            ma200        = close.iloc[-200:].mean()
+            current      = float(close.iloc[-1])
+            high_52w     = float(close.iloc[-252:].max()) if len(close) >= 252 else float(close.max())
+            drawdown     = (high_52w - current) / high_52w
+
+            signals["spy_below_200dma"]   = current < ma200
+            signals["spy_drawdown_10pct"] = drawdown >= SPY_DRAWDOWN_THRESHOLD
+            signals["spy_price"]          = round(current, 2)
+            signals["spy_ma200"]          = round(ma200, 2)
+            signals["spy_drawdown_pct"]   = round(drawdown * 100, 1)
+    except Exception:
+        pass
+
+    n_firing = sum([signals["spy_below_200dma"], signals["spy_drawdown_10pct"]])
+    if n_firing == 2:
+        regime = "Contraction"
+    elif n_firing == 1:
+        regime = "Caution"
+    else:
+        regime = "Expansion"
+
+    return regime, signals
 
 
 def _fetch_ticker_data(ticker: str) -> dict | None:
@@ -130,10 +195,14 @@ def _fetch_ticker_data(ticker: str) -> dict | None:
     return result
 
 
-def score_universe(tickers: list[str], progress_cb=None) -> pd.DataFrame:
+def score_universe(tickers: list[str], progress_cb=None) -> tuple[pd.DataFrame, str, dict]:
     """
-    Score all tickers. Returns a ranked DataFrame with LONG/SHORT/NEUTRAL labels.
+    Score all tickers. Returns (ranked DataFrame, regime_label, regime_signals).
+    DataFrame includes LONG/SHORT/NEUTRAL labels and macro adjustment column.
     """
+    regime, signals = detect_macro_regime()
+    bonus           = MACRO_BONUS[regime]
+
     rows = []
     for i, ticker in enumerate(tickers):
         if progress_cb:
@@ -144,7 +213,7 @@ def score_universe(tickers: list[str], progress_cb=None) -> pd.DataFrame:
         rows.append({"ticker": ticker, **data})
 
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(), regime, signals
 
     df = pd.DataFrame(rows).set_index("ticker")
 
@@ -194,6 +263,11 @@ def score_universe(tickers: list[str], progress_cb=None) -> pd.DataFrame:
         W_VALUE     * df["z_value"].fillna(0)
     )
 
+    # ── Macro regime adjustment ──
+    df["is_defensive"]   = df.index.isin(DEFENSIVE_TICKERS)
+    df["macro_adj"]      = df["is_defensive"].apply(lambda x: bonus if x else 0.0)
+    df["composite_score"] = df["composite_score"] + df["macro_adj"]
+
     df = df.sort_values("composite_score", ascending=False).reset_index()
 
     n = len(df)
@@ -205,8 +279,9 @@ def score_universe(tickers: list[str], progress_cb=None) -> pd.DataFrame:
 
     df["rank"]      = df.index + 1
     df["scored_at"] = str(date.today())
+    df["regime"]    = regime
 
-    return df
+    return df, regime, signals
 
 
 def assess_open_positions(positions: list[dict], scored_df: pd.DataFrame) -> list[dict]:
@@ -268,8 +343,9 @@ def assess_open_positions(positions: list[dict], scored_df: pd.DataFrame) -> lis
 
 
 def run_lt_scan(tickers: list[str], progress_cb=None) -> pd.DataFrame:
-    """Convenience wrapper used by app.py."""
-    return score_universe(tickers, progress_cb)
+    """Convenience wrapper used by app.py. Returns just the DataFrame."""
+    df, _, _ = score_universe(tickers, progress_cb)
+    return df
 
 
 if __name__ == "__main__":
@@ -286,22 +362,73 @@ if __name__ == "__main__":
     def _cb(i, n, t):
         print(f"  [{i+1}/{n}] {t:<8}", end="\r")
 
-    df = run_lt_scan(tickers, _cb)
+    df, regime, signals = score_universe(tickers, _cb)
     print()
 
     if df.empty:
         print("No results.")
         sys.exit(0)
 
-    print(f"\n{'Rank':>4}  {'Ticker':<8}  {'Score':>7}  {'Dir':<7}  "
+    # ── Regime summary ──
+    spy_price   = signals.get("spy_price", "—")
+    spy_ma200   = signals.get("spy_ma200", "—")
+    drawdown    = signals.get("spy_drawdown_pct", "—")
+    below_flag  = "YES" if signals.get("spy_below_200dma") else "no"
+    drawdown_flag = "YES" if signals.get("spy_drawdown_10pct") else "no"
+    bonus       = MACRO_BONUS[regime]
+
+    regime_icons = {"Contraction": "⚠ ", "Caution": "~ ", "Expansion": "  "}
+    print(f"{'─'*78}")
+    print(f"  Macro Regime : {regime_icons[regime]}{regime}")
+    print(f"  SPY          : ${spy_price}  |  200dma: ${spy_ma200}  |  Below 200dma: {below_flag}")
+    print(f"  Drawdown     : {drawdown}% from 52w high  |  >10% threshold: {drawdown_flag}")
+    if bonus > 0:
+        print(f"  Defensive bonus applied: +{bonus:.2f} to {', '.join(sorted(DEFENSIVE_TICKERS & set(df['ticker'])))}")
+    print(f"{'─'*78}\n")
+
+    print(f"\n{'Rank':>4}  {'Ticker':<8}  {'Score':>7}  {'Adj':>5}  {'Dir':<7}  "
           f"{'Mom 12-1':>9}  {'1m ret':>7}  {'ROE':>7}  {'Margin':>8}  {'P/B':>5}")
-    print("-" * 78)
+    print("-" * 86)
     for _, row in df.iterrows():
         mom   = f"{row['mom_12_1']*100:+.1f}%"    if pd.notna(row["mom_12_1"])     else "  —  "
         m1    = f"{row['mom_1m']*100:+.1f}%"       if pd.notna(row["mom_1m"])       else "  —  "
         roe   = f"{row['roe']*100:.1f}%"            if pd.notna(row["roe"])          else "  —  "
         gm    = f"{row['gross_margin']*100:.1f}%"  if pd.notna(row["gross_margin"]) else "  —  "
         pb    = f"{row['pb']:.2f}x"                if pd.notna(row["pb"])           else "  —  "
+        adj   = f"+{row['macro_adj']:.2f}" if row["macro_adj"] > 0 else "     "
         tag   = "★ LONG " if row["direction"] == "LONG" else ("✗ SHORT" if row["direction"] == "SHORT" else "      ")
         print(f"{int(row['rank']):>4}  {row['ticker']:<8}  {row['composite_score']:>7.3f}  "
-              f"{tag}  {mom:>9}  {m1:>7}  {roe:>7}  {gm:>8}  {pb:>5}")
+              f"{adj:>5}  {tag}  {mom:>9}  {m1:>7}  {roe:>7}  {gm:>8}  {pb:>5}")
+
+    # ── Open positions P&L ────────────────────────────────────────────────────
+    positions = load_lt_positions()
+    open_pos  = [p for p in positions if p.get("status") == "open"]
+
+    if open_pos:
+        print(f"\n{'─'*78}")
+        print(f"  OPEN POSITIONS  ({len(open_pos)} trades)")
+        print(f"{'─'*78}")
+        print(f"  {'Dir':<5}  {'Ticker':<6}  {'Entry':>8}  {'Current':>8}  "
+              f"{'P&L%':>7}  {'P&L$':>8}  {'Days':>5}  {'Alert'}")
+        print(f"  {'-'*74}")
+
+        updated = assess_open_positions(open_pos, df)
+        save_lt_positions(updated + [p for p in positions if p.get("status") != "open"])
+
+        total_pnl = 0.0
+        for pos in updated:
+            current = pos.get("current_price", pos["entry_price"])
+            pnl_pct = pos.get("pnl_pct", 0.0)
+            pnl_usd = round(pos["cost"] * pnl_pct / 100, 2)
+            total_pnl += pnl_usd
+            days    = pos.get("days_held", 0)
+            alert   = pos.get("exit_signal") or pos.get("reassess_signal") or ""
+            flag    = "🛑 " if pos.get("exit_signal") else ("⚠  " if pos.get("reassess_signal") else "")
+            tag     = "LONG " if pos["direction"] == "LONG" else "SHORT"
+            sign    = "+" if pnl_pct >= 0 else ""
+            print(f"  {tag:<5}  {pos['ticker']:<6}  ${pos['entry_price']:>7}  ${current:>7}  "
+                  f"{sign}{pnl_pct:>6.2f}%  ${pnl_usd:>+8.2f}  {days:>5}d  {flag}{alert}")
+
+        sign = "+" if total_pnl >= 0 else ""
+        print(f"  {'-'*74}")
+        print(f"  {'Total P&L':>47}  ${total_pnl:>+8.2f}")

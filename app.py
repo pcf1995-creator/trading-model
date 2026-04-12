@@ -1457,8 +1457,8 @@ with tab_dash:
     # STOCKS — SCAN
     # ══════════════════════════════════════════════════════════════════════════════
     st.header("Stocks — Daily Scan")
-    st.caption("Top 5 buy signals from the Random Forest model. "
-               "Prob = model's confidence stock closes ≥2% higher in 5 trading days.")
+    st.caption("Top long/short signals from the Random Forest model. "
+               "Long: stock closes ≥2% higher in 5 days. Short: stock closes ≥2% lower.")
 
     # ── Upload local models to Supabase (one-time, after retraining) ──────────
     with st.expander("⬆️ Upload local models to cloud (run after retraining)"):
@@ -1512,6 +1512,10 @@ with tab_dash:
                 summary    = pd.read_csv(summary_path)
                 thresh_map = dict(zip(summary["Ticker"], summary["CV_Threshold"]))
                 roc_map    = dict(zip(summary["Ticker"], summary["CV_ROC_AUC"]))
+                _short_thresh_col  = summary["CV_Threshold_short"]  if "CV_Threshold_short"  in summary.columns else pd.Series([0.30] * len(summary))
+                _short_roc_col     = summary["CV_ROC_AUC_short"]    if "CV_ROC_AUC_short"    in summary.columns else pd.Series([0.00] * len(summary))
+                short_thresh_map   = dict(zip(summary["Ticker"], _short_thresh_col))
+                short_roc_map      = dict(zip(summary["Ticker"], _short_roc_col))
                 eligible   = [t for t in summary["Ticker"]
                               if roc_map.get(t, 0) >= pm.MIN_ROC_AUC]
 
@@ -1519,22 +1523,38 @@ with tab_dash:
                 prog = st.progress(0, text="Scanning...")
                 for i, ticker in enumerate(eligible):
                     prog.progress((i + 1) / len(eligible), text=f"Scanning {ticker}...")
+                    # Long model
                     model_path    = db.get_stock_file(f"model_{ticker}.joblib", ROOT)
                     features_path = db.get_stock_file(f"features_{ticker}.csv", ROOT)
-                    if model_path is None or features_path is None:
-                        continue
-                    model         = joblib.load(model_path)
-                    feature_names = pd.read_csv(features_path, header=None)[0].tolist()
-                    threshold     = thresh_map.get(ticker, 0.30)
-                    result        = pm.get_latest_signal(ticker, model, feature_names, threshold)
-                    if result:
-                        signals.append(result)
+                    if model_path and features_path:
+                        model         = joblib.load(model_path)
+                        feature_names = pd.read_csv(features_path, header=None)[0].tolist()
+                        threshold     = thresh_map.get(ticker, 0.30)
+                        result        = pm.get_latest_signal(ticker, model, feature_names, threshold, "long")
+                        if result:
+                            signals.append(result)
+                    # Short model
+                    if short_roc_map.get(ticker, 0) >= pm.MIN_ROC_AUC:
+                        short_model_path    = db.get_stock_file(f"model_{ticker}_short.joblib", ROOT)
+                        short_features_path = db.get_stock_file(f"features_{ticker}_short.csv", ROOT)
+                        if short_model_path and short_features_path:
+                            short_model         = joblib.load(short_model_path)
+                            short_feature_names = pd.read_csv(short_features_path, header=None)[0].tolist()
+                            short_threshold     = short_thresh_map.get(ticker, 0.30)
+                            short_result        = pm.get_latest_signal(ticker, short_model, short_feature_names, short_threshold, "short")
+                            if short_result:
+                                signals.append(short_result)
                 prog.empty()
 
-                buy_signals = sorted(
-                    [s for s in signals if s["signal"] and s["prob"] >= pm.MIN_PROB],
+                long_signals  = sorted(
+                    [s for s in signals if s.get("side", "long") == "long"  and s["signal"] and s["prob"] >= pm.MIN_PROB],
                     key=lambda x: x["prob"], reverse=True,
                 )[:5]
+                short_signals = sorted(
+                    [s for s in signals if s.get("side") == "short" and s["signal"] and s["prob"] >= pm.MIN_PROB_SHORT],
+                    key=lambda x: x["prob"], reverse=True,
+                )[:5]
+                buy_signals = sorted(long_signals + short_signals, key=lambda x: x["prob"], reverse=True)
 
                 models_found = len(signals)
                 if models_found == 0:
@@ -1542,7 +1562,7 @@ with tab_dash:
                                "Stock models are trained locally and not deployed. "
                                "Run the scan locally with `streamlit run app.py`.")
                 elif not buy_signals:
-                    st.info(f"No buy signals today. ({models_found}/{len(eligible)} models scanned)")
+                    st.info(f"No signals today. ({models_found}/{len(eligible)*2} models scanned)")
                     st.session_state["stock_scan_signals"] = []
                 else:
                     def _kelly_alloc(prob, budget):
@@ -1575,10 +1595,12 @@ with tab_dash:
             _cur = s.get("current_price")
             _chg = ((_cur - s["close"]) / s["close"] * 100) if _cur and not s.get("intraday") else None
             _price_label = "Today's Price" if s.get("intraday") else "Signal Close"
+            _side = s.get("side", "long")
             row = {
+                "Side"        : "SHORT" if _side == "short" else "LONG",
                 "Ticker"      : s["ticker"],
                 _price_label  : f"${s['close']:.2f}",
-                "Prob ≥2%"    : f"{s['prob']*100:.1f}%",
+                "Prob"        : f"{s['prob']*100:.1f}%",
                 "Edge"        : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
                 "Suggested $" : f"${s['alloc']:,.0f}",
                 "~Shares"     : s["shares"] if s["shares"] > 0 else "<1",
@@ -1589,17 +1611,18 @@ with tab_dash:
             scan_rows.append(row)
         st.dataframe(pd.DataFrame(scan_rows), use_container_width=True, hide_index=True)
         if _any_intraday:
-            st.info("📍 Signal computed from today's intraday bar (after 3:30 PM ET) — place MOC order before close.")
+            st.info("Signal computed from today's intraday bar (after 3:30 PM ET) — place MOC order before close.")
         st.caption(
             f"Scanned {st.session_state.get('stock_scan_eligible','?')} tickers · "
-            f"{st.session_state.get('stock_scan_scored','?')} scored · "
-            f"Prob = chance of +2% in 5 days · "
+            f"{st.session_state.get('stock_scan_scored','?')} models scored · "
+            f"Prob = chance of ±2% move in 5 days · "
             f"Edge = prob minus per-ticker signal threshold · "
-            f"Suggested $ uses fractional Kelly (win +2% / stop −2%, min prob 60%)"
+            f"Suggested $ uses fractional Kelly (±2% target/stop, min prob 60%)"
         )
         st.write("")
         for s in _ss:
-            if st.button(f"📝 Paper Trade {s['ticker']}", key=f"pt_stock_{s['ticker']}"):
+            _side_label = "Short" if s.get("side") == "short" else "Long"
+            if st.button(f"📝 Paper Trade {s['ticker']} ({_side_label})", key=f"pt_stock_{s['ticker']}_{s.get('side','long')}"):
                 import uuid, traceback as _tb
                 try:
                     _live = yf.Ticker(s["ticker"]).fast_info
@@ -1609,6 +1632,7 @@ with tab_dash:
                 _trade = {
                     "id"         : str(uuid.uuid4()),
                     "ticker"     : s["ticker"],
+                    "side"       : s.get("side", "long"),
                     "entry_price": _live_price,
                     "entry_date" : date.today().isoformat(),
                     "shares"     : s["shares"],
@@ -1624,7 +1648,7 @@ with tab_dash:
                 }
                 try:
                     db.add_stock_paper_trade(_trade)
-                    st.success(f"Recorded: {s['ticker']} @ ${s['close']:.2f} × {s['shares']} shares (${s['alloc']:.0f})")
+                    st.success(f"Recorded {_side_label}: {s['ticker']} @ ${s['close']:.2f} × {s['shares']} shares (${s['alloc']:.0f})")
                     st.rerun()
                 except Exception as _e:
                     st.error(f"Failed to save paper trade: {_e}")
@@ -1680,8 +1704,13 @@ with tab_dash:
                 except Exception:
                     continue
 
-                _pnl_pct = (_cur_close - _ep) / _ep
-                _pnl_dollars = round((_cur_close - _ep) * float(_sp.get("shares", 0)), 2)
+                _side = _sp.get("side", "long")
+                if _side == "short":
+                    _pnl_pct     = (_ep - _cur_close) / _ep
+                    _pnl_dollars = round((_ep - _cur_close) * float(_sp.get("shares", 0)), 2)
+                else:
+                    _pnl_pct     = (_cur_close - _ep) / _ep
+                    _pnl_dollars = round((_cur_close - _ep) * float(_sp.get("shares", 0)), 2)
                 _exit_date = _closes[_tk].dropna().index[-1].date().isoformat()
 
                 if _pnl_pct >= 0.02:
@@ -1744,6 +1773,7 @@ with tab_dash:
                         _placed_str = _placed[:16] if _placed else "—"
                     _sp_open_rows.append({
                         "_id"       : _sp["id"],
+                        "Side"      : "SHORT" if _sp.get("side") == "short" else "LONG",
                         "Ticker"    : _sp["ticker"],
                         "Entry $"   : _ep,
                         "Shares"    : float(_sp.get("shares") or 0),
@@ -1760,6 +1790,7 @@ with tab_dash:
             # Editable table: ONLY static fields (no live data — prevents resets)
             _edit_df = pd.DataFrame([{
                 "_id"    : r["_id"],
+                "Side"   : r["Side"],
                 "Ticker" : r["Ticker"],
                 "Entry $": r["Entry $"],
                 "Shares" : r["Shares"],
@@ -1768,6 +1799,7 @@ with tab_dash:
                 _edit_df,
                 column_config={
                     "_id"    : None,
+                    "Side"   : st.column_config.TextColumn(disabled=True),
                     "Ticker" : st.column_config.TextColumn(disabled=True),
                     "Entry $": st.column_config.NumberColumn("Entry $", format="$%.2f", min_value=0.0, step=0.01),
                     "Shares" : st.column_config.NumberColumn("Shares", min_value=0.0, step=0.01, format="%.2f"),
@@ -1798,10 +1830,16 @@ with tab_dash:
                 _sh2 = float(row["Shares"] or 0)
                 _cur2 = _cur_prices.get(row["Ticker"])
                 _inv  = round(_ep2 * _sh2, 2)
-                _pnl_pct = (_cur2 - _ep2) / _ep2 * 100 if _cur2 and _ep2 > 0 else 0.0
-                _pnl_d   = round((_cur2 - _ep2) * _sh2, 2) if _cur2 else 0.0
                 _orig = _sp_open_rows[i]
+                _is_short = _orig.get("Side") == "SHORT"
+                if _cur2 and _ep2 > 0:
+                    _pnl_pct = ((_ep2 - _cur2) / _ep2 * 100) if _is_short else ((_cur2 - _ep2) / _ep2 * 100)
+                    _pnl_d   = round(((_ep2 - _cur2) if _is_short else (_cur2 - _ep2)) * _sh2, 2)
+                else:
+                    _pnl_pct = 0.0
+                    _pnl_d   = 0.0
                 _summary_rows.append({
+                    "Side"      : _orig["Side"],
                     "Ticker"    : row["Ticker"],
                     "Entered"   : _orig["Entered"],
                     "Entry $"   : f"${_ep2:.2f}",
@@ -1826,6 +1864,7 @@ with tab_dash:
                 for _sp in sorted(_closed_sp, key=lambda x: x.get("exit_date", ""), reverse=True):
                     _pnl = _sp.get("pnl_dollars")
                     _sp_closed_rows.append({
+                        "Side"      : "SHORT" if _sp.get("side") == "short" else "LONG",
                         "Ticker"    : _sp["ticker"],
                         "Entry $"   : f"${float(_sp['entry_price']):.2f}",
                         "Exit $"    : f"${float(_sp['exit_price']):.2f}" if _sp.get("exit_price") else "—",

@@ -366,6 +366,14 @@ def create_labels(df: pd.DataFrame,
     return (future_ret > threshold).astype(int).rename("label")
 
 
+def create_short_labels(df: pd.DataFrame,
+                        future_days: int = FUTURE_DAYS,
+                        threshold: float = BUY_THRESHOLD) -> pd.Series:
+    """Label = 1 if close falls > threshold in future_days trading days."""
+    future_ret = df["Close"].shift(-future_days) / df["Close"] - 1
+    return (future_ret < -threshold).astype(int).rename("label")
+
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 def find_optimal_threshold(y_true: pd.Series, y_proba: np.ndarray) -> tuple[float, float]:
     """Return the threshold that maximises Buy F1 on the given set."""
@@ -597,9 +605,10 @@ if __name__ == "__main__":
     cv_results = {}
 
     for ticker in TICKERS:
-        model_path = Path(f"model_{ticker}.joblib")
-        if model_path.exists() and not retrain_all and ticker in existing_summary:
-            print(f"\n[SKIP] {ticker} — model exists (use --retrain to force)")
+        long_exists  = Path(f"model_{ticker}.joblib").exists()
+        short_exists = Path(f"model_{ticker}_short.joblib").exists()
+        if long_exists and short_exists and not retrain_all and ticker in existing_summary:
+            print(f"\n[SKIP] {ticker} — both models exist (use --retrain to force)")
             summary.append(existing_summary[ticker])
             continue
 
@@ -608,37 +617,58 @@ if __name__ == "__main__":
         print(f"  {len(df)} rows, {df.index[0].date()} → {df.index[-1].date()}")
 
         features = compute_features(df)
-        labels   = create_labels(df)
 
-        data = features.join(labels).dropna()
-        X    = data.drop(columns=["label"])
-        y    = data["label"]
+        # ── Long model (predict up >2% in 5 days) ──
+        labels = create_labels(df)
+        data   = features.join(labels).dropna()
+        X      = data.drop(columns=["label"])
+        y      = data["label"]
 
         print(f"  {X.shape[1]} features | {len(X)} samples | "
-              f"Buy {y.mean():.1%} / Sell {(1-y.mean()):.1%}")
+              f"Long label: {y.mean():.1%} positive")
 
-        # ── Walk-forward CV (primary evaluation) ──
         cv_df = walk_forward_cv(X, y, ticker)
         cv_results[ticker] = cv_df
         cv_df.to_csv(f"cv_results_{ticker}.csv", index=False)
 
-        # ── Final model on full data (for feature importance + predict.py) ──
         model, importance, _ = train_and_evaluate(X, y, ticker)
         importance.to_csv(f"feature_importances_{ticker}.csv", index=False)
         plot_importance(importance, ticker)
 
-        # Save model and feature list so predict.py can load them
         joblib.dump(model, f"model_{ticker}.joblib")
         pd.Series(X.columns.tolist()).to_csv(f"features_{ticker}.csv", index=False, header=False)
-        print(f"  Model saved → model_{ticker}.joblib")
+        print(f"  Long model saved → model_{ticker}.joblib")
 
         cv_threshold = round(cv_df["Threshold"].mean(), 4)
+
+        # ── Short model (predict down >2% in 5 days) ──
+        short_labels = create_short_labels(df)
+        short_data   = features.join(short_labels).dropna()
+        X_s          = short_data.drop(columns=["label"])
+        y_s          = short_data["label"]
+
+        print(f"  Short label: {y_s.mean():.1%} positive")
+
+        cv_df_short = walk_forward_cv(X_s, y_s, f"{ticker}_SHORT")
+        cv_df_short.to_csv(f"cv_results_{ticker}_short.csv", index=False)
+
+        short_model, short_importance, _ = train_and_evaluate(X_s, y_s, f"{ticker}_SHORT")
+        joblib.dump(short_model, f"model_{ticker}_short.joblib")
+        pd.Series(X_s.columns.tolist()).to_csv(f"features_{ticker}_short.csv", index=False, header=False)
+        print(f"  Short model saved → model_{ticker}_short.joblib")
+
+        cv_threshold_short = round(cv_df_short["Threshold"].mean(), 4)
+
         summary.append({
-            "Ticker"          : ticker,
-            "CV_ROC_AUC"      : round(cv_df["ROC_AUC"].mean(), 4),
-            "CV_BuyF1_default": round(cv_df["BuyF1_default"].mean(), 4),
-            "CV_BuyF1_opt"    : round(cv_df["BuyF1_opt"].mean(), 4),
-            "CV_Threshold"    : cv_threshold,
+            "Ticker"                : ticker,
+            "CV_ROC_AUC"            : round(cv_df["ROC_AUC"].mean(), 4),
+            "CV_BuyF1_default"      : round(cv_df["BuyF1_default"].mean(), 4),
+            "CV_BuyF1_opt"          : round(cv_df["BuyF1_opt"].mean(), 4),
+            "CV_Threshold"          : cv_threshold,
+            "CV_ROC_AUC_short"      : round(cv_df_short["ROC_AUC"].mean(), 4),
+            "CV_BuyF1_default_short": round(cv_df_short["BuyF1_default"].mean(), 4),
+            "CV_BuyF1_opt_short"    : round(cv_df_short["BuyF1_opt"].mean(), 4),
+            "CV_Threshold_short"    : cv_threshold_short,
         })
 
     # ── Cross-ticker summary ──
