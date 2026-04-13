@@ -256,6 +256,61 @@ def save_calibration_db(data: dict) -> None:
     _save_json(_CALIBRATION_JSON, data)
 
 
+# ── Long-term L/S positions ────────────────────────────────────────────────────
+_LT_POSITIONS_JSON = ROOT / "lt_positions.json"
+
+def load_lt_positions() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("lt_positions")
+                    .select("*")
+                    .order("entry_date", desc=False)
+                    .execute())
+            rows = resp.data or []
+            # Flatten: merge top-level columns + any extra fields stored in 'data' jsonb
+            result = []
+            for row in rows:
+                extra = row.pop("data", None) or {}
+                merged = {**extra, **row}
+                result.append(merged)
+            return result
+        except Exception as e:
+            logger.warning(f"load_lt_positions failed: {e}")
+    return _load_json(_LT_POSITIONS_JSON)
+
+
+def save_lt_positions(positions: list[dict]) -> None:
+    client = _get_client()
+    if client:
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            _KNOWN_COLS = {
+                "id", "ticker", "direction", "status", "entry_price", "entry_date",
+                "shares", "cost", "exit_price", "exit_date", "exit_reason",
+                "pnl_dollars", "pnl_pct", "score_at_entry", "updated_at",
+            }
+            rows = []
+            for pos in positions:
+                # Generate a stable id from ticker + entry_date if missing
+                pos_id = pos.get("id") or f"{pos['ticker']}_{pos.get('entry_date', 'unknown')}"
+                known = {k: pos.get(k) for k in _KNOWN_COLS if k in pos}
+                known["id"] = pos_id
+                known["score_at_entry"] = pos.get("composite_score")
+                known["updated_at"] = now
+                # Store any extra fields (exit_signal, reassess_signal, etc.) in jsonb
+                extra = {k: v for k, v in pos.items() if k not in _KNOWN_COLS and k != "composite_score"}
+                if extra:
+                    known["data"] = extra
+                rows.append(known)
+            if rows:
+                client.table("lt_positions").upsert(rows).execute()
+            return
+        except Exception as e:
+            logger.warning(f"save_lt_positions failed: {e}")
+    _save_json(_LT_POSITIONS_JSON, positions)
+
+
 # ── Stock model file storage (Supabase Storage) ─────────────────────────────
 
 _MODEL_CACHE_DIR = Path("/tmp/trading_models")

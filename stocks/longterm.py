@@ -18,7 +18,7 @@ Bottom N by composite score → SHORT candidates.
 Exits are reassessment-based (monthly re-score) + 15% hard stop.
 """
 
-import json
+import sys
 import warnings
 from datetime import date
 from pathlib import Path
@@ -29,8 +29,11 @@ import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
+# Allow importing db from the repo root
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import db as _db
+
 # ── Config ────────────────────────────────────────────────────────────────────
-LT_POSITIONS_FILE  = Path(__file__).parent.parent / "lt_positions.json"
 MAX_LONG           = 5       # max long positions recommended
 MAX_SHORT          = 5       # max short positions recommended
 HARD_STOP_PCT      = 0.15    # 15% hard stop (long down OR short adverse move)
@@ -69,15 +72,11 @@ SPY_DRAWDOWN_THRESHOLD = 0.10   # 10% off 52-week high triggers one signal
 
 
 def load_lt_positions() -> list[dict]:
-    if LT_POSITIONS_FILE.exists():
-        with open(LT_POSITIONS_FILE) as f:
-            return json.load(f)
-    return []
+    return _db.load_lt_positions()
 
 
 def save_lt_positions(positions: list[dict]) -> None:
-    with open(LT_POSITIONS_FILE, "w") as f:
-        json.dump(positions, f, indent=2, default=str)
+    _db.save_lt_positions(positions)
 
 
 def _zscore(series: pd.Series) -> pd.Series:
