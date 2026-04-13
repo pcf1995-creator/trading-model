@@ -341,6 +341,12 @@ class KalshiClient:
         Convenience wrapper for selling an existing position.
         min_price_cents: minimum acceptable exit price (use current bid for market-like fill).
         Floors at 1¢ so the order is always valid.
+        Raises ValueError if count <= 0 to prevent accidental oversell / ghost orders.
         """
+        if count <= 0:
+            raise ValueError(
+                f"sell_position called with count={count} for {ticker} — "
+                "refusing to place order with zero or negative contract count"
+            )
         price = max(1, min_price_cents)
         return self.place_order(ticker, side, count, price, action="sell")

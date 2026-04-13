@@ -244,7 +244,8 @@ with tab_dash:
                 # Use saved stop if present and non-zero; fall back to 50% of entry
                 _saved_stop = _local.get("stop_cents")
                 _stop = _saved_stop if _saved_stop else round(_entry * 0.5)
-                _api_contracts = abs(_net_pos) if _net_pos != 0 else 1
+                _api_contracts = abs(_net_pos)  # already guarded: _net_pos == 0 → continue above
+                _using_proxy_entry = not bool(_saved_entry or _fills_entry)
                 _all_api.append({
                     "ticker"      : _tkr,
                     "status"      : "open",
@@ -255,7 +256,7 @@ with tab_dash:
                     "_api_contracts": _api_contracts,
                     "entry_cents" : _entry,
                     "stop_cents"  : _stop,
-                    "_entry_proxy": not bool(_saved_entry or _fills_entry),
+                    "_entry_proxy": _using_proxy_entry,
                     "close_time"  : _mkt.get("close_time", _local.get("close_time", "")),
                     "_hrs"        : _hrs,
                 })
@@ -309,10 +310,19 @@ with tab_dash:
 
         df_open = pd.DataFrame(rows).reset_index(drop=True)
 
+        # Warn if any position is using a proxied entry price (current bid, not actual fill)
+        _proxy_tickers = [p["ticker"] for p in open_kalshi if p.get("_entry_proxy")]
+        if _proxy_tickers:
+            st.warning(
+                f"⚠️ Entry price estimated from current bid (no saved entry or fill data) "
+                f"for: {', '.join(_proxy_tickers)}. "
+                "Stop-loss levels may be inaccurate — set Entry ¢ manually and save."
+            )
+
         edited = st.data_editor(
             df_open.drop(columns=["Ticker"]),
             column_config={
-                "Contracts": st.column_config.NumberColumn("Contracts", min_value=1, step=1),
+                "Contracts": st.column_config.NumberColumn("Contracts", min_value=1, max_value=10_000, step=1),
                 "Entry ¢"  : st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
                 "Stop ¢"   : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
             },
