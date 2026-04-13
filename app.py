@@ -1597,13 +1597,13 @@ with tab_dash:
             _price_label = "Today's Price" if s.get("intraday") else "Signal Close"
             _side = s.get("side", "long")
             row = {
-                "Side"        : "SHORT" if _side == "short" else "LONG",
                 "Ticker"      : s["ticker"],
+                "Side"        : "SHORT" if _side == "short" else "LONG",
+                "Suggested $" : f"${s['alloc']:,.0f}",
+                "~Shares"     : s["shares"] if s["shares"] > 0 else "<1",
                 _price_label  : f"${s['close']:.2f}",
                 "Prob"        : f"{s['prob']*100:.1f}%",
                 "Edge"        : f"+{(s['prob'] - s['threshold'])*100:.1f}pp",
-                "Suggested $" : f"${s['alloc']:,.0f}",
-                "~Shares"     : s["shares"] if s["shares"] > 0 else "<1",
             }
             if not s.get("intraday"):
                 row["Now"]  = f"${_cur:.2f}" if _cur else "—"
@@ -1967,15 +1967,17 @@ with tab_lt:
                 elif _lp.get("reassess_signal"):
                     _flag = f"⚠️ {_lp['reassess_signal']}"
                 _lt_rows.append({
-                    "Ticker"  : _lp["ticker"],
-                    "Dir"     : _dir,
-                    "Entry $" : f"${_ep:.2f}",
-                    "Cur $"   : f"${_cur:.2f}",
-                    "Days"    : _days,
-                    "P&L %"   : f"{_pnl:+.2f}%",
-                    "P&L $"   : f"${_pnl_d:+.2f}",
-                    "Score"   : f"{_score:.3f}" if _score is not None else "—",
-                    "Status"  : _flag or "✓ Hold",
+                    "Ticker"     : _lp["ticker"],
+                    "Dir"        : _dir,
+                    "Shares"     : f"{_shares_held:.4f}" if _shares_held else "—",
+                    "Invested $" : f"${_cost:,.2f}",
+                    "Entry $"    : f"${_ep:.2f}",
+                    "Cur $"      : f"${_cur:.2f}",
+                    "Days"       : _days,
+                    "P&L %"      : f"{_pnl:+.2f}%",
+                    "P&L $"      : f"${_pnl_d:+.2f}",
+                    "Score"      : f"{_score:.3f}" if _score is not None else "—",
+                    "Status"     : _flag or "✓ Hold",
                 })
                 _lt_pnl_dollars.append(_pnl_d)
                 _lt_costs.append(_cost)
@@ -2064,6 +2066,7 @@ with tab_lt:
 
                 st.subheader("LONG Recommendations")
                 _existing_lt_tickers = {p["ticker"] for p in _lt_open}
+                _open_by_ticker      = {p["ticker"]: p for p in _lt_open}
                 _alloc_per_side = _lt_budget_used / 2
                 _per_long = _alloc_per_side / max(len(_lt_longs), 1)
 
@@ -2079,11 +2082,24 @@ with tab_lt:
                         st.markdown(
                             f"**{_tk}** · Score {_lr['composite_score']:.3f} · "
                             f"${_lr['current_price']} · "
+                            f"**Invest: ${_per_long:,.2f}** ({_shares} shares) · "
                             f"Mom(12-1): {_mom_str} · 1m: {_m1_str} · ROE: {_roe_str}"
                         )
                     with _col2:
                         if _already:
-                            st.caption("Already held")
+                            _held = _open_by_ticker[_tk]
+                            _entry_score   = _held.get("composite_score")
+                            _current_score = _lr["composite_score"]
+                            if _entry_score is not None:
+                                _score_delta = _current_score - _entry_score
+                                if _score_delta >= 0.10:
+                                    st.success(f"Add more (score +{_score_delta:.2f} vs entry)")
+                                elif _score_delta <= -0.10:
+                                    st.warning(f"Hold / watch (score {_score_delta:.2f} vs entry)")
+                                else:
+                                    st.info(f"Hold — thesis intact (score {_score_delta:+.2f} vs entry)")
+                            else:
+                                st.caption("Already held")
                         elif st.button(f"📈 Record Long {_tk}", key=f"lt_long_{_tk}"):
                             _new_lt = {
                                 "ticker"      : _tk,
@@ -2117,6 +2133,7 @@ with tab_lt:
                         st.markdown(
                             f"**{_tk}** · Score {_sr['composite_score']:.3f} · "
                             f"${_sr['current_price']} · "
+                            f"**Invest: ${_per_short:,.2f}** ({_shares} shares) · "
                             f"Mom(12-1): {_mom_str} · 1m: {_m1_str}"
                         )
                     with _col2:
