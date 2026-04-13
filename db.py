@@ -16,6 +16,7 @@ ROOT = Path(__file__).parent
 _PAPER_TRADES_JSON = ROOT / "paper_trades.json"
 _POSITIONS_JSON    = ROOT / "kalshi" / "positions_kalshi.json"
 _CALIBRATION_JSON  = ROOT / "model_crypto_calibration.json"
+_LT_POSITIONS_JSON = ROOT / "lt_positions.json"
 
 # ── Supabase client (singleton) ────────────────────────────────────────────────
 _client = None
@@ -254,6 +255,38 @@ def save_calibration_db(data: dict) -> None:
         except Exception as e:
             logger.warning(f"save_calibration_db failed: {e}")
     _save_json(_CALIBRATION_JSON, data)
+
+
+# ── Long-term L/S positions ───────────────────────────────────────────────────
+
+def load_lt_positions() -> list[dict]:
+    """Load long-term L/S positions from Supabase, falling back to local JSON."""
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("lt_positions")
+                    .select("*")
+                    .order("entry_date", desc=False)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_lt_positions failed: {e}")
+    return _load_json(_LT_POSITIONS_JSON)
+
+
+def save_lt_positions(positions: list[dict]) -> None:
+    """Replace all lt_positions rows in Supabase (delete + insert), falling back to local JSON."""
+    client = _get_client()
+    if client:
+        try:
+            # Delete all existing rows then insert fresh list
+            client.table("lt_positions").delete().neq("ticker", "").execute()
+            if positions:
+                client.table("lt_positions").insert(positions).execute()
+            return
+        except Exception as e:
+            logger.warning(f"save_lt_positions failed: {e}")
+    _save_json(_LT_POSITIONS_JSON, positions)
 
 
 # ── Stock model file storage (Supabase Storage) ─────────────────────────────
