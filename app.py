@@ -353,6 +353,16 @@ with tab_dash:
                      disabled=_client.dry_run):
             _stops_executed = 0
             _stop_errors    = []
+            # Re-fetch live positions right now to get accurate counts and
+            # avoid race conditions with monitor.py running concurrently.
+            try:
+                _live_pos_map = {
+                    lp.get("ticker"): lp
+                    for lp in _client.get_positions()
+                    if lp.get("ticker")
+                }
+            except Exception:
+                _live_pos_map = {}
             for p in open_kalshi:
                 _bid  = live.get(p["ticker"])
                 _stop = p.get("stop_cents", 0)
@@ -360,8 +370,16 @@ with tab_dash:
                     continue
                 if _bid <= _stop:
                     _side  = p.get("side", "yes")
-                    # Always use live API count to avoid overselling stale stored values
-                    _count = p.get("_api_contracts") or p["contracts"]
+                    # Use live count fetched just now; skip if position already closed
+                    _live_entry = _live_pos_map.get(p["ticker"])
+                    if _live_entry is not None:
+                        _net = _live_entry.get("position") or round(float(_live_entry.get("position_fp", 0) or 0))
+                        _count = abs(int(round(_net))) if _net != 0 else 0
+                    else:
+                        _count = 0  # not in live positions — already closed
+                    if _count == 0:
+                        st.info(f"{p['ticker']}: position already closed, skipping.")
+                        continue
                     try:
                         _result = _client.sell_position(p["ticker"], _side, _count, _bid)
                         st.success(f"Sold {_count} {_side.upper()} {p['ticker']} @ {_bid}¢")
