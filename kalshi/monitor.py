@@ -366,7 +366,24 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
 
         if current_cents <= stop:
             side  = p.get("side", "yes")
-            count = p["contracts"]
+            # Fetch live count from API to avoid overselling a stale stored value
+            try:
+                _live_positions = client.get_positions()
+                _live_match = next(
+                    (lp for lp in _live_positions if lp.get("ticker") == ticker), None
+                )
+                if _live_match is not None:
+                    _net = _live_match.get("position") or round(float(_live_match.get("position_fp", 0) or 0))
+                    count = abs(int(round(_net))) if _net != 0 else 0
+                else:
+                    count = 0  # position already closed on Kalshi side
+            except Exception:
+                count = p["contracts"]  # fall back to stored value if API call fails
+            if count == 0:
+                print(f"  {ticker}: live position is 0 — already closed, skipping stop-loss")
+                p["status"] = "settled"
+                changed = True
+                continue
             print(f"\n  *** STOP-LOSS TRIGGERED: {ticker}")
             print(f"      Current bid : {current_cents}¢  (stop {stop}¢  entry {entry}¢)")
             print(f"      P&L         : {pnl_pct:+.1f}%")

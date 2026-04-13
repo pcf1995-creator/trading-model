@@ -249,8 +249,10 @@ with tab_dash:
                     "ticker"      : _tkr,
                     "status"      : "open",
                     "side"        : _side,
-                    # Prefer manually saved contracts; fall back to API position count
+                    # Live API count is authoritative for sizing sell orders;
+                    # saved value is kept for display/P&L only.
                     "contracts"   : _local.get("contracts") or _api_contracts,
+                    "_api_contracts": _api_contracts,
                     "entry_cents" : _entry,
                     "stop_cents"  : _stop,
                     "_entry_proxy": not bool(_saved_entry or _fills_entry),
@@ -358,7 +360,8 @@ with tab_dash:
                     continue
                 if _bid <= _stop:
                     _side  = p.get("side", "yes")
-                    _count = p["contracts"]
+                    # Always use live API count to avoid overselling stale stored values
+                    _count = p.get("_api_contracts") or p["contracts"]
                     try:
                         _result = _client.sell_position(p["ticker"], _side, _count, _bid)
                         st.success(f"Sold {_count} {_side.upper()} {p['ticker']} @ {_bid}¢")
