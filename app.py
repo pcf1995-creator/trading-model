@@ -2399,10 +2399,13 @@ with tab_conviction:
                 _cv_shorts = _cv_df[_cv_df["direction"] == "SHORT"]
 
                 # Macro regime info bar
-                _cv_regime = _cv_df["regime"].iloc[0] if "regime" in _cv_df.columns else "—"
+                _cv_regime    = _cv_df["regime"].iloc[0] if "regime" in _cv_df.columns else "—"
+                _cv_max_long  = int(_cv_df["max_long"].iloc[0])  if "max_long"  in _cv_df.columns else 5
+                _cv_max_short = int(_cv_df["max_short"].iloc[0]) if "max_short" in _cv_df.columns else 5
                 _regime_colors = {"Expansion": "🟢", "Caution": "🟡", "Contraction": "🔴"}
                 st.info(
                     f"{_regime_colors.get(_cv_regime, '⚪')} Macro regime: **{_cv_regime}** — "
+                    f"slots available: {_cv_max_long}L / {_cv_max_short}S — "
                     f"{len(_cv_longs)} LONG + {len(_cv_shorts)} SHORT recommendations"
                 )
 

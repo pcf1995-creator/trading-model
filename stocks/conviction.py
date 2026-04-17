@@ -28,9 +28,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import db as _db
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-MAX_LONG           = 5
-MAX_SHORT          = 5
-HARD_STOP_PCT      = 0.15
+MAX_LONG_BY_REGIME  = {"Expansion": 7, "Caution": 5, "Contraction": 3}
+MAX_SHORT_BY_REGIME = {"Expansion": 3, "Caution": 5, "Contraction": 7}
+HARD_STOP_PCT       = 0.15
 SMALL_CAP_THRESH   = 5e9
 EXIT_DECILE        = 0.35      # exit long below 35th pct; short above 65th pct
 MIN_LONG_SCORE     = 0.25      # composite must beat this to open a long
@@ -472,12 +472,16 @@ def score_universe(tickers: list[str],
     df["scored_at"]  = str(date.today())
     df["regime"]     = regime
 
-    # ── Direction — only fill slots that clear the conviction threshold ────────
+    # ── Direction — slots and ratio scale with macro regime ───────────────────
+    max_long  = MAX_LONG_BY_REGIME[regime]
+    max_short = MAX_SHORT_BY_REGIME[regime]
     df["direction"] = "NEUTRAL"
-    long_idx  = df[df["composite_score"] >= MIN_LONG_SCORE].head(MAX_LONG).index
-    short_idx = df[df["composite_score"] <= MIN_SHORT_SCORE].tail(MAX_SHORT).index
+    long_idx  = df[df["composite_score"] >= MIN_LONG_SCORE].head(max_long).index
+    short_idx = df[df["composite_score"] <= MIN_SHORT_SCORE].tail(max_short).index
     df.loc[long_idx,  "direction"] = "LONG"
     df.loc[short_idx, "direction"] = "SHORT"
+    df["max_long"]  = max_long
+    df["max_short"] = max_short
 
     return df, regime, signals
 
@@ -595,11 +599,13 @@ if __name__ == "__main__":
     print(f"  TLT 3m       : {tlt_ret}%   |   SPY 3m : {spy_str}")
     print(f"{'─'*84}\n")
 
-    longs  = df[df["direction"] == "LONG"]
-    shorts = df[df["direction"] == "SHORT"]
-    print(f"  LONG  : {len(longs)} / {MAX_LONG} slots filled   "
+    longs     = df[df["direction"] == "LONG"]
+    shorts    = df[df["direction"] == "SHORT"]
+    max_long  = MAX_LONG_BY_REGIME[regime]
+    max_short = MAX_SHORT_BY_REGIME[regime]
+    print(f"  LONG  : {len(longs)} / {max_long} slots filled   "
           f"(threshold ≥ {MIN_LONG_SCORE:+.2f})")
-    print(f"  SHORT : {len(shorts)} / {MAX_SHORT} slots filled  "
+    print(f"  SHORT : {len(shorts)} / {max_short} slots filled  "
           f"(threshold ≤ {MIN_SHORT_SCORE:+.2f})\n")
 
     show_cols = ["rank", "ticker", "direction", "composite_score",
