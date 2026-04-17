@@ -265,6 +265,7 @@ def load_lt_positions() -> list[dict]:
         try:
             resp = (client.table("lt_positions")
                     .select("*")
+                    .filter("id", "not.like", "cv_%")
                     .order("entry_date", desc=False)
                     .execute())
             rows = resp.data or []
@@ -370,3 +371,62 @@ def upload_stock_file(filename: str, local_path: Path) -> bool:
     except Exception as e:
         logger.error(f"Upload failed for {filename}: {e}")
         return False
+
+
+# ── Conviction L/S positions ───────────────────────────────────────────────────
+# Stored in the same lt_positions Supabase table, distinguished by "cv_" ID prefix.
+_CONVICTION_POSITIONS_JSON = ROOT / "conviction_positions.json"
+
+_CV_KNOWN_COLS = {
+    "id", "ticker", "direction", "status", "entry_price", "entry_date",
+    "shares", "cost", "exit_price", "exit_date", "exit_reason",
+    "pnl_dollars", "pnl_pct", "score_at_entry", "updated_at",
+}
+
+
+def load_conviction_positions() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("lt_positions")
+                    .select("*")
+                    .filter("id", "like", "cv_%")
+                    .order("entry_date", desc=False)
+                    .execute())
+            rows = resp.data or []
+            result = []
+            for row in rows:
+                extra  = row.pop("data", None) or {}
+                merged = {**extra, **row}
+                result.append(merged)
+            return result
+        except Exception as e:
+            logger.warning(f"load_conviction_positions failed: {e}")
+    return _load_json(_CONVICTION_POSITIONS_JSON)
+
+
+def save_conviction_positions(positions: list[dict]) -> None:
+    client = _get_client()
+    if client:
+        try:
+            now  = datetime.now(timezone.utc).isoformat()
+            rows = []
+            for pos in positions:
+                # Always prefix with cv_ so it's isolated from lt_positions rows
+                raw_id = pos.get("id") or f"{pos['ticker']}_{pos.get('entry_date', 'unknown')}"
+                pos_id = raw_id if raw_id.startswith("cv_") else f"cv_{raw_id}"
+                known  = {k: pos.get(k) for k in _CV_KNOWN_COLS if k in pos}
+                known["id"]             = pos_id
+                known["score_at_entry"] = pos.get("composite_score")
+                known["updated_at"]     = now
+                extra = {k: v for k, v in pos.items()
+                         if k not in _CV_KNOWN_COLS and k != "composite_score"}
+                if extra:
+                    known["data"] = extra
+                rows.append(known)
+            if rows:
+                client.table("lt_positions").upsert(rows).execute()
+            return
+        except Exception as e:
+            logger.warning(f"save_conviction_positions failed: {e}")
+    _save_json(_CONVICTION_POSITIONS_JSON, positions)

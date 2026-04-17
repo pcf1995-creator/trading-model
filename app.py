@@ -46,7 +46,7 @@ PAPER_TRADES     = ROOT / "paper_trades.json"
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Trading Dashboard")
 
-tab_dash, tab_lt, tab_perf = st.tabs(["📊 Dashboard", "📈 Long-Term L/S", "📉 Performance"])
+tab_dash, tab_lt, tab_conviction, tab_perf = st.tabs(["📊 Dashboard", "📈 Long-Term L/S", "🎯 Conviction L/S", "📉 Performance"])
 
 with tab_dash:
 
@@ -2253,6 +2253,365 @@ with tab_lt:
                     })
                 st.dataframe(
                     pd.DataFrame(_lt_c_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                    hide_index=True, use_container_width=True,
+                )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONVICTION L/S TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_conviction:
+    st.header("Conviction L/S Portfolio")
+    st.caption(
+        "Four-pillar composite score: Technical (25%) · Fundamental (35%) · "
+        "Earnings (25%) · Macro (15%). "
+        "Expected hold 30–90 days. Positions only opened when score clears "
+        "conviction threshold — fewer than 10 trades may be recommended. "
+        "Hard stop 15%. Monthly reassessment."
+    )
+
+    # ── Load conviction module lazily ─────────────────────────────────────────
+    _cv_mod = None
+    try:
+        _cv_spec = importlib.util.spec_from_file_location(
+            "conviction", ROOT / "stocks" / "conviction.py"
+        )
+        _cv_mod = importlib.util.module_from_spec(_cv_spec)
+        _cv_spec.loader.exec_module(_cv_mod)
+    except Exception as _cv_err:
+        st.warning(f"Could not load conviction module: {_cv_err}")
+
+    if _cv_mod:
+        # ── Open conviction positions ─────────────────────────────────────────
+        _cv_positions = _cv_mod.load_conviction_positions()
+        _cv_open      = [p for p in _cv_positions if p.get("status") == "open"]
+        _cv_closed    = [p for p in _cv_positions if p.get("status") == "closed"]
+
+        if _cv_open:
+            import yfinance as _yf2
+            _cv_tks = [p["ticker"] for p in _cv_open]
+            try:
+                _cv_live_df = _yf2.download(
+                    _cv_tks, period="5d", auto_adjust=True, progress=False, group_by="ticker"
+                )
+                def _cv_live_price(tk):
+                    try:
+                        if len(_cv_tks) == 1:
+                            return round(float(_cv_live_df["Close"].dropna().iloc[-1]), 2)
+                        return round(float(_cv_live_df[tk]["Close"].dropna().iloc[-1]), 2)
+                    except Exception:
+                        return None
+            except Exception:
+                def _cv_live_price(tk): return None
+
+            _cv_rows        = []
+            _cv_pnl_dollars = []
+            _cv_costs       = []
+            for _cp in _cv_open:
+                _ep    = _cp["entry_price"]
+                _cur   = _cv_live_price(_cp["ticker"]) or _ep
+                _dir   = _cp["direction"]
+                _pnl   = ((_cur - _ep) / _ep * 100) if _dir == "LONG" else ((_ep - _cur) / _ep * 100)
+                _shares_held = _cp.get("shares", 0) or 0
+                _cost  = _cp.get("cost", _ep * _shares_held)
+                _pnl_d = _cost * _pnl / 100
+                _score = _cp.get("current_score")
+                if _score is None:
+                    _score = _cp.get("score_at_entry")
+                _edays = _cp.get("earnings_days_out")
+                _eflag = _cp.get("earnings_flag", False)
+                # Build status — priority: hard stop > reassess > hold
+                # Earnings note appended for all positions that have the data
+                if _cp.get("exit_signal"):
+                    _flag = "🚨 HARD STOP"
+                elif _cp.get("reassess_signal"):
+                    _flag = f"⚠️ {_cp['reassess_signal']}"
+                else:
+                    _flag = "✓ Hold"
+                # Always append earnings countdown when we know the date
+                if _edays is not None and _edays >= 0:
+                    _earn_icon = "🚨" if _edays <= 7 else "📅"
+                    _flag += f"  {_earn_icon} Earn {_edays}d"
+                _cv_rows.append({
+                    "Ticker"    : _cp["ticker"],
+                    "Dir"       : _dir,
+                    "Shares"    : f"{_shares_held:.4f}" if _shares_held else "—",
+                    "Entry $"   : f"${_ep:.2f}",
+                    "Current $" : f"${_cur:.2f}",
+                    "P&L %"     : f"{_pnl:+.2f}%",
+                    "P&L $"     : f"${_pnl_d:+.2f}",
+                    "Days"      : (date.today() - date.fromisoformat(_cp["entry_date"])).days,
+                    "Score"     : f"{_score:.3f}" if _score is not None else "—",
+                    "Status"    : _flag,
+                })
+                _cv_pnl_dollars.append(_pnl_d)
+                _cv_costs.append(_cost)
+
+            st.dataframe(
+                pd.DataFrame(_cv_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                hide_index=True, use_container_width=True,
+            )
+
+            _cv_total_cost  = sum(_cv_costs)
+            _cv_total_pnl_d = sum(_cv_pnl_dollars)
+            _cv_wtd_pnl     = (_cv_total_pnl_d / _cv_total_cost * 100) if _cv_total_cost else 0
+            _cv_long_pnl    = sum(_cv_pnl_dollars[i] for i, r in enumerate(_cv_rows) if r["Dir"] == "LONG")
+            _cv_short_pnl   = sum(_cv_pnl_dollars[i] for i, r in enumerate(_cv_rows) if r["Dir"] == "SHORT")
+
+            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+            _cc1.metric("Total P&L $",   f"${_cv_total_pnl_d:+.2f}")
+            _cc2.metric("Weighted P&L %", f"{_cv_wtd_pnl:+.2f}%")
+            _cc3.metric("Long P&L $",    f"${_cv_long_pnl:+.2f}")
+            _cc4.metric("Short P&L $",   f"${_cv_short_pnl:+.2f}")
+        else:
+            st.info("No open conviction positions. Run a scan to get recommendations.")
+
+        # ── Scan controls ─────────────────────────────────────────────────────
+        _cv_budget = st.number_input(
+            "Portfolio size ($)", min_value=1_000, max_value=1_000_000,
+            value=5_000, step=500, key="cv_budget",
+        )
+
+        if st.button("Run Conviction Scan", type="primary", key="cv_scan"):
+            _summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
+            if _summary_path is None and (ROOT / "stocks" / "ticker_summary.csv").exists():
+                _summary_path = ROOT / "stocks" / "ticker_summary.csv"
+            if _summary_path is None and (ROOT / "ticker_summary.csv").exists():
+                _summary_path = ROOT / "ticker_summary.csv"
+
+            if _summary_path is None:
+                st.error("ticker_summary.csv not found — run stock model training first.")
+            else:
+                _cv_tickers  = pd.read_csv(_summary_path)["Ticker"].tolist()
+                _cv_progress = st.progress(0, text="Fetching data…")
+
+                def _cv_cb(i, n, t):
+                    _cv_progress.progress((i + 1) / n, text=f"Scoring {t} ({i+1}/{n})")
+
+                try:
+                    _cv_df = _cv_mod.run_conviction_scan(_cv_tickers, _cv_cb)
+                    _cv_progress.empty()
+                    st.session_state["cv_scan_result"] = _cv_df
+                    st.session_state["cv_scan_budget"] = _cv_budget
+                except Exception as _cv_scan_err:
+                    _cv_progress.empty()
+                    st.error(f"Conviction scan error: {_cv_scan_err}")
+
+        # ── Display scan results ──────────────────────────────────────────────
+        if "cv_scan_result" in st.session_state:
+            _cv_df          = st.session_state["cv_scan_result"]
+            _cv_budget_used = st.session_state.get("cv_scan_budget", _cv_budget)
+
+            if not _cv_df.empty:
+                # Full ranked table
+                with st.expander("Full ranked universe", expanded=False):
+                    _cv_display_cols = [
+                        "rank", "ticker", "direction", "composite_score",
+                        "z_technical", "z_fundamental", "z_earnings", "z_macro",
+                        "ret_3m", "ret_6m", "roe", "revenue_growth",
+                        "beat_rate", "earnings_flag", "current_price",
+                    ]
+                    _cv_display_cols = [c for c in _cv_display_cols if c in _cv_df.columns]
+                    _cv_disp = _cv_df[_cv_display_cols].copy()
+                    for _pct_col in ["ret_3m", "ret_6m", "roe", "revenue_growth", "beat_rate"]:
+                        if _pct_col in _cv_disp.columns:
+                            _cv_disp[_pct_col] = _cv_disp[_pct_col].apply(
+                                lambda x: f"{x*100:+.1f}%" if pd.notna(x) else "—"
+                            )
+                    for _score_col in ["composite_score", "z_technical", "z_fundamental",
+                                       "z_earnings", "z_macro"]:
+                        if _score_col in _cv_disp.columns:
+                            _cv_disp[_score_col] = _cv_disp[_score_col].apply(
+                                lambda x: f"{x:+.3f}" if pd.notna(x) else "—"
+                            )
+                    st.dataframe(_cv_disp, hide_index=True, use_container_width=True)
+
+                _cv_longs  = _cv_df[_cv_df["direction"] == "LONG"]
+                _cv_shorts = _cv_df[_cv_df["direction"] == "SHORT"]
+
+                # Macro regime info bar
+                _cv_regime    = _cv_df["regime"].iloc[0] if "regime" in _cv_df.columns else "—"
+                _cv_max_long  = int(_cv_df["max_long"].iloc[0])  if "max_long"  in _cv_df.columns else 5
+                _cv_max_short = int(_cv_df["max_short"].iloc[0]) if "max_short" in _cv_df.columns else 5
+                _regime_colors = {"Expansion": "🟢", "Caution": "🟡", "Contraction": "🔴"}
+                st.info(
+                    f"{_regime_colors.get(_cv_regime, '⚪')} Macro regime: **{_cv_regime}** — "
+                    f"slots available: {_cv_max_long}L / {_cv_max_short}S — "
+                    f"{len(_cv_longs)} LONG + {len(_cv_shorts)} SHORT recommendations"
+                )
+
+                # LONG recommendations
+                st.subheader("LONG Recommendations")
+                if _cv_longs.empty:
+                    st.caption("No tickers cleared the long conviction threshold today.")
+                else:
+                    _cv_existing = {p["ticker"] for p in _cv_open}
+                    _alloc_long  = _cv_budget_used / 2
+                    _per_long    = _alloc_long / max(len(_cv_longs), 1)
+
+                    for _, _lr in _cv_longs.iterrows():
+                        _tk      = _lr["ticker"]
+                        _already = _tk in _cv_existing
+                        _shares  = round(_per_long / _lr["current_price"], 4) if _lr["current_price"] else 0
+                        _eflag   = _lr.get("earnings_flag", False)
+                        _edays   = _lr.get("earnings_days_out")
+
+                        _col1, _col2 = st.columns([3, 1])
+                        with _col1:
+                            _score_breakdown = (
+                                f"Score **{_lr['composite_score']:+.3f}** | "
+                                f"Tech {_lr.get('z_technical', float('nan')):+.2f} · "
+                                f"Fund {_lr.get('z_fundamental', float('nan')):+.2f} · "
+                                f"Earn {_lr.get('z_earnings', float('nan')):+.2f} · "
+                                f"Macro {_lr.get('z_macro', float('nan')):+.2f}"
+                            )
+                            _earn_note = f" | 📅 Earnings in {_edays}d" if _eflag and _edays else ""
+                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}  —  {_score_breakdown}{_earn_note}")
+                            st.caption(f"{_shares:.4f} shares · ${_per_long:,.0f} allocation")
+                        with _col2:
+                            if _already:
+                                st.caption("Already held")
+                            elif st.button(f"📈 Record Long {_tk}", key=f"cv_long_{_tk}"):
+                                _new_cv = {
+                                    "ticker"          : _tk,
+                                    "direction"       : "LONG",
+                                    "status"          : "open",
+                                    "entry_price"     : _lr["current_price"],
+                                    "entry_date"      : str(date.today()),
+                                    "shares"          : _shares,
+                                    "cost"            : round(_shares * _lr["current_price"], 2),
+                                    "composite_score" : float(_lr["composite_score"]),
+                                    "score_at_entry"  : float(_lr["composite_score"]),
+                                    "exit_signal"     : None,
+                                    "reassess_signal" : None,
+                                    "earnings_flag"   : bool(_eflag),
+                                    "earnings_days_out": _edays,
+                                }
+                                _cv_positions.append(_new_cv)
+                                _cv_mod.save_conviction_positions(_cv_positions)
+                                st.success(f"Recorded LONG {_tk} @ ${_lr['current_price']}")
+                                st.rerun()
+
+                # SHORT recommendations
+                st.subheader("SHORT Recommendations")
+                if _cv_shorts.empty:
+                    st.caption("No tickers cleared the short conviction threshold today.")
+                else:
+                    _alloc_short = _cv_budget_used / 2
+                    _per_short   = _alloc_short / max(len(_cv_shorts), 1)
+
+                    for _, _sr in _cv_shorts.iterrows():
+                        _tk      = _sr["ticker"]
+                        _already = _tk in _cv_existing if "_cv_existing" in dir() else _tk in {p["ticker"] for p in _cv_open}
+                        _shares  = round(_per_short / _sr["current_price"], 4) if _sr["current_price"] else 0
+                        _eflag   = _sr.get("earnings_flag", False)
+                        _edays   = _sr.get("earnings_days_out")
+
+                        _col1, _col2 = st.columns([3, 1])
+                        with _col1:
+                            _score_breakdown = (
+                                f"Score **{_sr['composite_score']:+.3f}** | "
+                                f"Tech {_sr.get('z_technical', float('nan')):+.2f} · "
+                                f"Fund {_sr.get('z_fundamental', float('nan')):+.2f} · "
+                                f"Earn {_sr.get('z_earnings', float('nan')):+.2f} · "
+                                f"Macro {_sr.get('z_macro', float('nan')):+.2f}"
+                            )
+                            _earn_note = f" | 📅 Earnings in {_edays}d" if _eflag and _edays else ""
+                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}  —  {_score_breakdown}{_earn_note}")
+                            st.caption(f"{_shares:.4f} shares · ${_per_short:,.0f} allocation")
+                        with _col2:
+                            if _already:
+                                st.caption("Already held")
+                            elif st.button(f"📉 Record Short {_tk}", key=f"cv_short_{_tk}"):
+                                _new_cv = {
+                                    "ticker"          : _tk,
+                                    "direction"       : "SHORT",
+                                    "status"          : "open",
+                                    "entry_price"     : _sr["current_price"],
+                                    "entry_date"      : str(date.today()),
+                                    "shares"          : _shares,
+                                    "cost"            : round(_shares * _sr["current_price"], 2),
+                                    "composite_score" : float(_sr["composite_score"]),
+                                    "score_at_entry"  : float(_sr["composite_score"]),
+                                    "exit_signal"     : None,
+                                    "reassess_signal" : None,
+                                    "earnings_flag"   : bool(_eflag),
+                                    "earnings_days_out": _edays,
+                                }
+                                _cv_positions.append(_new_cv)
+                                _cv_mod.save_conviction_positions(_cv_positions)
+                                st.success(f"Recorded SHORT {_tk} @ ${_sr['current_price']}")
+                                st.rerun()
+
+        # ── Reassess open positions ───────────────────────────────────────────
+        if _cv_open and "cv_scan_result" in st.session_state:
+            if st.button("Reassess Open Positions", key="cv_reassess"):
+                _cv_updated = _cv_mod.assess_open_positions(
+                    _cv_open, st.session_state["cv_scan_result"]
+                )
+                _cv_by_ticker = {p["ticker"]: p for p in _cv_updated}
+                _cv_positions = [
+                    _cv_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
+                    for p in _cv_positions
+                ]
+                _cv_mod.save_conviction_positions(_cv_positions)
+                st.success("Positions reassessed.")
+                st.rerun()
+
+        # ── Close a position manually ─────────────────────────────────────────
+        if _cv_open:
+            with st.expander("Close a position"):
+                _cv_close_ticker = st.selectbox(
+                    "Ticker", [p["ticker"] for p in _cv_open], key="cv_close_sel"
+                )
+                _cv_close_price = st.number_input(
+                    "Exit price ($)", min_value=0.01, value=100.0, key="cv_close_price"
+                )
+                _cv_close_reason = st.selectbox(
+                    "Reason", ["reassessment", "hard_stop", "manual"], key="cv_close_reason"
+                )
+                if st.button("Close Position", key="cv_close_btn"):
+                    for _cp in _cv_positions:
+                        if _cp["ticker"] == _cv_close_ticker and _cp["status"] == "open":
+                            _ep = _cp["entry_price"]
+                            if _cp["direction"] == "LONG":
+                                _pnl_pct = (_cv_close_price - _ep) / _ep * 100
+                                _pnl_d   = (_cv_close_price - _ep) * _cp.get("shares", 0)
+                            else:
+                                _pnl_pct = (_ep - _cv_close_price) / _ep * 100
+                                _pnl_d   = (_ep - _cv_close_price) * _cp.get("shares", 0)
+                            _cp.update({
+                                "status"      : "closed",
+                                "exit_price"  : _cv_close_price,
+                                "exit_date"   : str(date.today()),
+                                "exit_reason" : _cv_close_reason,
+                                "pnl_pct"     : round(_pnl_pct, 2),
+                                "pnl_dollars" : round(_pnl_d, 2),
+                            })
+                            break
+                    _cv_mod.save_conviction_positions(_cv_positions)
+                    st.success(f"Closed {_cv_close_ticker}.")
+                    st.rerun()
+
+        # ── Closed positions history ──────────────────────────────────────────
+        if _cv_closed:
+            with st.expander(f"Closed conviction positions ({len(_cv_closed)})"):
+                _cv_c_rows = []
+                for _cp in sorted(_cv_closed, key=lambda x: x.get("exit_date", ""), reverse=True):
+                    _pnl = _cp.get("pnl_pct", 0)
+                    _cv_c_rows.append({
+                        "Ticker"    : _cp["ticker"],
+                        "Dir"       : _cp["direction"],
+                        "Entry $"   : f"${_cp['entry_price']:.2f}",
+                        "Exit $"    : f"${_cp.get('exit_price', 0):.2f}",
+                        "Entry Date": _cp.get("entry_date", ""),
+                        "Exit Date" : _cp.get("exit_date", ""),
+                        "Days"      : _cp.get("days_held", "—"),
+                        "Reason"    : _cp.get("exit_reason", "—"),
+                        "P&L %"     : f"{_pnl:+.2f}%",
+                        "P&L $"     : f"${_cp.get('pnl_dollars', 0):+.2f}",
+                    })
+                st.dataframe(
+                    pd.DataFrame(_cv_c_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
                     hide_index=True, use_container_width=True,
                 )
 
