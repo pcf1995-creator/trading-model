@@ -270,18 +270,19 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
         "current_price"     : None,
     }
 
-    try:
-        t  = yf.Ticker(ticker)
-        df = t.history(period="400d", auto_adjust=True)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df[["Close", "High", "Low"]].dropna()
+    t = yf.Ticker(ticker)
 
-        # ── Technical ─────────────────────────────────────────────────────────
-        if len(df) >= 200:
-            close = df["Close"]
-            high  = df["High"]
-            low   = df["Low"]
+    # ── Technical (isolated) ──────────────────────────────────────────────────
+    try:
+        hist = t.history(period="400d", auto_adjust=True)
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist.columns = hist.columns.get_level_values(0)
+        hist = hist[["Close", "High", "Low"]].dropna()
+
+        if len(hist) >= 200:
+            close = hist["Close"]
+            high  = hist["High"]
+            low   = hist["Low"]
 
             sma50  = float(close.iloc[-50:].mean())
             sma200 = float(close.iloc[-200:].mean())
@@ -301,14 +302,19 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
 
             adx = _compute_adx(high, low, close)
             if not np.isnan(adx):
-                # Directional: positive in uptrend, negative in downtrend
                 result["adx_directional"] = adx * (1.0 if cur > sma200 else -1.0)
+    except Exception:
+        pass
 
-        # ── Fundamentals ──────────────────────────────────────────────────────
-        info = t.info
+    # ── Fundamentals (isolated — each field individually guarded) ─────────────
+    try:
+        info = t.info or {}
         mcap = info.get("marketCap")
         if mcap is not None:
-            result["market_cap"] = float(mcap)
+            try:
+                result["market_cap"] = float(mcap)
+            except (TypeError, ValueError):
+                pass
 
         for key, field in [
             ("roe",             "returnOnEquity"),
@@ -317,70 +323,106 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
             ("earnings_growth", "earningsGrowth"),
             ("profit_margin",   "profitMargins"),
         ]:
-            val = info.get(field)
-            if val is not None and not np.isnan(float(val)):
-                result[key] = float(val)
+            try:
+                val = info.get(field)
+                if val is not None:
+                    fval = float(val)
+                    if not np.isnan(fval):
+                        result[key] = fval
+            except (TypeError, ValueError):
+                pass
 
-        fcf = info.get("freeCashflow")
-        if fcf is not None and mcap and mcap > 0:
-            result["fcf_yield"] = float(fcf) / float(mcap)
-
-        de = info.get("debtToEquity")
-        if de is not None:
-            result["debt_equity_neg"] = -float(de) / 100   # yfinance returns percentage
-
-        pb = info.get("priceToBook")
-        if pb is not None and float(pb) > 0:
-            result["pb"] = float(pb)
-
-        fpe = info.get("forwardPE")
-        if fpe is not None and float(fpe) > 0:
-            result["fwd_pe"] = float(fpe)
-
-        eps_qoq = info.get("earningsQuarterlyGrowth")
-        if eps_qoq is not None:
-            result["eps_qoq_growth"] = float(eps_qoq)
-
-        # ── Earnings beat history ──────────────────────────────────────────────
         try:
-            eh = t.earnings_history
-            if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
-                if "epsActual" in eh.columns and "epsEstimate" in eh.columns:
-                    valid = eh.dropna(subset=["epsActual", "epsEstimate"])
-                    if len(valid) > 0:
-                        beats = (valid["epsActual"] > valid["epsEstimate"]).sum()
-                        result["beat_rate"] = float(beats / len(valid))
-                        surprise = (
-                            (valid["epsActual"] - valid["epsEstimate"])
-                            / valid["epsEstimate"].abs()
-                        ).clip(-2, 2)
-                        result["avg_eps_surprise"] = float(surprise.mean())
-        except Exception:
+            fcf  = info.get("freeCashflow")
+            mcap_ = result.get("market_cap")
+            if fcf is not None and mcap_ and mcap_ > 0:
+                result["fcf_yield"] = float(fcf) / mcap_
+        except (TypeError, ValueError):
             pass
 
-        # ── Next earnings date (flag if within EARNINGS_FLAG_DAYS) ────────────
         try:
-            cal     = t.calendar
-            next_ed = None
-            if isinstance(cal, dict):
-                ed = cal.get("Earnings Date")
-                next_ed = ed[0] if isinstance(ed, list) and ed else ed
-            elif isinstance(cal, pd.DataFrame) and not cal.empty:
-                next_ed = cal.loc["Earnings Date"].iloc[0]
+            de = info.get("debtToEquity")
+            if de is not None:
+                result["debt_equity_neg"] = -float(de) / 100
+        except (TypeError, ValueError):
+            pass
 
-            if next_ed is not None:
-                if hasattr(next_ed, "date"):
-                    next_ed = next_ed.date()
-                elif isinstance(next_ed, str):
-                    next_ed = datetime.strptime(next_ed[:10], "%Y-%m-%d").date()
+        try:
+            pb = info.get("priceToBook")
+            if pb is not None and float(pb) > 0:
+                result["pb"] = float(pb)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            fpe = info.get("forwardPE")
+            if fpe is not None and float(fpe) > 0:
+                result["fwd_pe"] = float(fpe)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            eps_qoq = info.get("earningsQuarterlyGrowth")
+            if eps_qoq is not None:
+                result["eps_qoq_growth"] = float(eps_qoq)
+        except (TypeError, ValueError):
+            pass
+
+    except Exception:
+        pass
+
+    # ── Earnings beat history (isolated — tries multiple yfinance APIs) ────────
+    try:
+        eh = None
+        for attr in ("earnings_history", "earnings_dates"):
+            try:
+                eh = getattr(t, attr, None)
+                if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
+                    break
+                eh = None
+            except Exception:
+                pass
+
+        if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
+            # Normalise column names (yfinance versions differ in casing)
+            eh.columns = [c.lower().replace(" ", "_") for c in eh.columns]
+            actual_col   = next((c for c in eh.columns if "actual" in c), None)
+            estimate_col = next((c for c in eh.columns if "estimate" in c), None)
+            if actual_col and estimate_col:
+                valid = eh.dropna(subset=[actual_col, estimate_col])
+                if len(valid) > 0:
+                    beats = (valid[actual_col] > valid[estimate_col]).sum()
+                    result["beat_rate"] = float(beats / len(valid))
+                    est_abs = valid[estimate_col].abs().replace(0, np.nan)
+                    surprise = ((valid[actual_col] - valid[estimate_col]) / est_abs).clip(-2, 2)
+                    result["avg_eps_surprise"] = float(surprise.mean())
+    except Exception:
+        pass
+
+    # ── Next earnings date (isolated) ─────────────────────────────────────────
+    try:
+        cal     = t.calendar
+        next_ed = None
+        if isinstance(cal, dict):
+            ed = cal.get("Earnings Date")
+            next_ed = ed[0] if isinstance(ed, list) and ed else ed
+        elif isinstance(cal, pd.DataFrame) and not cal.empty:
+            try:
+                next_ed = cal.loc["Earnings Date"].iloc[0]
+            except Exception:
+                pass
+
+        if next_ed is not None:
+            if hasattr(next_ed, "date"):
+                next_ed = next_ed.date()
+            elif isinstance(next_ed, str):
+                next_ed = datetime.strptime(next_ed[:10], "%Y-%m-%d").date()
+            if isinstance(next_ed, date):
                 days_out = (next_ed - date.today()).days
                 result["earnings_days_out"] = days_out
                 if 0 <= days_out <= EARNINGS_FLAG_DAYS:
                     result["earnings_flag"]       = True
                     result["earnings_confidence"] = EARNINGS_CONFIDENCE
-        except Exception:
-            pass
-
     except Exception:
         pass
 
