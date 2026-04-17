@@ -2160,20 +2160,43 @@ with tab_lt:
                             st.rerun()
 
         # ── Reassess open positions ───────────────────────────────────────────
-        if _lt_open and "lt_scan_result" in st.session_state:
-            if st.button("Reassess Open Positions", key="lt_reassess"):
-                _lt_updated = _lt_mod.assess_open_positions(
-                    _lt_open, st.session_state["lt_scan_result"]
-                )
-                # Merge back into full positions list
-                _lt_by_ticker = {p["ticker"]: p for p in _lt_updated}
-                _lt_positions = [
-                    _lt_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
-                    for p in _lt_positions
-                ]
-                _lt_mod.save_lt_positions(_lt_positions)
-                st.success("Positions reassessed.")
-                st.rerun()
+        if _lt_open:
+            _reassess_col, _score_all_col = st.columns(2)
+
+            with _reassess_col:
+                if "lt_scan_result" in st.session_state:
+                    if st.button("Reassess Open Positions", key="lt_reassess"):
+                        _lt_updated = _lt_mod.assess_open_positions(
+                            _lt_open, st.session_state["lt_scan_result"]
+                        )
+                        # Merge back into full positions list
+                        _lt_by_ticker = {p["ticker"]: p for p in _lt_updated}
+                        _lt_positions = [
+                            _lt_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
+                            for p in _lt_positions
+                        ]
+                        _lt_mod.save_lt_positions(_lt_positions)
+                        st.success("Positions reassessed.")
+                        st.rerun()
+
+            with _score_all_col:
+                if st.button("Score All Open Positions", key="lt_score_all"):
+                    _lt_open_tickers = [p["ticker"] for p in _lt_open]
+                    try:
+                        _lt_cb = lambda p: st.progress(p, text="Scoring positions...")
+                        _lt_all_scored = _lt_mod.run_lt_scan(_lt_open_tickers, _lt_cb)
+                        _lt_updated = _lt_mod.assess_open_positions(_lt_open, _lt_all_scored)
+                        # Merge back into full positions list
+                        _lt_by_ticker = {p["ticker"]: p for p in _lt_updated}
+                        _lt_positions = [
+                            _lt_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
+                            for p in _lt_positions
+                        ]
+                        _lt_mod.save_lt_positions(_lt_positions)
+                        st.success(f"Scored {len(_lt_open_tickers)} open position(s).")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"Score error: {_e}")
 
         # ── Close a position manually ─────────────────────────────────────────
         if _lt_open:
