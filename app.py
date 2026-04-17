@@ -2372,10 +2372,19 @@ with tab_conviction:
                     "Select tickers to delete", [p["ticker"] for p in _cv_open], key="cv_del_sel"
                 )
                 if _cv_del_tickers and st.button("Delete Selected", key="cv_del_btn"):
-                    _cv_positions = [p for p in _cv_positions if p["ticker"] not in _cv_del_tickers or p["status"] == "closed"]
-                    _cv_mod.save_conviction_positions(_cv_positions)
-                    st.success(f"Deleted {', '.join(_cv_del_tickers)}")
-                    st.rerun()
+                    try:
+                        # Delete from Supabase directly
+                        _cv_client = db._get_client()
+                        if _cv_client:
+                            for _tk in _cv_del_tickers:
+                                _cv_client.table("lt_positions").delete().filter("ticker", "eq", _tk).filter("id", "like", "cv_%").execute()
+                        # Also remove from in-memory list
+                        _cv_positions = [p for p in _cv_positions if p["ticker"] not in _cv_del_tickers or p["status"] == "closed"]
+                        _cv_mod.save_conviction_positions(_cv_positions)
+                        st.success(f"Deleted {', '.join(_cv_del_tickers)}")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"Delete error: {_e}")
 
         # ── Scan controls ─────────────────────────────────────────────────────
         _cv_budget = st.number_input(
