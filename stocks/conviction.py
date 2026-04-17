@@ -14,6 +14,7 @@ Hard stop 15%. Monthly reassessment.
 """
 
 import sys
+import time
 import warnings
 from datetime import date, datetime
 from pathlib import Path
@@ -23,6 +24,10 @@ import pandas as pd
 import yfinance as yf
 
 warnings.filterwarnings("ignore")
+
+# Alpha Vantage API key — set via environment or hardcode (NOT in git)
+import os
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import db as _db
@@ -235,6 +240,52 @@ def _fetch_sector_returns(tickers: list[str], spy_3m: float | None) -> dict[str,
 
 # ── Per-ticker data ────────────────────────────────────────────────────────────
 
+def _fetch_fundamentals_alpha_vantage(ticker: str) -> dict:
+    """Fetch fundamentals from Alpha Vantage (with rate limiting)."""
+    fund_data = {}
+    if not ALPHA_VANTAGE_KEY:
+        return fund_data
+
+    try:
+        from alpha_vantage.fundamentaldata import FundamentalData
+        fd = FundamentalData(key=ALPHA_VANTAGE_KEY)
+        time.sleep(0.2)  # Rate limiting: 5 calls/min = 12s per call
+
+        # Fetch income statement
+        income, _ = fd.get_income_statement_annual(ticker)
+        if isinstance(income, pd.DataFrame) and not income.empty:
+            latest = income.iloc[0]
+            try:
+                revenue = float(latest.get("totalRevenue", 0)) or None
+                net_income = float(latest.get("netIncome", 0)) or None
+                if revenue and net_income:
+                    fund_data["profit_margin"] = net_income / revenue
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+        # Fetch balance sheet
+        time.sleep(0.2)
+        bs, _ = fd.get_balance_sheet_annual(ticker)
+        if isinstance(bs, pd.DataFrame) and not bs.empty:
+            latest = bs.iloc[0]
+            try:
+                assets = float(latest.get("totalAssets", 0)) or None
+                equity = float(latest.get("totalShareholderEquity", 0)) or None
+                debt = float(latest.get("totalLiabilities", 0)) or None
+                if equity and assets:
+                    fund_data["roe"] = net_income / equity if net_income else np.nan
+                if debt and equity:
+                    fund_data["debt_equity_neg"] = -debt / equity
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+    except ImportError:
+        pass  # alpha_vantage not installed
+    except Exception:
+        pass  # API errors, rate limits, etc.
+
+    return fund_data
+
+
 def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
     """Fetch price history, fundamentals, and earnings for one ticker."""
     result: dict = {
@@ -307,6 +358,12 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
         pass
 
     # ── Fundamentals (isolated — each field individually guarded) ─────────────
+    # Try Alpha Vantage first for better data
+    av_fund = _fetch_fundamentals_alpha_vantage(ticker)
+    for k, v in av_fund.items():
+        if v is not None and not np.isnan(v):
+            result[k] = v
+
     try:
         info = t.info or {}
         mcap = info.get("marketCap")
