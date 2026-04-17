@@ -2291,16 +2291,23 @@ with tab_conviction:
                 _shares_held = _cp.get("shares", 0) or 0
                 _cost  = _cp.get("cost", _ep * _shares_held)
                 _pnl_d = _cost * _pnl / 100
-                _score = _cp.get("current_score") or _cp.get("score_at_entry")
+                _score = _cp.get("current_score")
+                if _score is None:
+                    _score = _cp.get("score_at_entry")
                 _edays = _cp.get("earnings_days_out")
                 _eflag = _cp.get("earnings_flag", False)
-                _flag  = ""
+                # Build status — priority: hard stop > reassess > hold
+                # Earnings note appended for all positions that have the data
                 if _cp.get("exit_signal"):
                     _flag = "🚨 HARD STOP"
                 elif _cp.get("reassess_signal"):
                     _flag = f"⚠️ {_cp['reassess_signal']}"
-                elif _eflag:
-                    _flag = f"📅 Earnings in {_edays}d"
+                else:
+                    _flag = "✓ Hold"
+                # Always append earnings countdown when we know the date
+                if _edays is not None and _edays >= 0:
+                    _earn_icon = "🚨" if _edays <= 7 else "📅"
+                    _flag += f"  {_earn_icon} Earn {_edays}d"
                 _cv_rows.append({
                     "Ticker"    : _cp["ticker"],
                     "Dir"       : _dir,
@@ -2311,7 +2318,7 @@ with tab_conviction:
                     "P&L $"     : f"${_pnl_d:+.2f}",
                     "Days"      : (date.today() - date.fromisoformat(_cp["entry_date"])).days,
                     "Score"     : f"{_score:.3f}" if _score is not None else "—",
-                    "Status"    : _flag or "✓ Hold",
+                    "Status"    : _flag,
                 })
                 _cv_pnl_dollars.append(_pnl_d)
                 _cv_costs.append(_cost)
