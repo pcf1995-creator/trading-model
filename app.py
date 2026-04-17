@@ -46,7 +46,7 @@ PAPER_TRADES     = ROOT / "paper_trades.json"
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 st.title("Trading Dashboard")
 
-tab_dash, tab_lt, tab_conviction, tab_perf = st.tabs(["📊 Dashboard", "📈 Long-Term L/S", "🎯 Conviction L/S", "📉 Performance"])
+tab_dash, tab_lt, tab_conviction, tab_perf = st.tabs(["📊 Dashboard", "📈 Absolute Return L/S", "🎯 S&P Benchmark L/S", "📉 Performance"])
 
 with tab_dash:
 
@@ -1901,7 +1901,7 @@ with tab_dash:
 # LONG-TERM L/S TAB
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_lt:
-    st.header("Long-Term L/S Portfolio")
+    st.header("Absolute Return L/S Portfolio")
     st.caption(
         "Factor-scored (momentum · quality · value). "
         "Top 5 → LONG, Bottom 5 → SHORT. "
@@ -2260,7 +2260,7 @@ with tab_lt:
 # CONVICTION L/S TAB
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_conviction:
-    st.header("Conviction L/S Portfolio")
+    st.header("S&P Benchmark L/S Portfolio")
     st.caption(
         "Four-pillar composite score: Technical (25%) · Fundamental (35%) · "
         "Earnings (25%) · Macro (15%). "
@@ -2364,6 +2364,18 @@ with tab_conviction:
             _cc4.metric("Short P&L $",   f"${_cv_short_pnl:+.2f}")
         else:
             st.info("No open conviction positions. Run a scan to get recommendations.")
+
+        # ── Delete positions ─────────────────────────────────────────────────
+        if _cv_open:
+            with st.expander("Delete position(s)"):
+                _cv_del_tickers = st.multiselect(
+                    "Select tickers to delete", [p["ticker"] for p in _cv_open], key="cv_del_sel"
+                )
+                if _cv_del_tickers and st.button("Delete Selected", key="cv_del_btn"):
+                    _cv_positions = [p for p in _cv_positions if p["ticker"] not in _cv_del_tickers or p["status"] == "closed"]
+                    _cv_mod.save_conviction_positions(_cv_positions)
+                    st.success(f"Deleted {', '.join(_cv_del_tickers)}")
+                    st.rerun()
 
         # ── Scan controls ─────────────────────────────────────────────────────
         _cv_budget = st.number_input(
