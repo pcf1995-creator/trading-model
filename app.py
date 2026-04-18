@@ -1363,17 +1363,32 @@ with tab_dash:
             st.subheader("Settled — By Time Bucket")
             _buckets = {}
             for _p in _resolved:
-                _b = _time_bucket(_p.get("hours_to_exp"))
+                # Use saved bucket field (matches calibration logic) instead of recalculating
+                _b = _p.get("bucket")
+                if not _b:
+                    # Fallback for trades without bucket field: recalculate from hours_to_exp
+                    _b = _time_bucket(_p.get("hours_to_exp"))
                 _buckets.setdefault(_b, []).append(_p)
 
             _bk_rows = []
-            _bucket_order = ["<1hr", "1-3hr", "3-8hr", "8-24hr", ">24hr", "unknown"]
+            # Use calibration bucket names (vol, intraday_short, intraday_long, weekly)
+            # mapped to display labels for consistency with calibration summary
+            _bucket_labels = {
+                "vol": "<1hr (vol)",
+                "intraday_short": "1-8hr",
+                "intraday_long": "8-24hr",
+                "weekly": ">24hr",
+                # legacy/fallback
+                "daily": ">24hr",
+                "intraday": "1-24hr",
+            }
+            _bucket_order = ["vol", "intraday_short", "intraday_long", "weekly", "daily", "intraday", "unknown"]
             for _b in _bucket_order:
                 _bps = _buckets.get(_b)
                 if not _bps:
                     continue
                 _row = _bucket_stats("Bucket", _bps)
-                _row["Bucket"] = _b
+                _row["Bucket"] = _bucket_labels.get(_b, _b)
                 _bk_rows.append(_row)
             st.dataframe(
                 pd.DataFrame(_bk_rows).style.map(color_pnl, subset=_color_cols),
