@@ -903,9 +903,14 @@ with tab_dash:
                 """Cache crypto models (50MB+ joblib files) for 1 hour."""
                 return load_crypto_models()
 
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def _load_calibration_cached():
+                """Cache calibration data (only changes on manual recalibration)."""
+                return db.load_calibration_db()
+
             with st.spinner("Loading model..."):
                 models = _load_crypto_models_cached()
-                _db_cal = db.load_calibration_db()
+                _db_cal = _load_calibration_cached()
                 if _db_cal:
                     models["calibration"] = _db_cal
 
@@ -940,11 +945,16 @@ with tab_dash:
                         minute_closes = _fetch_binance_minute_closes_cached(binance_sym) if has_intraday else []
                         asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df, "minute": minute_closes}
 
+                @st.cache_data(ttl=600, show_spinner=False)
+                def _get_markets_cached(series):
+                    """Cache market lists (only change when new expirations appear)."""
+                    return client.get_markets(series_ticker=series, status="open")
+
                 all_results = []
                 scan_debug  = []
                 with st.spinner("Scoring contracts..."):
                     for symbol, series in KALSHI_SERIES.items():
-                        markets   = client.get_markets(series_ticker=series, status="open")
+                        markets   = _get_markets_cached(series)
                         scored    = 0
                         asset_dfs = asset_dfs_by_symbol[symbol]
                         for market in markets:
