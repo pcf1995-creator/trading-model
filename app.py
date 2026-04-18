@@ -1117,27 +1117,33 @@ with tab_dash:
     else:
         st.caption("No calibration active — click Recalibrate after accumulating 5+ settled paper trades per bucket.")
 
-    _paper = db.load_paper_trades()
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _load_settled_trades():
+        """Cache settled trades (they don't change). 5min TTL."""
+        _all = db.load_paper_trades()
+        return [t for t in _all if t.get("status") == "settled"]
+
+    _settled_paper = _load_settled_trades()
+
+    # Load only open trades (these may change on settlement checks)
+    _all_paper = db.load_paper_trades()
+    _open_paper = [t for t in _all_paper if t.get("status") == "open"]
 
     with st.expander("🔍 Debug: Raw DB (last 10 trades)", expanded=False):
-        _debug_rows = sorted(_paper, key=lambda x: x.get("placed_at", ""), reverse=True)[:10]
+        _debug_rows = sorted(_all_paper, key=lambda x: x.get("placed_at", ""), reverse=True)[:10]
         st.json([{k: v for k, v in t.items()
                   if k in ("ticker","side","status","price_cents","close_time","placed_at","result","pnl_dollars")}
                  for t in _debug_rows])
 
-    if not _paper:
+    if not _all_paper:
         st.info("No paper trades recorded yet. Run the Kalshi Scan and click '📝 Paper Trade' to start tracking.")
     else:
-        # ── Auto-settle expired trades ────────────────────────────────────────────
+        # ── Auto-settle expired trades (only check open trades) ──────────────────────
         _now_utc       = datetime.now(timezone.utc)
         _newly_settled = 0
-        _open_paper    = []
-        _settled_paper = []
 
         # Re-open any trades that were incorrectly settled with empty result
-        # (Kalshi API returns result="" for open markets; "" is not None so the old
-        #  guard passed, treating every live market as a loss.)
-        for _pt in _paper:
+        for _pt in _open_paper:
             if _pt.get("status") == "settled" and not _pt.get("result"):
                 db.reopen_paper_trade(_pt["id"])
                 _pt["status"] = "open"
@@ -1145,9 +1151,8 @@ with tab_dash:
                 _pt.pop("pnl_dollars", None)
 
         # Correct P&L for settled trades where result was stored with wrong case
-        # and P&L was computed using the loss formula instead of the win formula.
-        for _pt in _paper:
-            if _pt.get("status") == "settled" and _pt.get("result"):
+        for _pt in _settled_paper:
+            if _pt.get("result"):
                 _result  = _pt["result"]
                 _side    = _pt.get("side", "yes")
                 _entry   = _pt.get("price_cents", 50)
@@ -1159,7 +1164,7 @@ with tab_dash:
                     db.settle_paper_trade(_pt["id"], _result, _correct)
                     _pt["pnl_dollars"] = _correct
 
-        for _pt in _paper:
+        for _pt in _open_paper:
             if _pt.get("status") == "open":
                 _close_str = _pt.get("close_time", "")
                 _closed    = False
@@ -1168,16 +1173,14 @@ with tab_dash:
                         _close_dt = datetime.fromisoformat(_close_str.replace("Z", "+00:00"))
                         _closed   = _close_dt <= _now_utc
                     except Exception:
-                        # Non-ISO close_time (old records stored date string like "26MAR2801").
-                        # Fall through to API check — if the contract settled, result != None.
                         _closed = True
                 else:
-                    _closed = True  # no close_time at all → check API
+                    _closed = True
                 if _closed and not _client.dry_run:
                     try:
                         _mkt    = _client._request("GET", f"/markets/{_pt['ticker']}").get("market", {})
                         _result = _mkt.get("result")
-                        if _result:  # must be non-empty string ("yes"/"no"); "" means still open
+                        if _result:
                             _side  = _pt.get("side", "yes")
                             _entry = _pt.get("price_cents", 50)
                             _ctrs  = _pt.get("contracts", 1)
@@ -1191,10 +1194,6 @@ with tab_dash:
                             _newly_settled    += 1
                     except Exception:
                         pass
-            if _pt.get("status") == "open":
-                _open_paper.append(_pt)
-            else:
-                _settled_paper.append(_pt)
 
         if _newly_settled:
             st.success(f"Auto-settled {_newly_settled} paper trade(s).")
