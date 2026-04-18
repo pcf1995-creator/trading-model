@@ -898,8 +898,13 @@ with tab_dash:
                 CRYPTO_ASSETS, KALSHI_SERIES, INFERENCE_PERIOD,
             )
 
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def _load_crypto_models_cached():
+                """Cache crypto models (50MB+ joblib files) for 1 hour."""
+                return load_crypto_models()
+
             with st.spinner("Loading model..."):
-                models = load_crypto_models()
+                models = _load_crypto_models_cached()
                 _db_cal = db.load_calibration_db()
                 if _db_cal:
                     models["calibration"] = _db_cal
