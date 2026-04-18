@@ -2331,10 +2331,13 @@ with tab_conviction:
                 if _edays is not None and _edays >= 0:
                     _earn_icon = "🚨" if _edays <= 7 else "📅"
                     _flag += f"  {_earn_icon} Earn {_edays}d"
+                _pos_size_entry = round(_shares_held * _ep, 2)
+                _pos_size_current = round(_shares_held * _cur, 2)
                 _cv_rows.append({
                     "Ticker"    : _cp["ticker"],
                     "Dir"       : _dir,
                     "Shares"    : f"{_shares_held:.4f}" if _shares_held else "—",
+                    "Position Size": f"${_pos_size_entry:,.0f}",
                     "Entry $"   : f"${_ep:.2f}",
                     "Current $" : f"${_cur:.2f}",
                     "P&L %"     : f"{_pnl:+.2f}%",
@@ -2357,11 +2360,25 @@ with tab_conviction:
             _cv_long_pnl    = sum(_cv_pnl_dollars[i] for i, r in enumerate(_cv_rows) if r["Dir"] == "LONG")
             _cv_short_pnl   = sum(_cv_pnl_dollars[i] for i, r in enumerate(_cv_rows) if r["Dir"] == "SHORT")
 
-            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+            # Net exposure: (Long $ - Short $) / Total Capital × 100
+            _cv_long_entry = sum(_shares_held * _ep for _cp, _shares_held, _ep in
+                                [(p, p.get("shares", 0), p["entry_price"]) for p in _cv_open if p["direction"] == "LONG"])
+            _cv_short_entry = sum(_shares_held * _ep for _cp, _shares_held, _ep in
+                                 [(p, p.get("shares", 0), p["entry_price"]) for p in _cv_open if p["direction"] == "SHORT"])
+            _cv_long_current = sum(_shares_held * (_cv_live_price(p["ticker"]) or p["entry_price"]) for p in _cv_open if p["direction"] == "LONG"
+                                  for _shares_held in [p.get("shares", 0)])
+            _cv_short_current = sum(_shares_held * (_cv_live_price(p["ticker"]) or p["entry_price"]) for p in _cv_open if p["direction"] == "SHORT"
+                                   for _shares_held in [p.get("shares", 0)])
+            _cv_total_capital = _cv_budget
+            _cv_net_exposure_entry = ((_cv_long_entry - _cv_short_entry) / _cv_total_capital * 100) if _cv_total_capital else 0
+            _cv_net_exposure_current = ((_cv_long_current - _cv_short_current) / _cv_total_capital * 100) if _cv_total_capital else 0
+
+            _cc1, _cc2, _cc3, _cc4, _cc5 = st.columns(5)
             _cc1.metric("Total P&L $",   f"${_cv_total_pnl_d:+.2f}")
             _cc2.metric("Weighted P&L %", f"{_cv_wtd_pnl:+.2f}%")
             _cc3.metric("Long P&L $",    f"${_cv_long_pnl:+.2f}")
             _cc4.metric("Short P&L $",   f"${_cv_short_pnl:+.2f}")
+            _cc5.metric("Net Exposure", f"{_cv_net_exposure_current:+.1f}%", delta=f"{_cv_net_exposure_entry:+.1f}% at entry")
         else:
             st.info("No open conviction positions. Run a scan to get recommendations.")
 
