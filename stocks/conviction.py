@@ -25,9 +25,16 @@ import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
-# Alpha Vantage API key — set via environment or hardcode (NOT in git)
+# Alpha Vantage API key — try Streamlit secrets, fall back to environment
 import os
-ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+ALPHA_VANTAGE_KEY = ""
+try:
+    import streamlit as st
+    ALPHA_VANTAGE_KEY = st.secrets.get("ALPHA_VANTAGE_KEY", "")
+except Exception:
+    pass
+if not ALPHA_VANTAGE_KEY:
+    ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import db as _db
