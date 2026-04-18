@@ -188,10 +188,15 @@ with tab_dash:
     _local_by_ticker = db.load_position_overrides()   # {ticker: {entry_cents, stop_cents, contracts}}
 
     # Pre-fetch fills to compute avg entry prices from actual buy fills
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _fetch_fills_cached():
+        """Cache fills for 60s since they rarely change during session."""
+        return _client.get_fills(limit=2000) if not _client.dry_run else []
+
     _fills_index: dict[str, dict] = {}   # ticker -> {yes: cents, no: cents}
     if not _client.dry_run:
         try:
-            _prefetch_fills = _client.get_fills(limit=2000)
+            _prefetch_fills = _fetch_fills_cached()
             _ticker_buy_fills: dict[str, list] = {}
             for _pf in _prefetch_fills:
                 _pt = _pf.get("market_ticker") or _pf.get("ticker", "")
@@ -218,9 +223,14 @@ with tab_dash:
         except Exception:
             pass
 
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _fetch_positions_cached():
+        """Cache positions for 60s since they rarely change during session."""
+        return _client.get_positions() if not _client.dry_run else []
+
     if not _client.dry_run:
         try:
-            _api_positions = _client.get_positions()
+            _api_positions = _fetch_positions_cached()
             _all_api = []
             for _pos in _api_positions:
                 _tkr = _pos.get("ticker", "")
