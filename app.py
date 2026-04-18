@@ -252,8 +252,10 @@ with tab_dash:
                 _proxy_entry = get_bid_cents(_mkt, _side) or 0
                 _entry = _saved_entry if _saved_entry else (_fills_entry if _fills_entry else _proxy_entry)
                 # Use saved stop if present and non-zero; fall back to 50% of entry
+                # For trades <1hr to expiration, use wider 25% stop to avoid whipsaws
                 _saved_stop = _local.get("stop_cents")
-                _stop = _saved_stop if _saved_stop else round(_entry * 0.5)
+                _stop_pct = 0.25 if (_hrs is not None and _hrs < 1) else 0.50
+                _stop = _saved_stop if _saved_stop else round(_entry * _stop_pct)
                 _api_contracts = abs(_net_pos) if _net_pos != 0 else 1
                 _all_api.append({
                     "ticker"      : _tkr,
