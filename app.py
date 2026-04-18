@@ -2373,12 +2373,15 @@ with tab_conviction:
             _cv_net_exposure_entry = ((_cv_long_entry - _cv_short_entry) / _cv_total_capital * 100) if _cv_total_capital else 0
             _cv_net_exposure_current = ((_cv_long_current - _cv_short_current) / _cv_total_capital * 100) if _cv_total_capital else 0
 
-            _cc1, _cc2, _cc3, _cc4, _cc5 = st.columns(5)
+            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
             _cc1.metric("Total P&L $",   f"${_cv_total_pnl_d:+.2f}")
             _cc2.metric("Weighted P&L %", f"{_cv_wtd_pnl:+.2f}%")
             _cc3.metric("Long P&L $",    f"${_cv_long_pnl:+.2f}")
             _cc4.metric("Short P&L $",   f"${_cv_short_pnl:+.2f}")
-            _cc5.metric("Net Exposure", f"{_cv_net_exposure_current:+.1f}%", delta=f"{_cv_net_exposure_entry:+.1f}% at entry")
+
+            _ce1, _ce2 = st.columns(2)
+            _ce1.metric("Net Exposure (Entry)",   f"{_cv_net_exposure_entry:+.1f}%")
+            _ce2.metric("Net Exposure (Current)", f"{_cv_net_exposure_current:+.1f}%")
         else:
             st.info("No open conviction positions. Run a scan to get recommendations.")
 
