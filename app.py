@@ -2369,7 +2369,7 @@ with tab_conviction:
                                   for _shares_held in [p.get("shares", 0)])
             _cv_short_current = sum(_shares_held * (_cv_live_price(p["ticker"]) or p["entry_price"]) for p in _cv_open if p["direction"] == "SHORT"
                                    for _shares_held in [p.get("shares", 0)])
-            _cv_total_capital = _cv_budget
+            _cv_total_capital = st.session_state.get("cv_budget", 5000)  # default to 5k
             _cv_net_exposure_entry = ((_cv_long_entry - _cv_short_entry) / _cv_total_capital * 100) if _cv_total_capital else 0
             _cv_net_exposure_current = ((_cv_long_current - _cv_short_current) / _cv_total_capital * 100) if _cv_total_capital else 0
 
