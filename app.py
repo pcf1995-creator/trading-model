@@ -1374,18 +1374,7 @@ with tab_dash:
 
             # ── By time bucket ────────────────────────────────────────────────
             st.subheader("Settled — By Time Bucket")
-            _buckets = {}
-            for _p in _resolved:
-                # Use saved bucket field (matches calibration logic) instead of recalculating
-                _b = _p.get("bucket")
-                if not _b:
-                    # Fallback for trades without bucket field: recalculate from hours_to_exp
-                    _b = _time_bucket(_p.get("hours_to_exp"))
-                _buckets.setdefault(_b, []).append(_p)
-
-            _bk_rows = []
-            # Use calibration bucket names (vol, intraday_short, intraday_long, weekly)
-            # mapped to display labels for consistency with calibration summary
+            # Group by mapped bucket label (consolidates "weekly" + "daily" → ">24hr")
             _bucket_labels = {
                 "vol": "<1hr (vol)",
                 "intraday_short": "1-8hr",
@@ -1395,13 +1384,24 @@ with tab_dash:
                 "daily": ">24hr",
                 "intraday": "1-24hr",
             }
-            _bucket_order = ["vol", "intraday_short", "intraday_long", "weekly", "daily", "intraday", "unknown"]
-            for _b in _bucket_order:
-                _bps = _buckets.get(_b)
+            _buckets_by_label = {}
+            for _p in _resolved:
+                # Use saved bucket field (matches calibration logic) instead of recalculating
+                _b = _p.get("bucket")
+                if not _b:
+                    # Fallback for trades without bucket field: recalculate from hours_to_exp
+                    _b = _time_bucket(_p.get("hours_to_exp"))
+                _label = _bucket_labels.get(_b, _b)
+                _buckets_by_label.setdefault(_label, []).append(_p)
+
+            _bk_rows = []
+            _bucket_order = ["<1hr (vol)", "1-8hr", "8-24hr", ">24hr", "1-24hr", "unknown"]
+            for _label in _bucket_order:
+                _bps = _buckets_by_label.get(_label)
                 if not _bps:
                     continue
                 _row = _bucket_stats("Bucket", _bps)
-                _row["Bucket"] = _bucket_labels.get(_b, _b)
+                _row["Bucket"] = _label
                 _bk_rows.append(_row)
             st.dataframe(
                 pd.DataFrame(_bk_rows).style.map(color_pnl, subset=_color_cols),
