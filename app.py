@@ -2486,12 +2486,20 @@ with tab_conviction:
                     st.caption("No tickers cleared the long conviction threshold today.")
                 else:
                     _cv_existing = {p["ticker"] for p in _cv_open}
-                    _alloc_long  = _cv_budget_used / 2
-                    _per_long    = _alloc_long / max(len(_cv_longs), 1)
+                    # Conviction-weighted sizing: allocate based on score strength
+                    _long_conviction_sum = _cv_longs["composite_score"].sum()
+                    _short_conviction_sum = abs(_cv_shorts["composite_score"].sum()) if not _cv_shorts.empty else 0
+                    _total_conviction = _long_conviction_sum + _short_conviction_sum
+                    if _total_conviction > 0:
+                        _alloc_long = _cv_budget_used * (_long_conviction_sum / _total_conviction)
+                    else:
+                        _alloc_long = _cv_budget_used / 2  # fallback to 50/50 if no conviction
 
                     for _, _lr in _cv_longs.iterrows():
                         _tk      = _lr["ticker"]
                         _already = _tk in _cv_existing
+                        # Conviction-weighted allocation for this position
+                        _per_long = _alloc_long * (_lr["composite_score"] / _long_conviction_sum) if _long_conviction_sum > 0 else _alloc_long / max(len(_cv_longs), 1)
                         _shares  = round(_per_long / _lr["current_price"], 4) if _lr["current_price"] else 0
                         _eflag   = _lr.get("earnings_flag", False)
                         _edays   = _lr.get("earnings_days_out")
@@ -2537,12 +2545,17 @@ with tab_conviction:
                 if _cv_shorts.empty:
                     st.caption("No tickers cleared the short conviction threshold today.")
                 else:
-                    _alloc_short = _cv_budget_used / 2
-                    _per_short   = _alloc_short / max(len(_cv_shorts), 1)
+                    # Conviction-weighted sizing for shorts: use absolute value of scores
+                    if _short_conviction_sum > 0:
+                        _alloc_short = _cv_budget_used * (_short_conviction_sum / _total_conviction)
+                    else:
+                        _alloc_short = _cv_budget_used / 2  # fallback to 50/50 if no conviction
 
                     for _, _sr in _cv_shorts.iterrows():
                         _tk      = _sr["ticker"]
                         _already = _tk in _cv_existing if "_cv_existing" in dir() else _tk in {p["ticker"] for p in _cv_open}
+                        # Conviction-weighted allocation for this position
+                        _per_short = _alloc_short * (abs(_sr["composite_score"]) / _short_conviction_sum) if _short_conviction_sum > 0 else _alloc_short / max(len(_cv_shorts), 1)
                         _shares  = round(_per_short / _sr["current_price"], 4) if _sr["current_price"] else 0
                         _eflag   = _sr.get("earnings_flag", False)
                         _edays   = _sr.get("earnings_days_out")
@@ -2582,6 +2595,16 @@ with tab_conviction:
                                 _cv_mod.save_conviction_positions(_cv_positions)
                                 st.success(f"Recorded SHORT {_tk} @ ${_sr['current_price']}")
                                 st.rerun()
+
+                # Deployment summary
+                st.divider()
+                _total_deployed = _alloc_long + _alloc_short
+                _available      = _cv_budget_used - _total_deployed
+                _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+                _dc1.metric("Budget", f"${_cv_budget_used:,.0f}")
+                _dc2.metric("Deployed (Long)", f"${_alloc_long:,.0f}")
+                _dc3.metric("Deployed (Short)", f"${_alloc_short:,.0f}")
+                _dc4.metric("Available", f"${_available:,.0f}", delta=f"{_available/_cv_budget_used*100:.1f}%" if _cv_budget_used else None)
 
         # ── Reassess open positions ───────────────────────────────────────────
         if _cv_open and "cv_scan_result" in st.session_state:

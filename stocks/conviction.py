@@ -564,6 +564,14 @@ def score_universe(tickers: list[str],
         W_MACRO       * df["z_macro"].fillna(0)
     )
 
+    # ── Directional regime adjustment (boost longs in Expansion, shorts in Contraction) ──
+    # This widens the spread between long and short candidates based on macro regime
+    directional_adj = 0.30  # magnitude of directional bias
+    if regime == "Expansion":
+        df["composite_score"] = df["composite_score"] + df["composite_score"].apply(lambda x: directional_adj if x > 0 else -directional_adj)
+    elif regime == "Contraction":
+        df["composite_score"] = df["composite_score"] + df["composite_score"].apply(lambda x: -directional_adj if x > 0 else directional_adj)
+
     df = df.sort_values("composite_score", ascending=False).reset_index()
     n  = len(df)
     df["percentile"] = (n - df.index) / n
