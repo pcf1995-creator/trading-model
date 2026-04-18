@@ -918,13 +918,26 @@ with tab_dash:
                     st.warning("Running in dry-run mode — set KALSHI_KEY_ID and KALSHI_KEY_PATH "
                                "to scan live contracts.")
 
+                # Cache price data to avoid repeated API calls
+                @st.cache_data(ttl=3600, show_spinner=False)
+                def _download_crypto_cached(symbol):
+                    return download_crypto(symbol, INFERENCE_PERIOD)
+
+                @st.cache_data(ttl=1800, show_spinner=False)
+                def _download_crypto_hourly_cached(symbol):
+                    return download_crypto_hourly(symbol)
+
+                @st.cache_data(ttl=300, show_spinner=False)
+                def _fetch_binance_minute_closes_cached(symbol):
+                    return fetch_binance_minute_closes(symbol) if symbol else []
+
                 asset_dfs_by_symbol = {}
                 with st.spinner("Fetching crypto prices..."):
                     for symbol in CRYPTO_ASSETS:
-                        daily_df      = download_crypto(symbol, INFERENCE_PERIOD)
-                        hourly_df     = download_crypto_hourly(symbol) if has_intraday else None
+                        daily_df      = _download_crypto_cached(symbol)
+                        hourly_df     = _download_crypto_hourly_cached(symbol) if has_intraday else None
                         binance_sym   = BINANCE_SYMBOLS.get(symbol)
-                        minute_closes = fetch_binance_minute_closes(binance_sym) if binance_sym else []
+                        minute_closes = _fetch_binance_minute_closes_cached(binance_sym) if has_intraday else []
                         asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df, "minute": minute_closes}
 
                 all_results = []
