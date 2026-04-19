@@ -1352,50 +1352,57 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
 
 def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
     """
-    Read pending trades from DB and auto-place TOP 3 by EV based on bucket rules.
+    Read pending trades from DB and auto-place TOP 3 by EV per bucket.
+    Only places trades for buckets where auto-placement is enabled.
 
-    Returns: {"vol_placed": int, "weekly_placed": int, "skipped": int}
+    Returns: {"vol_placed": int, "intraday_short_placed": int, "intraday_long_placed": int, "weekly_placed": int, "skipped": int}
     """
     try:
         import db
+        flags = db.load_feature_flags()
         trades = db.load_paper_trades()
         pending_trades = [t for t in trades if t.get("status") == "open" and t.get("pnl_dollars") is None]
 
-        # Filter to vol/weekly only and sort by EV descending
-        placeable = [
-            t for t in pending_trades
-            if t.get("bucket") in ("vol", "weekly")
-        ]
-        placeable.sort(key=lambda t: t.get("ev", 0), reverse=True)
+        stats = {"vol_placed": 0, "intraday_short_placed": 0, "intraday_long_placed": 0, "weekly_placed": 0, "skipped": 0}
 
-        # Take only top 3
-        placeable = placeable[:3]
+        # For each bucket, place top 3 by EV if auto-placement is enabled
+        bucket_flags = {
+            "vol": "auto_place_vol",
+            "intraday_short": "auto_place_intraday_short",
+            "intraday_long": "auto_place_intraday_long",
+            "weekly": "auto_place_weekly",
+        }
 
-        stats = {"vol_placed": 0, "weekly_placed": 0, "skipped": 0}
+        for bucket, flag_key in bucket_flags.items():
+            if not flags.get(flag_key, False):
+                continue
 
-        for trade in placeable:
-            bucket = trade.get("bucket", "")
+            # Filter to this bucket and sort by EV descending
+            bucket_trades = [t for t in pending_trades if t.get("bucket") == bucket]
+            bucket_trades.sort(key=lambda t: t.get("ev", 0), reverse=True)
 
-            # Reconstruct recommendation dict from trade record
-            rec = {
-                "ticker": trade["ticker"],
-                "side": trade["side"],
-                "contracts_suggested": trade["contracts"],
-                "price": trade["price_cents"],
-                "ev": trade.get("ev", 0),
-                "kelly_pct": (trade.get("bet_dollars", 0) / (trade.get("price_cents", 100) / 100) / 100) * 100 if trade.get("price_cents") else 0,
-            }
+            # Take top 3
+            for trade in bucket_trades[:3]:
+                # Reconstruct recommendation dict from trade record
+                rec = {
+                    "ticker": trade["ticker"],
+                    "side": trade["side"],
+                    "contracts_suggested": trade["contracts"],
+                    "price": trade["price_cents"],
+                    "ev": trade.get("ev", 0),
+                    "kelly_pct": (trade.get("bet_dollars", 0) / (trade.get("price_cents", 100) / 100) / 100) * 100 if trade.get("price_cents") else 0,
+                }
 
-            if auto_place_trade(rec, kalshi_client, bucket):
-                stats[f"{bucket}_placed"] += 1
-            else:
-                stats["skipped"] += 1
+                if auto_place_trade(rec, kalshi_client, bucket):
+                    stats[f"{bucket}_placed"] += 1
+                else:
+                    stats["skipped"] += 1
 
         return stats
 
     except Exception as e:
         logger.error(f"Error in place_scheduled_orders: {e}")
-        return {"vol_placed": 0, "weekly_placed": 0, "skipped": 0}
+        return {"vol_placed": 0, "intraday_short_placed": 0, "intraday_long_placed": 0, "weekly_placed": 0, "skipped": 0}
 
 
 if __name__ == "__main__":
