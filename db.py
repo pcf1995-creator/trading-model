@@ -438,10 +438,16 @@ _FEATURE_FLAGS_JSON = Path("feature_flags.json")
 
 def load_feature_flags() -> dict:
     """Load feature flags (auto-placement toggles, etc)."""
-    return _load_json(_FEATURE_FLAGS_JSON, {
+    defaults = {
         "auto_place_weekly": False,
         "auto_place_vol": False,
-    })
+        "auto_place_intraday_short": False,
+        "auto_place_intraday_long": False,
+    }
+    data = _load_json(_FEATURE_FLAGS_JSON)
+    if not data:
+        return defaults
+    return {**defaults, **data}
 
 
 def set_feature_flag(key: str, value: bool) -> None:

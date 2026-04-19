@@ -890,29 +890,59 @@ with tab_dash:
 
 
     # Scan settings
-    col1, col2, col3 = st.columns([2, 1, 1])
+    st.write("**Scan Settings**")
+    col1, col2, col3, col4 = st.columns(4)
+
     with col1:
-        st.write("**Scan Settings**")
-    with col2:
         skip_intraday_short = st.checkbox(
             "Skip 1–8h trades",
             value=False,
-            help="Don't save 1–8h (intraday_short) trades due to 0% win rate. Investigation ongoing."
+            help="Don't save 1–8h (intraday_short) trades due to 0% win rate."
         )
+
+    flags = db.load_feature_flags()
+
+    with col2:
+        auto_place_vol = st.checkbox(
+            "Auto-place vol",
+            value=flags.get("auto_place_vol", False),
+            help="Auto-place vol (<1h) trades with -$25/day loss limit."
+        )
+        if auto_place_vol != st.session_state.get("_last_auto_place_vol", False):
+            db.set_feature_flag("auto_place_vol", auto_place_vol)
+            st.session_state["_last_auto_place_vol"] = auto_place_vol
+            if auto_place_vol:
+                st.success("✅ Vol auto-placement enabled")
+            else:
+                st.info("⏸ Vol auto-placement disabled")
+
     with col3:
+        auto_place_intraday_long = st.checkbox(
+            "Auto-place 8–24h",
+            value=flags.get("auto_place_intraday_long", False),
+            help="Auto-place 8–24h (intraday_long) trades. Requires recalibration first."
+        )
+        if auto_place_intraday_long != st.session_state.get("_last_auto_place_intraday_long", False):
+            db.set_feature_flag("auto_place_intraday_long", auto_place_intraday_long)
+            st.session_state["_last_auto_place_intraday_long"] = auto_place_intraday_long
+            if auto_place_intraday_long:
+                st.success("✅ 8–24h auto-placement enabled")
+            else:
+                st.info("⏸ 8–24h auto-placement disabled")
+
+    with col4:
         auto_place_weekly = st.checkbox(
             "Auto-place weekly",
-            value=False,
-            help="Enable automatic placement of weekly (>24h) trades via cron."
+            value=flags.get("auto_place_weekly", False),
+            help="Auto-place weekly (>24h) trades via cron."
         )
-        # Save feature flag
         if auto_place_weekly != st.session_state.get("_last_auto_place_weekly", False):
             db.set_feature_flag("auto_place_weekly", auto_place_weekly)
             st.session_state["_last_auto_place_weekly"] = auto_place_weekly
             if auto_place_weekly:
-                st.success("✅ Auto-placement enabled for weekly trades")
+                st.success("✅ Weekly auto-placement enabled")
             else:
-                st.info("⏸ Auto-placement disabled")
+                st.info("⏸ Weekly auto-placement disabled")
 
     if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
         try:
