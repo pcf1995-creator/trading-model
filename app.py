@@ -889,6 +889,31 @@ with tab_dash:
             st.info(f"All {skipped} trade(s) already tracked — no duplicates added.")
 
 
+    # Scan settings
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.write("**Scan Settings**")
+    with col2:
+        skip_intraday_short = st.checkbox(
+            "Skip 1–8h trades",
+            value=False,
+            help="Don't save 1–8h (intraday_short) trades due to 0% win rate. Investigation ongoing."
+        )
+    with col3:
+        auto_place_weekly = st.checkbox(
+            "Auto-place weekly",
+            value=False,
+            help="Enable automatic placement of weekly (>24h) trades via cron."
+        )
+        # Save feature flag
+        if auto_place_weekly != st.session_state.get("_last_auto_place_weekly", False):
+            db.set_feature_flag("auto_place_weekly", auto_place_weekly)
+            st.session_state["_last_auto_place_weekly"] = auto_place_weekly
+            if auto_place_weekly:
+                st.success("✅ Auto-placement enabled for weekly trades")
+            else:
+                st.info("⏸ Auto-placement disabled")
+
     if st.button("Run Kalshi Scan", type="primary", key="scan_kalshi"):
         try:
             from kalshi_crypto import (
@@ -984,7 +1009,13 @@ with tab_dash:
                 if _vol_port:
                     save_paper_trades(_vol_port, "vol")
                 if _daily_port:
-                    save_paper_trades(_daily_port, "daily")
+                    # Filter out intraday_short (1-8h) if toggled off
+                    if skip_intraday_short:
+                        _daily_port_filtered = [p for p in _daily_port if p["hours_to_expiry"] >= 8]
+                    else:
+                        _daily_port_filtered = _daily_port
+                    if _daily_port_filtered:
+                        save_paper_trades(_daily_port_filtered, "daily")
                 if _weekly_port:
                     save_paper_trades(_weekly_port, "weekly")
 
@@ -1021,6 +1052,16 @@ with tab_dash:
         st.subheader(f"Weekly Plays — ${WEEKLY_BUDGET:.0f} budget (>24h)")
         if weekly_port:
             st.dataframe(make_portfolio_table(weekly_port), use_container_width=True, hide_index=True)
+            # Test auto-placement for weekly trades
+            if st.button("Place All Weekly Recommendations", key="place_weekly_manual"):
+                try:
+                    from kalshi_crypto import place_scheduled_orders
+                    client = make_kalshi_client()
+                    stats = place_scheduled_orders(client)
+                    st.success(f"Placement attempt: {stats['weekly_placed']} weekly placed, "
+                              f"{stats['vol_placed']} vol placed, {stats['skipped']} skipped.")
+                except Exception as e:
+                    st.error(f"Error placing trades: {e}")
         else:
             st.info("No weekly contracts available right now.")
 

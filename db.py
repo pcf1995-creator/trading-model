@@ -430,3 +430,22 @@ def save_conviction_positions(positions: list[dict]) -> None:
         except Exception as e:
             logger.warning(f"save_conviction_positions failed: {e}")
     _save_json(_CONVICTION_POSITIONS_JSON, positions)
+
+
+# ── Feature Flags ──────────────────────────────────────────────────────────
+_FEATURE_FLAGS_JSON = Path("feature_flags.json")
+
+
+def load_feature_flags() -> dict:
+    """Load feature flags (auto-placement toggles, etc)."""
+    return _load_json(_FEATURE_FLAGS_JSON, {
+        "auto_place_weekly": False,
+        "auto_place_vol": False,
+    })
+
+
+def set_feature_flag(key: str, value: bool) -> None:
+    """Set a feature flag value."""
+    flags = load_feature_flags()
+    flags[key] = value
+    _save_json(_FEATURE_FLAGS_JSON, flags)

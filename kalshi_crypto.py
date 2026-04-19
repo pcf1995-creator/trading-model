@@ -1099,6 +1099,10 @@ def main():
     parser.add_argument("--bankroll",     type=float, default=DEFAULT_BANKROLL)
     parser.add_argument("--min-ev",       type=float, default=MIN_EV)
     parser.add_argument("--min-edge",     type=float, default=MIN_EDGE)
+    parser.add_argument("--auto-save-db", action="store_true",
+                        help="Automatically save scan results to Supabase")
+    parser.add_argument("--skip-bucket",  type=str, default="",
+                        help="Skip saving trades for a specific bucket (e.g., 'intraday_short')")
     args = parser.parse_args()
 
     # ── Kalshi client ──
@@ -1207,7 +1211,191 @@ def main():
             print(f"    Order       : BUY {contracts} {side} contract(s) "
                   f"@ {r['price']}¢  (cost ~${cost_usd:.2f})")
 
+    # ── Auto-save to DB if requested ──
+    if args.auto_save_db and recommendations:
+        try:
+            import db
+            skip_bucket = args.skip_bucket if args.skip_bucket else ""
+            added = 0
+            for rec in recommendations:
+                # Determine bucket based on hours_to_expiry
+                h_exp = rec["hours_to_expiry"]
+                if h_exp < 1:
+                    bucket = "vol"
+                elif h_exp < 8:
+                    bucket = "intraday_short"
+                elif h_exp <= 24:
+                    bucket = "intraday_long"
+                else:
+                    bucket = "weekly"
+
+                # Skip if this bucket should be skipped
+                if skip_bucket and bucket == skip_bucket:
+                    continue
+
+                # Save to DB
+                try:
+                    contracts = max(1, int(bankroll * (rec["kelly_pct"] / 100)))
+                    db.add_paper_trade({
+                        "ticker"       : rec["ticker"],
+                        "side"         : rec["side"].lower(),
+                        "price_cents"  : int(rec["price"]),
+                        "contracts"    : contracts,
+                        "bet_dollars"  : round(contracts * rec["price"] / 100, 2),
+                        "model_prob"   : rec["model_prob"],
+                        "cal_prob"     : rec["calibrated_prob"],
+                        "ev"           : rec["ev"],
+                        "hours_to_exp" : rec["hours_to_expiry"],
+                        "close_time"   : rec.get("close_time", ""),
+                        "bucket"       : bucket,
+                        "placed_at"    : datetime.now(timezone.utc).isoformat(),
+                        "status"       : "open",
+                        "result"       : None,
+                        "pnl_dollars"  : None,
+                    })
+                    added += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save {rec['ticker']}: {e}")
+
+            if added:
+                logger.info(f"Saved {added} new paper trade(s) to Supabase")
+        except Exception as e:
+            logger.error(f"Error saving to DB: {e}")
+
     print()
+
+
+# ── Auto-Placement & Risk Management ────────────────────────────────────────
+def get_daily_vol_pnl(bucket: str = "vol") -> float:
+    """Get today's cumulative P&L for vol trades. Returns negative if losing."""
+    try:
+        import db
+        trades = db.load_paper_trades()
+        today = datetime.now(timezone.utc).date()
+        vol_trades = [
+            t for t in trades
+            if t.get("bucket") == bucket
+            and t.get("pnl_dollars") is not None
+            and datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date() == today
+        ]
+        return sum(t["pnl_dollars"] for t in vol_trades)
+    except Exception as e:
+        logger.warning(f"Could not compute daily vol P&L: {e}")
+        return 0.0
+
+
+def get_weekly_deployed_capital(bucket: str = "weekly") -> float:
+    """Get this week's cumulative bet_dollars for weekly trades."""
+    try:
+        import db
+        trades = db.load_paper_trades()
+        today = datetime.now(timezone.utc).date()
+        week_start = today - timedelta(days=today.weekday())  # Monday of this week
+        weekly_trades = [
+            t for t in trades
+            if t.get("bucket") == bucket
+            and datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date() >= week_start
+        ]
+        return sum(t.get("bet_dollars", 0) for t in weekly_trades)
+    except Exception as e:
+        logger.warning(f"Could not compute weekly deployed capital: {e}")
+        return 0.0
+
+
+def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: str) -> bool:
+    """
+    Attempt to place a single trade with risk management.
+
+    For vol: enforces -$25/day loss limit
+    For weekly: enforces $200/week bet limit
+
+    Returns True if placed, False if rejected (limit hit, API error, etc).
+    """
+    try:
+        ticker = recommendation["ticker"]
+        side = recommendation["side"].lower()
+        contracts = int(recommendation["contracts_suggested"])
+        price = int(recommendation["price"])
+
+        # Check loss/bet limits before placing
+        if bucket == "vol":
+            daily_pnl = get_daily_vol_pnl()
+            if daily_pnl <= -25.0:
+                logger.info(f"Vol daily loss limit hit (${daily_pnl:.2f}). Skipping {ticker}.")
+                return False
+        elif bucket == "weekly":
+            weekly_deployed = get_weekly_deployed_capital()
+            bet_dollars = contracts * price / 100
+            if weekly_deployed + bet_dollars > 200.0:
+                logger.info(f"Weekly bet limit would be exceeded: "
+                            f"${weekly_deployed:.2f} + ${bet_dollars:.2f} > $200. Skipping {ticker}.")
+                return False
+
+        # Place the order
+        result = kalshi_client.place_order(ticker, side, contracts, price, action="buy")
+
+        if result.get("status") == "dry_run":
+            logger.info(f"[DRY RUN] Would place: {contracts} {side.upper()} {ticker} @ {price}¢")
+            return True
+
+        if result.get("id"):
+            logger.info(f"[PLACED] Order {result['id']}: {contracts} {side.upper()} {ticker} @ {price}¢")
+            return True
+
+        logger.warning(f"Order placement unclear for {ticker}: {result}")
+        return False
+
+    except Exception as e:
+        logger.error(f"Error placing {recommendation.get('ticker', '?')}: {e}")
+        return False
+
+
+def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
+    """
+    Read pending trades from DB and auto-place TOP 3 by EV based on bucket rules.
+
+    Returns: {"vol_placed": int, "weekly_placed": int, "skipped": int}
+    """
+    try:
+        import db
+        trades = db.load_paper_trades()
+        pending_trades = [t for t in trades if t.get("status") == "open" and t.get("pnl_dollars") is None]
+
+        # Filter to vol/weekly only and sort by EV descending
+        placeable = [
+            t for t in pending_trades
+            if t.get("bucket") in ("vol", "weekly")
+        ]
+        placeable.sort(key=lambda t: t.get("ev", 0), reverse=True)
+
+        # Take only top 3
+        placeable = placeable[:3]
+
+        stats = {"vol_placed": 0, "weekly_placed": 0, "skipped": 0}
+
+        for trade in placeable:
+            bucket = trade.get("bucket", "")
+
+            # Reconstruct recommendation dict from trade record
+            rec = {
+                "ticker": trade["ticker"],
+                "side": trade["side"],
+                "contracts_suggested": trade["contracts"],
+                "price": trade["price_cents"],
+                "ev": trade.get("ev", 0),
+                "kelly_pct": (trade.get("bet_dollars", 0) / (trade.get("price_cents", 100) / 100) / 100) * 100 if trade.get("price_cents") else 0,
+            }
+
+            if auto_place_trade(rec, kalshi_client, bucket):
+                stats[f"{bucket}_placed"] += 1
+            else:
+                stats["skipped"] += 1
+
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error in place_scheduled_orders: {e}")
+        return {"vol_placed": 0, "weekly_placed": 0, "skipped": 0}
 
 
 if __name__ == "__main__":
