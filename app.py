@@ -1338,7 +1338,9 @@ with tab_dash:
                     _bid = None  # can't use live bid for expired markets
                 _unreal = round((_bid - _entry) * _ctrs / 100, 2) if _bid is not None else None
                 _rec_h = _pt.get("hours_to_exp")
+                _placed = _pt.get("placed_at", "")[:16] if _pt.get("placed_at") else "—"
                 _pt_rows.append({
+                    "Placed At"  : _placed,
                     "Ticker"    : _pt["ticker"],
                     "Side"      : _pt.get("side", "yes"),
                     "Bucket"    : _time_bucket(_pt.get("hours_to_exp")),
