@@ -1367,8 +1367,10 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
     try:
         import db
         flags = db.load_feature_flags()
+        logger.info(f"Feature flags: {flags}")
         trades = db.load_paper_trades()
         pending_trades = [t for t in trades if t.get("status") == "open" and t.get("pnl_dollars") is None]
+        logger.info(f"Pending trades: {len(pending_trades)}")
 
         stats = {"vol_placed": 0, "intraday_short_placed": 0, "intraday_long_placed": 0, "weekly_placed": 0, "skipped": 0}
 
@@ -1382,6 +1384,7 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
 
         for bucket, flag_key in bucket_flags.items():
             if not flags.get(flag_key, False):
+                logger.info(f"{bucket} auto-placement disabled")
                 continue
 
             # Filter to this bucket by hours_to_expiry and sort by EV descending
@@ -1401,6 +1404,7 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
                 if trade_bucket == bucket:
                     bucket_trades.append(t)
             bucket_trades.sort(key=lambda t: t.get("ev", 0), reverse=True)
+            logger.info(f"{bucket} has {len(bucket_trades)} candidates, taking top 3")
 
             # Take top 3
             for trade in bucket_trades[:3]:
