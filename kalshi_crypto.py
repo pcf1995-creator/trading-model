@@ -1324,17 +1324,12 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
         contracts = int(recommendation["contracts_suggested"])
         price = int(recommendation["price"])
 
-        # Check for duplicate (ticker, side) within 24h
+        # Check for existing open position (same ticker, side)
         trades = db.load_paper_trades()
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         for t in trades:
-            if t.get("ticker") == ticker and t.get("side", "").lower() == side:
-                placed_at_str = t.get("placed_at")
-                if placed_at_str:
-                    placed_at = datetime.fromisoformat(placed_at_str.replace("Z", "+00:00"))
-                    if placed_at >= cutoff:
-                        logger.info(f"Duplicate check: {ticker} {side.upper()} already placed within 24h. Skipping.")
-                        return False
+            if t.get("ticker") == ticker and t.get("side", "").lower() == side and t.get("status") == "open":
+                logger.info(f"Position already open: {ticker} {side.upper()}. Skipping.")
+                return False
 
         # Check loss/bet limits before placing
         if bucket == "vol":
@@ -1424,14 +1419,26 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
 
             # Take top 3
             for trade in bucket_trades[:3]:
+                # For weekly bucket, recalculate contracts based on $200 budget
+                if bucket == "weekly":
+                    weekly_deployed = get_weekly_deployed_capital()
+                    remaining_budget = max(0, 200.0 - weekly_deployed)
+                    price_dollars = trade.get("price_cents", 100) / 100
+                    kelly_pct = trade.get("kelly_pct", 0)
+                    bet_dollars = remaining_budget * (kelly_pct / 100) if kelly_pct > 0 else 0
+                    contracts = max(1, int(bet_dollars / price_dollars)) if price_dollars > 0 else 1
+                else:
+                    contracts = trade["contracts"]
+                    bet_dollars = trade.get("bet_dollars", 0)
+
                 # Reconstruct recommendation dict from trade record
                 rec = {
                     "ticker": trade["ticker"],
                     "side": trade["side"],
-                    "contracts_suggested": trade["contracts"],
+                    "contracts_suggested": contracts,
                     "price": trade["price_cents"],
                     "ev": trade.get("ev", 0),
-                    "kelly_pct": (trade.get("bet_dollars", 0) / (trade.get("price_cents", 100) / 100) / 100) * 100 if trade.get("price_cents") else 0,
+                    "kelly_pct": trade.get("kelly_pct", 0),
                 }
 
                 if auto_place_trade(rec, kalshi_client, bucket):
