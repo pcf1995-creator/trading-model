@@ -1345,8 +1345,10 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
             logger.info(f"[DRY RUN] Would place: {contracts} {side.upper()} {ticker} @ {price}¢")
             return True
 
-        if result.get("id"):
-            logger.info(f"[PLACED] Order {result['id']}: {contracts} {side.upper()} {ticker} @ {price}¢")
+        # Check for successful order placement (order_id in nested structure)
+        order_id = result.get("order", {}).get("order_id")
+        if order_id:
+            logger.info(f"[PLACED] Order {order_id}: {contracts} {side.upper()} {ticker} @ {price}¢")
             return True
 
         logger.warning(f"Order placement unclear for {ticker}: {result}")
