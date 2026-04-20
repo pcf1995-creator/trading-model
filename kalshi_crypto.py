@@ -1393,6 +1393,8 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
             "weekly": "auto_place_weekly",
         }
 
+        weekly_deployed_this_cycle = 0.0  # Track deployment during this cycle
+
         for bucket, flag_key in bucket_flags.items():
             if not flags.get(flag_key, False):
                 logger.info(f"{bucket} auto-placement disabled")
@@ -1421,8 +1423,12 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
             for trade in bucket_trades[:3]:
                 # For weekly bucket, recalculate contracts based on $200 budget
                 if bucket == "weekly":
-                    weekly_deployed = get_weekly_deployed_capital()
-                    remaining_budget = max(0, 200.0 - weekly_deployed)
+                    weekly_deployed_db = get_weekly_deployed_capital()
+                    total_deployed = weekly_deployed_db + weekly_deployed_this_cycle
+                    remaining_budget = max(0, 200.0 - total_deployed)
+                    if remaining_budget <= 0:
+                        logger.info(f"Weekly budget exhausted. Stopping placements.")
+                        break
                     price_dollars = trade.get("price_cents", 100) / 100
                     kelly_pct = trade.get("kelly_pct", 0)
                     bet_dollars = remaining_budget * (kelly_pct / 100) if kelly_pct > 0 else 0
@@ -1443,6 +1449,9 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
 
                 if auto_place_trade(rec, kalshi_client, bucket):
                     stats[f"{bucket}_placed"] += 1
+                    # Track deployment for weekly
+                    if bucket == "weekly":
+                        weekly_deployed_this_cycle += bet_dollars
                 else:
                     stats["skipped"] += 1
 
