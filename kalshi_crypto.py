@@ -1377,8 +1377,22 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
             if not flags.get(flag_key, False):
                 continue
 
-            # Filter to this bucket and sort by EV descending
-            bucket_trades = [t for t in pending_trades if t.get("bucket") == bucket]
+            # Filter to this bucket by hours_to_expiry and sort by EV descending
+            bucket_trades = []
+            for t in pending_trades:
+                h_exp = t.get("hours_to_exp")
+                trade_bucket = None
+                if h_exp is not None:
+                    if h_exp < 1:
+                        trade_bucket = "vol"
+                    elif h_exp < 8:
+                        trade_bucket = "intraday_short"
+                    elif h_exp <= 24:
+                        trade_bucket = "intraday_long"
+                    else:
+                        trade_bucket = "weekly"
+                if trade_bucket == bucket:
+                    bucket_trades.append(t)
             bucket_trades.sort(key=lambda t: t.get("ev", 0), reverse=True)
 
             # Take top 3
