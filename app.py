@@ -301,8 +301,10 @@ with tab_dash:
             bet_dollars  = entry * contracts / 100
             stop_dollars = stop * contracts / 100
             entry_proxy  = p.get("_entry_proxy", False)
+            placed_at    = _local_by_ticker.get(ticker, {}).get("placed_at", "")[:16] if _local_by_ticker.get(ticker, {}).get("placed_at") else "—"
             rows.append({
                 "Ticker"   : ticker,
+                "Placed At" : placed_at,
                 "Asset"    : asset,
                 "Strike"   : (f"${float(strike):,.0f}" if strike and strike.replace(".", "").isdigit() else strike),
                 "Hrs Left" : (f"{int(hrs * 60)}m" if hrs is not None and hrs < 1
@@ -326,7 +328,7 @@ with tab_dash:
                 "Entry ¢"  : st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
                 "Stop ¢"   : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
             },
-            disabled=["Asset", "Strike", "Hrs Left", "Bet $", "Stop $", "Live Bid", "P&L"],
+            disabled=["Asset", "Strike", "Hrs Left", "Bet $", "Stop $", "Live Bid", "P&L", "Placed At"],
             hide_index=True,
             use_container_width=True,
         )

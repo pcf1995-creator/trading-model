@@ -210,6 +210,7 @@ def save_position_overrides(overrides: dict[str, dict]) -> None:
                     "contracts"   : data.get("contracts"),
                     "entry_cents" : data.get("entry_cents", 0),
                     "stop_cents"  : data.get("stop_cents", 0),
+                    "placed_at"   : data.get("placed_at", now),  # Preserve placed_at if exists, else set to now
                     "updated_at"  : now,
                 }
                 for ticker, data in overrides.items()
