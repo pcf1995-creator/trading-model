@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify
 import subprocess
 import sys
+import threading
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
@@ -23,14 +24,10 @@ logger = logging.getLogger(__name__)
 SCAN_LOG_FILE = "kalshi-scan-cron.log"
 
 
-@app.route("/scan", methods=["POST"])
-def trigger_scan():
-    """Trigger a Kalshi scan and save results to Supabase."""
+def _run_scan_background():
+    """Run scan in background thread so HTTP response returns quickly."""
     try:
-        logger.info("Cron-triggered scan starting...")
-
-        # Run the scan with --auto-save-db flag
-        # --skip-bucket intraday_short: don't save 1-8h trades (0% win rate)
+        logger.info("Background scan starting...")
         cmd = [
             sys.executable,
             "kalshi_crypto.py",
@@ -44,7 +41,7 @@ def trigger_scan():
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,  # 5-minute timeout
+            timeout=300,
             cwd=os.path.dirname(__file__),
         )
 
@@ -94,34 +91,29 @@ def trigger_scan():
                 with open(SCAN_LOG_FILE, "a") as f:
                     f.write(f"Auto-placement error: {e}\n")
 
-        if result.returncode == 0:
-            logger.info("Scan completed successfully")
-            return jsonify({"status": "success", "message": "Scan completed"}), 200
-        else:
-            logger.error(f"Scan failed with exit code {result.returncode}")
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Scan failed",
-                        "stderr": result.stderr[:500],
-                    }
-                ),
-                500,
-            )
+        logger.info("Background scan completed")
 
     except subprocess.TimeoutExpired:
         logger.error("Scan timed out after 5 minutes")
-        return (
-            jsonify({"status": "timeout", "message": "Scan took too long"}),
-            500,
-        )
+        with open(SCAN_LOG_FILE, "a") as f:
+            f.write("Scan timed out after 5 minutes\n")
     except Exception as e:
-        logger.error(f"Error triggering scan: {e}")
-        return (
-            jsonify({"status": "error", "message": str(e)}),
-            500,
-        )
+        logger.error(f"Error in background scan: {e}")
+        with open(SCAN_LOG_FILE, "a") as f:
+            f.write(f"Error: {e}\n")
+
+
+@app.route("/scan", methods=["POST"])
+def trigger_scan():
+    """Trigger a Kalshi scan asynchronously and return immediately."""
+    try:
+        logger.info("Cron request received, spawning background scan...")
+        thread = threading.Thread(target=_run_scan_background, daemon=True)
+        thread.start()
+        return jsonify({"status": "accepted", "message": "Scan queued"}), 202
+    except Exception as e:
+        logger.error(f"Error queuing scan: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
