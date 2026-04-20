@@ -1313,14 +1313,28 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
 
     For vol: enforces -$25/day loss limit
     For weekly: enforces $200/week bet limit
+    Also checks for duplicate (ticker, side) within 24h
 
     Returns True if placed, False if rejected (limit hit, API error, etc).
     """
     try:
+        import db
         ticker = recommendation["ticker"]
         side = recommendation["side"].lower()
         contracts = int(recommendation["contracts_suggested"])
         price = int(recommendation["price"])
+
+        # Check for duplicate (ticker, side) within 24h
+        trades = db.load_paper_trades()
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        for t in trades:
+            if t.get("ticker") == ticker and t.get("side", "").lower() == side:
+                placed_at_str = t.get("placed_at")
+                if placed_at_str:
+                    placed_at = datetime.fromisoformat(placed_at_str.replace("Z", "+00:00"))
+                    if placed_at >= cutoff:
+                        logger.info(f"Duplicate check: {ticker} {side.upper()} already placed within 24h. Skipping.")
+                        return False
 
         # Check loss/bet limits before placing
         if bucket == "vol":
