@@ -1272,12 +1272,14 @@ def get_daily_vol_pnl(bucket: str = "vol") -> float:
         import db
         trades = db.load_paper_trades()
         today = datetime.now(timezone.utc).date()
-        vol_trades = [
-            t for t in trades
-            if t.get("bucket") == bucket
-            and t.get("pnl_dollars") is not None
-            and datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date() == today
-        ]
+        vol_trades = []
+        for t in trades:
+            # Determine bucket from hours_to_exp
+            h_exp = t.get("hours_to_exp")
+            if h_exp is not None and h_exp < 1 and t.get("pnl_dollars") is not None:
+                placed_date = datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date()
+                if placed_date == today:
+                    vol_trades.append(t)
         return sum(t["pnl_dollars"] for t in vol_trades)
     except Exception as e:
         logger.warning(f"Could not compute daily vol P&L: {e}")
@@ -1291,11 +1293,14 @@ def get_weekly_deployed_capital(bucket: str = "weekly") -> float:
         trades = db.load_paper_trades()
         today = datetime.now(timezone.utc).date()
         week_start = today - timedelta(days=today.weekday())  # Monday of this week
-        weekly_trades = [
-            t for t in trades
-            if t.get("bucket") == bucket
-            and datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date() >= week_start
-        ]
+        weekly_trades = []
+        for t in trades:
+            # Determine bucket from hours_to_exp
+            h_exp = t.get("hours_to_exp")
+            if h_exp is not None and h_exp > 24:
+                placed_date = datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date()
+                if placed_date >= week_start:
+                    weekly_trades.append(t)
         return sum(t.get("bet_dollars", 0) for t in weekly_trades)
     except Exception as e:
         logger.warning(f"Could not compute weekly deployed capital: {e}")
