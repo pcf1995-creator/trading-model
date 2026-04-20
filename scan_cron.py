@@ -69,19 +69,7 @@ def _run_scan_background():
                     if not client.dry_run:
                         client.login()
 
-                    # Get pending trades before placing
-                    trades_before = db.load_paper_trades()
-                    pending_ids = [t["id"] for t in trades_before
-                                  if t.get("status") == "open" and t.get("bucket") == "weekly"]
-
                     stats = place_scheduled_orders(client)
-
-                    # Mark newly-placed trades with auto_placed flag
-                    if stats.get("weekly_placed", 0) > 0:
-                        trades_after = db.load_paper_trades()
-                        for t in trades_after:
-                            if t["id"] not in pending_ids and t.get("bucket") == "weekly":
-                                client.table("paper_trades").update({"auto_placed": True}).eq("id", t["id"]).execute()
 
                     with open(SCAN_LOG_FILE, "a") as f:
                         f.write(f"Auto-placement: {stats}\n")
