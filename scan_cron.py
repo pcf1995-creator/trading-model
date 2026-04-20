@@ -55,29 +55,9 @@ def _run_scan_background():
             if result.stderr:
                 f.write(f"STDERR:\n{result.stderr}\n")
 
-        # Check if auto-placement is enabled and execute if so
-        if result.returncode == 0:
-            try:
-                sys.path.insert(0, os.path.dirname(__file__))
-                import db
-                from kalshi_api import KalshiClient
-                from kalshi_crypto import place_scheduled_orders
-
-                flags = db.load_feature_flags()
-                if flags.get("auto_place_weekly"):
-                    client = KalshiClient()
-                    if not client.dry_run:
-                        client.login()
-
-                    stats = place_scheduled_orders(client)
-
-                    with open(SCAN_LOG_FILE, "a") as f:
-                        f.write(f"Auto-placement: {stats}\n")
-                    logger.info(f"Auto-placed trades: {stats}")
-            except Exception as e:
-                logger.warning(f"Auto-placement failed: {e}")
-                with open(SCAN_LOG_FILE, "a") as f:
-                    f.write(f"Auto-placement error: {e}\n")
+        # Auto-placement via cron disabled for safety
+        # Use manual "Place All Weekly Recommendations" button in Streamlit instead
+        logger.info("Auto-placement via cron is disabled. Use Streamlit UI button for placement.")
 
         logger.info("Background scan completed")
 
