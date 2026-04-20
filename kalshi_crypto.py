@@ -1337,7 +1337,9 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
                 return False
 
         # Place the order
+        logger.info(f"Attempting to place: {contracts} {side.upper()} {ticker} @ {price}¢")
         result = kalshi_client.place_order(ticker, side, contracts, price, action="buy")
+        logger.info(f"Order result for {ticker}: {result}")
 
         if result.get("status") == "dry_run":
             logger.info(f"[DRY RUN] Would place: {contracts} {side.upper()} {ticker} @ {price}¢")
@@ -1351,7 +1353,7 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
         return False
 
     except Exception as e:
-        logger.error(f"Error placing {recommendation.get('ticker', '?')}: {e}")
+        logger.error(f"Error placing {recommendation.get('ticker', '?')}: {e}", exc_info=True)
         return False
 
 
