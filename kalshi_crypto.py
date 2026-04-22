@@ -1457,6 +1457,9 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
                     bucket_trades.append(t)
             bucket_trades.sort(key=lambda t: t.get("ev", 0), reverse=True)
             logger.info(f"{bucket} has {len(bucket_trades)} candidates, taking top 3")
+            # Debug: log top 3 selected
+            for i, t in enumerate(bucket_trades[:3]):
+                logger.info(f"  Top {i+1}: {t.get('ticker')} {t.get('side').upper()} EV={t.get('ev', 0)} bet_dollars={t.get('bet_dollars', 0)}")
 
             # Take top 3
             for trade in bucket_trades[:3]:
