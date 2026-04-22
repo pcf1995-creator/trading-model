@@ -85,6 +85,30 @@ def add_paper_trade(trade: dict) -> None:
     _save_json(_PAPER_TRADES_JSON, trades)
 
 
+def mark_trade_as_placed(trade_id: str, order_id: str, bet_dollars: float = 0) -> None:
+    """Mark a paper trade as placed on the exchange with order_id and bet amount."""
+    updates = {
+        "placement_status": "placed",
+        "order_id": order_id,
+        "placed_timestamp": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if bet_dollars > 0:
+        updates["bet_dollars"] = bet_dollars
+    client = _get_client()
+    if client:
+        try:
+            client.table("paper_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"mark_trade_as_placed failed: {e}")
+    trades = _load_json(_PAPER_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(updates)
+    _save_json(_PAPER_TRADES_JSON, trades)
+
+
 def reopen_paper_trade(trade_id: str) -> None:
     """Reset a paper trade back to open (undoes an incorrect auto-settle)."""
     updates = {"status": "open", "result": None, "pnl_dollars": None}

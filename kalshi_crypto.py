@@ -1309,27 +1309,42 @@ def get_weekly_deployed_capital(bucket: str = "weekly") -> float:
 
 def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: str) -> bool:
     """
-    Attempt to place a single trade with risk management.
+    Attempt to place a single trade with risk management and atomic DB updates.
 
     For vol: enforces -$25/day loss limit
     For weekly: enforces $200/week bet limit
-    Also checks for duplicate (ticker, side) within 24h
+    Checks for duplicates both locally and on live API (source of truth)
+    Confirms placement on exchange and updates DB atomically
 
-    Returns True if placed, False if rejected (limit hit, API error, etc).
+    Returns True if placed, False if rejected (limit hit, API error, duplicate, etc).
     """
     try:
         import db
+        import time
         ticker = recommendation["ticker"]
         side = recommendation["side"].lower()
         contracts = int(recommendation["contracts_suggested"])
         price = int(recommendation["price"])
+        bet_dollars = recommendation.get("bet_dollars", contracts * price / 100)
+        trade_id = recommendation.get("id")
 
-        # Check for existing open position (same ticker, side)
+        # Check for existing PLACED position in DB (same ticker, side)
         trades = db.load_paper_trades()
         for t in trades:
-            if t.get("ticker") == ticker and t.get("side", "").lower() == side and t.get("status") == "open":
-                logger.info(f"Position already open: {ticker} {side.upper()}. Skipping.")
-                return False
+            if t.get("ticker") == ticker and t.get("side", "").lower() == side:
+                if t.get("placement_status") == "placed":
+                    logger.info(f"Position already placed locally: {ticker} {side.upper()} (order {t.get('order_id')}). Skipping.")
+                    return False
+
+        # Check live API for positions on exchange (source of truth)
+        try:
+            live_positions = kalshi_client.get_positions()
+            for pos in live_positions:
+                if pos.get("ticker") == ticker and pos.get("side", "").lower() == side:
+                    logger.info(f"Position already open on exchange: {ticker} {side.upper()}. Skipping.")
+                    return False
+        except Exception as e:
+            logger.warning(f"Could not check live positions: {e}. Proceeding with caution.")
 
         # Check loss/bet limits before placing
         if bucket == "vol":
@@ -1339,7 +1354,6 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
                 return False
         elif bucket == "weekly":
             weekly_deployed = get_weekly_deployed_capital()
-            bet_dollars = contracts * price / 100
             if weekly_deployed + bet_dollars > 200.0:
                 logger.info(f"Weekly bet limit would be exceeded: "
                             f"${weekly_deployed:.2f} + ${bet_dollars:.2f} > $200. Skipping {ticker}.")
@@ -1356,12 +1370,37 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
 
         # Check for successful order placement (order_id in nested structure)
         order_id = result.get("order", {}).get("order_id")
-        if order_id:
-            logger.info(f"[PLACED] Order {order_id}: {contracts} {side.upper()} {ticker} @ {price}¢")
-            return True
+        if not order_id:
+            logger.warning(f"Order placement unclear for {ticker}: {result}")
+            return False
 
-        logger.warning(f"Order placement unclear for {ticker}: {result}")
-        return False
+        # Confirm placement on live API (retry up to 3 times with 5s delays)
+        position_confirmed = False
+        for attempt in range(1, 4):
+            try:
+                live_positions = kalshi_client.get_positions()
+                for pos in live_positions:
+                    if pos.get("order_id") == order_id or (pos.get("ticker") == ticker and pos.get("side", "").lower() == side):
+                        position_confirmed = True
+                        break
+                if position_confirmed:
+                    break
+            except Exception as e:
+                logger.warning(f"Confirmation attempt {attempt}: Could not check live positions: {e}")
+            if attempt < 3:
+                time.sleep(5)
+
+        if not position_confirmed:
+            logger.warning(f"Could not confirm placement of {order_id} after 3 attempts. Trusting API response and proceeding.")
+
+        # Update DB atomically with placement info
+        if trade_id:
+            db.mark_trade_as_placed(trade_id, order_id, bet_dollars)
+            logger.info(f"[PLACED] Order {order_id}: {contracts} {side.upper()} {ticker} @ {price}¢ (${bet_dollars:.2f})")
+        else:
+            logger.warning(f"[PLACED] Order {order_id}: {contracts} {side.upper()} {ticker} @ {price}¢ but no trade_id to update DB")
+
+        return True
 
     except Exception as e:
         logger.error(f"Error placing {recommendation.get('ticker', '?')}: {e}", exc_info=True)
@@ -1439,12 +1478,14 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
 
                 # Reconstruct recommendation dict from trade record
                 rec = {
+                    "id": trade.get("id"),
                     "ticker": trade["ticker"],
                     "side": trade["side"],
                     "contracts_suggested": contracts,
                     "price": trade["price_cents"],
                     "ev": trade.get("ev", 0),
                     "kelly_pct": trade.get("kelly_pct", 0),
+                    "bet_dollars": bet_dollars,
                 }
 
                 if auto_place_trade(rec, kalshi_client, bucket):
