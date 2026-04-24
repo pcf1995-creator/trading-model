@@ -12,56 +12,25 @@ venv/
 .streamlit/secrets.toml
 
 # Stock models — gitignored, regenerate by running features.py
-model_AAPL.joblib
-model_ABBV.joblib
-model_ADBE.joblib
-model_AMD.joblib
-model_AMGN.joblib
-model_AMZN.joblib
-model_BA.joblib
-model_BAC.joblib
-model_CAT.joblib
-model_COP.joblib
-model_COST.joblib
-model_CRM.joblib
-model_CVX.joblib
-model_GE.joblib
-model_GLD.joblib
-model_GOOGL.joblib
-model_GS.joblib
-model_HD.joblib
-model_HON.joblib
-model_IWM.joblib
-model_JNJ.joblib
-model_JPM.joblib
-model_MA.joblib
-model_MCD.joblib
-model_META.joblib
-model_MSFT.joblib
-model_NFLX.joblib
-model_NKE.joblib
-model_NVDA.joblib
-model_ORCL.joblib
-model_PFE.joblib
-model_QCOM.joblib
-model_QQQ.joblib
-model_SPY.joblib
-model_TLT.joblib
-model_TSLA.joblib
-model_UNH.joblib
-model_V.joblib
-model_WMT.joblib
-model_XOM.joblib
+model_*.joblib
+features_*.csv
+feature_importances.csv
+*_meta.json
 
-# Live trading state — personal data
+# Live trading state — personal data (excluding tracked portfolio files)
 positions.json
+
+# Claude config — user-specific
+.claude/
+
+# Kalshi trading artifacts
+kalshi/debug_*.py
+kalshi/monitor.log
 
 # Generated charts
 *.png
 
 # Generated outputs — can be recreated by running the scripts
 cv_results_*.csv
-feature_importances_*.csv
-feature_importance_*.csv
 walk_forward_cv.png
 ticker_comparison.png
