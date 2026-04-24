@@ -322,16 +322,33 @@ with tab_dash:
         df_open = pd.DataFrame(rows).reset_index(drop=True)
 
         edited = st.data_editor(
-            df_open.drop(columns=["Ticker"]),
+            df_open.drop(columns=["Ticker", "Bet $", "Stop $"]),
             column_config={
                 "Contracts": st.column_config.NumberColumn("Contracts", min_value=1, step=1),
                 "Entry ¢"  : st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
                 "Stop ¢"   : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
             },
-            disabled=["Asset", "Strike", "Hrs Left", "Bet $", "Stop $", "Live Bid", "P&L", "Placed At"],
+            disabled=["Asset", "Strike", "Hrs Left", "Live Bid", "P&L", "Placed At"],
             hide_index=True,
             use_container_width=True,
         )
+
+        # Show updated Bet $ and Stop $ based on edited values
+        preview_rows = []
+        for i, row in edited.iterrows():
+            entry_cents = int(row["Entry ¢"])
+            stop_cents = int(row["Stop ¢"])
+            contracts = int(row["Contracts"])
+            preview_rows.append({
+                "Asset": row["Asset"],
+                "Contracts": contracts,
+                "Entry ¢": entry_cents,
+                "Bet $": f"${entry_cents * contracts / 100:.2f}",
+                "Stop ¢": stop_cents,
+                "Stop $": f"${stop_cents * contracts / 100:.2f}",
+            })
+
+        st.dataframe(pd.DataFrame(preview_rows), hide_index=True, use_container_width=True)
 
         if st.button("💾 Save contracts, entry & stop"):
             for i, row in edited.iterrows():
