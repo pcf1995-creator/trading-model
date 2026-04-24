@@ -486,6 +486,8 @@ def main():
     open_long_tickers  = {p["ticker"] for p in open_positions if p.get("side", "long")  == "long"}
     open_short_tickers = {p["ticker"] for p in open_positions if p.get("side", "short") == "short"}
 
+    position_size = round(portfolio / MAX_POSITIONS, 2)
+
     print(f"\n[SCANNING {len(tickers)} TICKERS FOR LONG/SHORT SIGNALS ...]")
     long_signals  = []
     short_signals = []
@@ -510,8 +512,16 @@ def main():
                     _cur = result.get("current_price")
                     _price_str = (f"close={result['close']}  now=${_cur}"
                                   if _cur is not None else f"close={result['close']}")
+                    _size_str = ""
+                    if above_thresh and above_min:
+                        _ws = int(position_size / result["close"])
+                        _fs = round(position_size / result["close"], 4)
+                        if _ws == 0:
+                            _size_str = f"  shares={_fs}(frac)  cost=${position_size:.2f}"
+                        else:
+                            _size_str = f"  shares={_ws}  cost=${round(_ws * result['close'], 2):,.2f}"
                     print(f"  {flag} {ticker:6s}  prob={result['prob']:.3f}  "
-                          f"thresh={threshold:.2f}  {_price_str}")
+                          f"thresh={threshold:.2f}  {_price_str}{_size_str}")
 
         # ── Short model ──
         if ticker not in open_short_tickers:
@@ -534,8 +544,16 @@ def main():
                         _cur = result.get("current_price")
                         _price_str = (f"close={result['close']}  now=${_cur}"
                                       if _cur is not None else f"close={result['close']}")
+                        _size_str = ""
+                        if above_thresh and above_min:
+                            _ws = int(position_size / result["close"])
+                            _fs = round(position_size / result["close"], 4)
+                            if _ws == 0:
+                                _size_str = f"  shares={_fs}(frac)  cost=${position_size:.2f}"
+                            else:
+                                _size_str = f"  shares={_ws}  cost=${round(_ws * result['close'], 2):,.2f}"
                         print(f"  {flag} {ticker:6s}  prob={result['prob']:.3f}  "
-                              f"thresh={short_thresh:.2f}  {_price_str}  [short]")
+                              f"thresh={short_thresh:.2f}  {_price_str}{_size_str}  [short]")
 
     # ── 4. New entries ──
     actionable_longs  = [s for s in long_signals  if s["signal"] and s["prob"] >= MIN_PROB]
@@ -550,13 +568,18 @@ def main():
     elif slots_available == 0:
         print("  Portfolio full — no new entries.")
     else:
-        position_size = round(portfolio / MAX_POSITIONS, 2)
-        taken         = 0
+        taken = 0
         for sig in all_signals:
             if taken >= slots_available:
                 side_tag = "SHORT" if sig["side"] == "short" else "LONG "
+                _ws = int(position_size / sig["close"])
+                _fs = round(position_size / sig["close"], 4)
+                if _ws == 0:
+                    _skip_size = f"  shares={_fs}(frac)  cost=${position_size:.2f}"
+                else:
+                    _skip_size = f"  shares={_ws}  cost=${round(_ws * sig['close'], 2):,.2f}"
                 print(f"  SKIP  {side_tag} {sig['ticker']:6s}  prob={sig['prob']:.3f}  "
-                      f"(no slots remaining)")
+                      f"close=${sig['close']}{_skip_size}  (no slots remaining)")
                 continue
             whole_shares = int(position_size / sig["close"])
             frac_shares  = round(position_size / sig["close"], 4)
