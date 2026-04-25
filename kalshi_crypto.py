@@ -1476,15 +1476,15 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
                     total_deployed = weekly_deployed_db + weekly_deployed_this_cycle
                     remaining_budget = max(0, 200.0 - total_deployed)
 
-                    if remaining_budget < 5.0:
+                    if remaining_budget < 2.5:
                         logger.info(f"Weekly budget too low (${remaining_budget:.2f}). Stopping placements.")
                         break
 
                     # Size kelly_pct based on remaining budget
                     bet_dollars = (remaining_budget * kelly_pct / 100) if kelly_pct > 0 else 0
 
-                    if bet_dollars < 5.0:
-                        logger.info(f"{trade['ticker']}: Resized kelly to ${bet_dollars:.2f}, below $5 minimum. Skipping.")
+                    if bet_dollars < 2.5:
+                        logger.info(f"{trade['ticker']}: Resized kelly to ${bet_dollars:.2f}, below $2.50 minimum. Skipping.")
                         stats["skipped"] += 1
                         continue
 
