@@ -1550,35 +1550,28 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
             sample = {k: v for k, v in list(fills[0].items())[:12]}
             logger.info(f"Sample fill fields: {sample}")
 
-        # Index buy fills by ticker+side for fast lookup.
-        # Kalshi fill convention: action="buy", side="yes" = bought YES;
-        #                         action="buy", side="no"  = bought NO.
+        # Index ALL fills (buy or sell) by ticker for fast lookup.
+        # We'll filter to buy fills per-trade inside the loop.
         # Ticker field is "market_ticker" or "ticker".
-        buy_fills: dict[tuple, list] = {}
+        fills_by_ticker: dict[str, list] = {}
         for fill in fills:
-            _action = fill.get("action", "")
-            # Accept buy fills; also accept fills with no action field (default to buy)
-            if _action and _action.lower() not in ("buy", "purchase"):
-                continue
             fill_ticker = (fill.get("market_ticker") or fill.get("ticker", "")).upper()
-            fill_side   = fill.get("side", "yes").lower()
-            buy_fills.setdefault((fill_ticker, fill_side), []).append(fill)
+            if fill_ticker:
+                fills_by_ticker.setdefault(fill_ticker, []).append(fill)
 
-        logger.info(f"Indexed {sum(len(v) for v in buy_fills.values())} buy fills "
-                    f"across {len(buy_fills)} ticker+side combos")
-        # Log which tickers appear in fills so we can cross-check with paper trades
-        fill_tickers = sorted({k[0] for k in buy_fills})
-        logger.info(f"Fill tickers: {fill_tickers[:20]}")
+        fill_tickers      = sorted(fills_by_ticker)
         unmatched_tickers = sorted({t.get('ticker','').upper() for t in unmatched_trades})
-        logger.info(f"Paper trade tickers: {unmatched_tickers[:20]}")
-        stats["fills_fetched"]    = len(fills)
-        stats["fill_tickers"]     = fill_tickers
-        stats["paper_tickers"]    = unmatched_tickers
-        # Tickers in paper trades that have NO matching fill at all
-        stats["unmatched_paper"]  = [t for t in unmatched_tickers
-                                     if not any(t == k[0] for k in buy_fills)]
+        logger.info(f"Fill tickers ({len(fill_tickers)}): {fill_tickers[:20]}")
+        logger.info(f"Paper tickers ({len(unmatched_tickers)}): {unmatched_tickers[:20]}")
+        stats["fills_fetched"]   = len(fills)
+        stats["fill_tickers"]    = fill_tickers
+        stats["paper_tickers"]   = unmatched_tickers
+        stats["unmatched_paper"] = [t for t in unmatched_tickers if t not in fills_by_ticker]
 
-        # For each unmatched trade, find matching buy fill
+        # For each unmatched trade, find a buy fill with the same ticker.
+        # We do NOT require side to match exactly — Kalshi's fill side convention
+        # can differ from how we record paper trade sides. Ticker alone is a unique
+        # contract identifier; price corroboration is the sanity check.
         for trade in unmatched_trades:
             trade_id  = trade.get("id")
             ticker    = trade.get("ticker", "").upper()
@@ -1586,11 +1579,18 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
             price     = trade.get("price_cents", 0)      # integer cents
             contracts = trade.get("contracts", 1)
 
-            candidates = buy_fills.get((ticker, side), [])
+            candidates = fills_by_ticker.get(ticker, [])
 
             # Find matching fill
             matched_fill = None
             for fill in candidates:
+                _action = fill.get("action", "")
+                # Only consider buy fills (or fills with no action field)
+                if _action and _action.lower() not in ("buy", "purchase"):
+                    continue
+
+                fill_side = fill.get("side", side).lower()
+
                 # Normalize yes_price to cents (API returns dollars 0-1 or integer cents)
                 raw_yp = fill.get("yes_price_dollars") or fill.get("yes_price") or 0
                 try:
@@ -1599,7 +1599,9 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
                         yp_cents *= 100
                 except (ValueError, TypeError):
                     yp_cents = 0
-                fill_price = yp_cents if side == "yes" else (100 - yp_cents)
+                # Price from fill's perspective: if fill side = "yes", price = yp_cents.
+                # If fill side = "no", cost to buy NO = 100 - yp_cents.
+                fill_price = yp_cents if fill_side == "yes" else (100 - yp_cents)
 
                 # Normalize contract count
                 try:
@@ -1609,9 +1611,10 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
                 except (ValueError, TypeError):
                     fill_contracts = 1
 
-                # Match: ticker+side already guaranteed by index.
-                # Price within 5 cents, contracts within 1.
-                if (abs(fill_price - price) <= 5 and
+                # Match on price within 10 cents (wider tolerance for slippage)
+                # or just match on ticker if price_cents wasn't recorded
+                price_ok = (price == 0) or (abs(fill_price - price) <= 10)
+                if (price_ok and
                         abs(fill_contracts - contracts) <= 1):
                     matched_fill = fill
                     stats["matched"] += 1
