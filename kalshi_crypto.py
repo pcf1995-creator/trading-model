@@ -1286,27 +1286,30 @@ def get_daily_vol_pnl(bucket: str = "vol") -> float:
         return 0.0
 
 
-def get_weekly_deployed_capital(bucket: str = "weekly") -> float:
-    """Get this week's cumulative bet_dollars for ACTUALLY PLACED weekly trades only."""
+def get_weekly_deployed_capital(kalshi_client: KalshiClient = None, bucket: str = "weekly") -> float:
+    """Get current deployed capital from live Kalshi API (source of truth)."""
     try:
-        import db
-        trades = db.load_paper_trades()
-        today = datetime.now(timezone.utc).date()
-        week_start = today - timedelta(days=today.weekday())  # Monday of this week
-        weekly_trades = []
-        for t in trades:
-            # Only count trades that were ACTUALLY PLACED (placement_status='placed')
-            if t.get("placement_status") != "placed":
-                continue
-            # Determine bucket from hours_to_exp
-            h_exp = t.get("hours_to_exp")
-            if h_exp is not None and h_exp > 24:
-                placed_date = datetime.fromisoformat(t["placed_at"].replace("Z", "+00:00")).date()
-                if placed_date >= week_start:
-                    weekly_trades.append(t)
-        return sum(t.get("bet_dollars", 0) for t in weekly_trades)
+        if kalshi_client is None:
+            kalshi_client = KalshiClient()
+
+        if kalshi_client.dry_run:
+            return 0.0
+
+        # Get actual positions from Kalshi API
+        positions = kalshi_client.get_positions()
+        deployed = 0.0
+        for pos in positions:
+            ticker = pos.get("ticker", "")
+            # Only count crypto positions (weekly bucket)
+            if ticker.startswith("KXBTC") or ticker.startswith("KXETH"):
+                # market_value or cost_basis of the position
+                market_value = pos.get("market_value", pos.get("position_value", 0))
+                if market_value:
+                    deployed += abs(market_value)
+
+        return deployed
     except Exception as e:
-        logger.warning(f"Could not compute weekly deployed capital: {e}")
+        logger.warning(f"Could not get deployed capital from Kalshi: {e}")
         return 0.0
 
 
@@ -1356,7 +1359,7 @@ def auto_place_trade(recommendation: dict, kalshi_client: KalshiClient, bucket: 
                 logger.info(f"Vol daily loss limit hit (${daily_pnl:.2f}). Skipping {ticker}.")
                 return False
         elif bucket == "weekly":
-            weekly_deployed = get_weekly_deployed_capital()
+            weekly_deployed = get_weekly_deployed_capital(kalshi_client)
             if weekly_deployed + bet_dollars > 200.0:
                 logger.info(f"Weekly bet limit would be exceeded: "
                             f"${weekly_deployed:.2f} + ${bet_dollars:.2f} > $200. Skipping {ticker}.")
@@ -1468,12 +1471,15 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
             for trade in bucket_trades[:3]:
                 price_cents = trade.get("price_cents", 100)
                 price_dollars = price_cents / 100
-                kelly_pct = trade.get("kelly_pct", 0)
+                ev = trade.get("ev", 0)
+
+                # Derive kelly from EV (capped at MAX_KELLY)
+                kelly_pct = min(ev * 100, MAX_KELLY * 100)
 
                 # For weekly bucket, size kelly based on remaining budget
                 if bucket == "weekly":
-                    weekly_deployed_db = get_weekly_deployed_capital()
-                    total_deployed = weekly_deployed_db + weekly_deployed_this_cycle
+                    weekly_deployed_live = get_weekly_deployed_capital(kalshi_client)
+                    total_deployed = weekly_deployed_live + weekly_deployed_this_cycle
                     remaining_budget = max(0, 200.0 - total_deployed)
 
                     if remaining_budget < 2.5:
