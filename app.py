@@ -177,39 +177,11 @@ with tab_dash:
     # ══════════════════════════════════════════════════════════════════════════════
     st.header("Kalshi — Open Positions")
 
-    c1, c2, c3 = st.columns([1, 2, 8])
+    c1, _c_rest = st.columns([1, 10])
     with c1:
         if st.button("↻ Refresh", type="primary"):
             st.cache_data.clear()
             st.rerun()
-    with c2:
-        if st.button("Sync Historical Fills", key="sync_fills"):
-            try:
-                from kalshi_crypto import sync_paper_trades_with_kalshi_fills
-                import time
-                _client = make_kalshi_client()
-                with st.spinner("Syncing fills from Kalshi API..."):
-                    _stats = sync_paper_trades_with_kalshi_fills(_client)
-                if _stats["matched"] > 0:
-                    st.success(f"✓ Sync complete: {_stats['matched']} matched, {_stats['updated']} updated, {_stats['skipped']} skipped")
-                else:
-                    st.warning(
-                        f"⚠ No matches — fills_fetched={_stats.get('fills_fetched','?')}  "
-                        f"matched={_stats['matched']}  skipped={_stats['skipped']}"
-                    )
-                    _ft = _stats.get('fill_tickers', [])
-                    _pt = _stats.get('paper_tickers', [])
-                    _overlap = set(_ft) & set(_pt)
-                    st.code(
-                        f"Fill tickers  ({len(_ft)} total):\n  " + "\n  ".join(_ft[:15]) +
-                        f"\n\nPaper tickers ({len(_pt)} total):\n  " + "\n  ".join(_pt[:15]) +
-                        f"\n\nOverlap: {sorted(_overlap)[:10]}"
-                    )
-                st.cache_data.clear()
-                time.sleep(3)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Sync failed: {e}", icon="❌")
 
     # ── Load positions: API is source of truth for open positions ─────────────────
     _client          = make_kalshi_client()
@@ -2872,73 +2844,201 @@ def _week_label(dt) -> str:
 
 
 with tab_perf:
-    if not closed_kalshi:
-        st.info("No closed positions yet.")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from collections import defaultdict as _dd_perf
+
+    # ── Sync button ────────────────────────────────────────────────────────────
+    _psync_col, _prest_col = st.columns([2, 8])
+    with _psync_col:
+        if st.button("↻ Sync from Kalshi", key="perf_sync_btn"):
+            _psync_client = make_kalshi_client()
+            if _psync_client.dry_run:
+                st.warning("No Kalshi credentials — sync unavailable in dry-run mode.")
+            else:
+                with st.spinner("Fetching fills from Kalshi..."):
+                    try:
+                        _psync_fills = _psync_client.get_fills(limit=5000)
+
+                        # Group all BTC/ETH fills by ticker
+                        _psync_by_tkr: dict = _dd_perf(list)
+                        for _psf in _psync_fills:
+                            _pstk = _psf.get("market_ticker") or _psf.get("ticker", "")
+                            if _pstk and (_pstk.startswith("KXBTC") or _pstk.startswith("KXETH")):
+                                _psync_by_tkr[_pstk].append(_psf)
+
+                        _psync_positions = []
+                        for _pstk, _pstk_fills in _psync_by_tkr.items():
+                            # Deduplicate fills
+                            _ps_seen: set = set()
+                            _ps_deduped: list = []
+                            for _psf in _pstk_fills:
+                                _ps_dk = (
+                                    _psf.get("ts") or _psf.get("created_time", ""),
+                                    _psf.get("action", ""),
+                                    _psf.get("side", ""),
+                                    _fill_count(_psf),
+                                    round(_price_dollars(_psf, "yes_price") * 10000),
+                                )
+                                if _ps_dk not in _ps_seen:
+                                    _ps_seen.add(_ps_dk)
+                                    _ps_deduped.append(_psf)
+
+                            _ps_sorted = sorted(_ps_deduped,
+                                                key=lambda f: f.get("ts") or f.get("created_time", ""))
+
+                            _py_buy_cost = _py_sell_proc = _py_bought = _py_pos = 0.0
+                            _pn_buy_cost = _pn_sell_proc = _pn_bought = _pn_pos = 0.0
+                            _ps_latest_ts = ""
+                            for _psf in _ps_sorted:
+                                _ps_cnt  = _fill_count(_psf)
+                                _ps_act  = _fill_action(_psf)
+                                _ps_side = _psf.get("side", "yes")
+                                _ps_yp   = _price_dollars(_psf, "yes_price")
+                                _ps_np   = _no_price_dollars(_psf)
+                                _ps_ts   = _psf.get("ts") or _psf.get("created_time", "")
+                                if _ps_ts > _ps_latest_ts:
+                                    _ps_latest_ts = _ps_ts
+                                if _ps_act == "buy" and _ps_side == "yes":
+                                    _py_buy_cost += _ps_cnt * _ps_yp
+                                    _py_pos      += _ps_cnt
+                                    _py_bought   += _ps_cnt
+                                elif _ps_act == "sell" and _ps_side == "no":
+                                    _py_sell_proc += _ps_cnt * _ps_yp
+                                    _py_pos       -= _ps_cnt
+                                elif _ps_act == "buy" and _ps_side == "no":
+                                    _pn_buy_cost += _ps_cnt * _ps_np
+                                    _pn_pos      += _ps_cnt
+                                    _pn_bought   += _ps_cnt
+                                elif _ps_act == "sell" and _ps_side == "yes":
+                                    _pn_sell_proc += _ps_cnt * _ps_np
+                                    _pn_pos       -= _ps_cnt
+
+                            for _ps_side2, _ps_bought, _ps_bc, _ps_sp, _ps_rem in [
+                                ("yes", _py_bought, _py_buy_cost, _py_sell_proc, max(0.0, _py_pos)),
+                                ("no",  _pn_bought, _pn_buy_cost, _pn_sell_proc, max(0.0, _pn_pos)),
+                            ]:
+                                if _ps_bought <= 0:
+                                    continue
+                                _ps_asset, _ps_exp_str, _ps_strike = parse_ticker(_pstk)
+                                _ps_exp_dt = _parse_expiry(_pstk)
+                                _psync_positions.append({
+                                    "ticker"    : _pstk,
+                                    "side"      : _ps_side2,
+                                    "asset"     : _ps_asset,
+                                    "strike"    : _ps_strike,
+                                    "expiry"    : _ps_exp_str,
+                                    "week"      : _week_label(_ps_exp_dt),
+                                    "contracts" : int(_ps_bought),
+                                    "entry_cents": round(_ps_bc / _ps_bought * 100),
+                                    "buy_cost"  : _ps_bc,
+                                    "sell_proceeds": _ps_sp,
+                                    "_rem"      : _ps_rem,
+                                    "_latest_ts": _ps_latest_ts,
+                                })
+
+                        # Fetch settlement results
+                        _psync_settle: dict = {}
+                        for _psrow in _psync_positions:
+                            _pstk2 = _psrow["ticker"]
+                            if _pstk2 not in _psync_settle:
+                                try:
+                                    _ps_mkt = _psync_client._request(
+                                        "GET", f"/markets/{_pstk2}"
+                                    ).get("market", {})
+                                    _psync_settle[_pstk2] = _ps_mkt.get("result")
+                                except Exception:
+                                    _psync_settle[_pstk2] = None
+
+                        # Build final rows with PnL
+                        _psync_final = []
+                        for _psrow in _psync_positions:
+                            _pstk2   = _psrow["ticker"]
+                            _ps_sd   = _psrow["side"]
+                            _ps_res  = _psync_settle.get(_pstk2)
+                            _ps_rem  = _psrow["_rem"]
+                            _ps_bc   = _psrow["buy_cost"]
+                            _ps_sp   = _psrow["sell_proceeds"]
+                            _ps_ctrs = _psrow["contracts"]
+
+                            if _ps_res is not None and _ps_rem > 0:
+                                _ps_sv = _ps_rem if (
+                                    (_ps_sd == "yes" and _ps_res == "yes") or
+                                    (_ps_sd == "no"  and _ps_res == "no")
+                                ) else 0
+                                _ps_pnl = round(_ps_sp - _ps_bc + _ps_sv, 2)
+                            elif _ps_rem == 0:
+                                _ps_pnl = round(_ps_sp - _ps_bc, 2)
+                            else:
+                                _ps_pnl = None
+
+                            _ps_sold = _ps_ctrs - int(_ps_rem)
+                            if _ps_sold > 0 and _ps_sp > 0:
+                                _ps_exit_c = round(_ps_sp / _ps_sold * 100)
+                            elif _ps_res is not None:
+                                _ps_won = ((_ps_sd == "yes" and _ps_res == "yes") or
+                                           (_ps_sd == "no"  and _ps_res == "no"))
+                                _ps_exit_c = 100 if _ps_won else 0
+                            else:
+                                _ps_exit_c = None
+
+                            _psync_final.append({
+                                k: v for k, v in _psrow.items()
+                                if not k.startswith("_")
+                            } | {
+                                "exit_cents" : _ps_exit_c,
+                                "pnl"        : _ps_pnl,
+                                "result"     : _ps_res,
+                                "settled_at" : _psrow["_latest_ts"] or None,
+                            })
+
+                        _ps_n = db.upsert_kalshi_trades(_psync_final)
+                        st.success(f"Synced {_ps_n} positions to database.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as _ps_err:
+                        st.error(f"Sync failed: {_ps_err}", icon="❌")
+
+    # ── Load from Supabase ─────────────────────────────────────────────────────
+    _kalshi_trades = db.load_kalshi_trades()
+
+    if not _kalshi_trades:
+        st.info("No closed positions in database yet. Click 'Sync from Kalshi' to fetch.")
     else:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        # ── Build perf_data ────────────────────────────────────────────────────
+        # Build perf_data from stored records
         perf_data = []
-        for p in closed_kalshi:
-            result    = settlement_map.get(p["ticker"])
-            rem_yes   = p.get("rem_yes", 0)
-            rem_no    = p.get("rem_no", 0)
-            remaining = rem_yes + rem_no
-            buy_cost  = p.get("buy_cost", 0)
-            sell_proc = p.get("sell_proceeds", 0)
-            fees      = p.get("total_fees", 0)
-
-            if result is not None:
-                settle_val = (rem_yes if result == "yes" else 0) + (rem_no if result == "no" else 0)
-                pnl = sell_proc - buy_cost + settle_val - fees
-            elif remaining == 0:
-                pnl = sell_proc - buy_cost - fees
-            else:
-                pnl = None
-
-            asset, _expiry_str, strike = parse_ticker(p["ticker"])
-            expiry_dt  = _parse_expiry(p["ticker"])
-            week_label = _week_label(expiry_dt)
-
-            # Exit ¢
-            ctrs      = p.get("contracts", 1)
-            entry     = p.get("entry_cents", 0)
-            ctrs_sold = ctrs - remaining
-            if ctrs_sold > 0 and sell_proc > 0:
-                exit_cents = round(sell_proc / ctrs_sold * 100)
-            elif result is not None:
-                won = (rem_yes > 0 and result == "yes") or (rem_no > 0 and result == "no")
-                exit_cents = 100 if won else 0
-            else:
-                exit_cents = None
-
-            pnl_pct = (pnl / buy_cost * 100) if (pnl is not None and buy_cost and buy_cost > 0) else None
+        for _pt in _kalshi_trades:
+            _pt_pnl      = _pt.get("pnl")
+            _pt_buy_cost = _pt.get("buy_cost") or 0
+            _pt_pnl_pct  = ((_pt_pnl / _pt_buy_cost * 100)
+                             if (_pt_pnl is not None and _pt_buy_cost > 0) else None)
+            _pt_exp_dt   = _parse_expiry(_pt["ticker"])
             perf_data.append({
-                "ticker"     : p["ticker"],
-                "asset"      : asset,
-                "strike"     : strike,
-                "expiry_dt"  : expiry_dt,
-                "expiry_str" : _expiry_str,
-                "week"       : week_label,
-                "side"       : p.get("side", "yes").upper(),
-                "contracts"  : ctrs,
-                "entry_cents": entry,
-                "exit_cents" : exit_cents,
-                "pnl"        : pnl,
-                "pnl_pct"    : pnl_pct,
-                "buy_cost"   : buy_cost,
+                "ticker"     : _pt["ticker"],
+                "asset"      : _pt.get("asset"),
+                "strike"     : _pt.get("strike"),
+                "expiry_dt"  : _pt_exp_dt,
+                "expiry_str" : _pt.get("expiry"),
+                "week"       : _pt.get("week") or _week_label(_pt_exp_dt),
+                "side"       : (_pt.get("side") or "yes").upper(),
+                "contracts"  : _pt.get("contracts"),
+                "entry_cents": _pt.get("entry_cents"),
+                "exit_cents" : _pt.get("exit_cents"),
+                "pnl"        : _pt_pnl,
+                "pnl_pct"    : _pt_pnl_pct,
+                "buy_cost"   : _pt_buy_cost,
+                "result"     : _pt.get("result"),
             })
 
         resolved = [d for d in perf_data if d["pnl"] is not None]
 
         # ── Summary metrics ────────────────────────────────────────────────────
         if resolved:
-            total_pnl  = sum(d["pnl"] for d in resolved)
-            wins       = sum(1 for d in resolved if d["pnl"] > 0)
-            win_rate   = wins / len(resolved)
-            best_trade = max(d["pnl"] for d in resolved)
+            total_pnl   = sum(d["pnl"] for d in resolved)
+            wins        = sum(1 for d in resolved if d["pnl"] > 0)
+            win_rate    = wins / len(resolved)
+            best_trade  = max(d["pnl"] for d in resolved)
             worst_trade = min(d["pnl"] for d in resolved)
 
             mc1, mc2, mc3, mc4, mc5 = st.columns(5)
@@ -2950,11 +3050,10 @@ with tab_perf:
 
         st.divider()
 
-        # ── P&L bar charts by week ────────────────────────────────────────────
+        # ── P&L bar charts by week ─────────────────────────────────────────────
         def _make_weekly_chart(data_subset, title, pct=False):
-            from collections import defaultdict as _dd
-            week_val  = _dd(float)
-            week_cost = _dd(float)
+            week_val   = _dd_perf(float)
+            week_cost  = _dd_perf(float)
             week_order = {}
             for d in data_subset:
                 if d["pnl"] is None:
@@ -2965,10 +3064,8 @@ with tab_perf:
                 if wk not in week_order and d["expiry_dt"] is not None:
                     monday = d["expiry_dt"] - timedelta(days=d["expiry_dt"].weekday())
                     week_order[wk] = monday
-
             if not week_val:
                 return None
-
             sorted_weeks = sorted(week_val.keys(),
                                   key=lambda w: week_order.get(w, datetime.min))
             if pct:
@@ -2978,9 +3075,7 @@ with tab_perf:
             else:
                 values = [week_val[w] for w in sorted_weeks]
                 ylabel = "P&L ($)"
-
             colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in values]
-
             fig, ax = plt.subplots(figsize=(6, 3))
             ax.bar(sorted_weeks, values, color=colors)
             ax.axhline(0, color="white", linewidth=0.8, alpha=0.5)
@@ -2999,7 +3094,6 @@ with tab_perf:
         btc_data = [d for d in perf_data if d["asset"] == "BTC"]
         eth_data = [d for d in perf_data if d["asset"] == "ETH"]
 
-        # Row 1: $ charts
         col_btc, col_eth = st.columns(2)
         with col_btc:
             fig_btc = _make_weekly_chart(btc_data, "BTC — P&L by Week ($)")
@@ -3016,7 +3110,6 @@ with tab_perf:
             else:
                 st.caption("No ETH closed positions with P&L yet.")
 
-        # Row 2: % charts
         col_btc_pct, col_eth_pct = st.columns(2)
         with col_btc_pct:
             fig_btc_pct = _make_weekly_chart(btc_data, "BTC — P&L by Week (%)", pct=True)
@@ -3071,16 +3164,22 @@ with tab_perf:
 
         st.divider()
 
-        # ── Detailed table ─────────────────────────────────────────────────────
+        # ── Detailed table with exclude controls ──────────────────────────────
         st.subheader("All Closed Positions")
+        st.caption("Check rows to exclude them from performance metrics, then click Apply.")
+
         detail_rows = []
         for d in sorted(perf_data,
                         key=lambda x: x["expiry_dt"] or datetime.min,
                         reverse=True):
             strike_fmt = (f"${float(d['strike']):,.0f}"
-                          if d["strike"] and d["strike"].replace(".", "").isdigit()
+                          if d["strike"] and str(d["strike"]).replace(".", "").isdigit()
                           else d["strike"])
+            _exit_label = d["result"] if d["result"] else (
+                "sold" if d["pnl"] is not None else "pending"
+            )
             detail_rows.append({
+                "Exclude"  : False,
                 "Asset"    : d["asset"],
                 "Strike"   : strike_fmt,
                 "Expiry"   : d["expiry_str"],
@@ -3088,15 +3187,30 @@ with tab_perf:
                 "Contracts": d["contracts"],
                 "Entry ¢"  : d["entry_cents"],
                 "Exit ¢"   : d["exit_cents"] if d["exit_cents"] is not None else "—",
-                "Exit"     : ("sold" if d["pnl"] is not None and
-                              settlement_map.get(d["ticker"]) is None
-                              else settlement_map.get(d["ticker"], "pending") or "pending"),
+                "Exit"     : _exit_label,
                 "P&L $"    : (f"${d['pnl']:+.2f}" if d["pnl"] is not None else "—"),
+                "_ticker"  : d["ticker"],
+                "_side"    : d["side"].lower(),
             })
 
-        df_perf = pd.DataFrame(detail_rows)
-        st.dataframe(
-            df_perf.style.map(color_pnl, subset=["P&L $"]),
+        _perf_df = pd.DataFrame(detail_rows)
+        _edited_perf = st.data_editor(
+            _perf_df.drop(columns=["_ticker", "_side"]),
+            column_config={
+                "Exclude": st.column_config.CheckboxColumn("Exclude", default=False, width="small"),
+                "P&L $"  : st.column_config.TextColumn("P&L $"),
+            },
             hide_index=True,
             use_container_width=True,
+            key="perf_table_editor",
         )
+
+        _excl_mask = _edited_perf["Exclude"].fillna(False)
+        _n_checked = int(_excl_mask.sum())
+        if _n_checked > 0:
+            if st.button(f"Exclude {_n_checked} selected trade(s)", type="primary",
+                         key="apply_exclusions"):
+                for _ei, _erow in _perf_df[_excl_mask].iterrows():
+                    db.exclude_kalshi_trade(_erow["_ticker"], _erow["_side"])
+                st.success(f"Excluded {_n_checked} trade(s). Reload to update metrics.")
+                st.rerun()

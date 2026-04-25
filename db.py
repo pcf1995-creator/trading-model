@@ -488,3 +488,85 @@ def set_feature_flag(key: str, value: bool) -> None:
         client.table("feature_flags").upsert({"key": key, "value": value}).execute()
     except Exception as e:
         logger.error(f"Could not set feature flag {key}={value}: {e}")
+
+
+# ── Kalshi closed trades ───────────────────────────────────────────────────────
+
+def load_kalshi_trades() -> list[dict]:
+    """Load all non-excluded closed Kalshi positions from Supabase."""
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("kalshi_trades")
+                    .select("*")
+                    .eq("excluded", False)
+                    .order("settled_at", desc=True)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_kalshi_trades failed: {e}")
+    return []
+
+
+def upsert_kalshi_trades(trades: list[dict]) -> int:
+    """Upsert closed positions keyed by (ticker, side). Returns count upserted."""
+    if not trades:
+        return 0
+    client = _get_client()
+    if not client:
+        return 0
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for t in trades:
+            rows.append({
+                "ticker"        : t["ticker"],
+                "side"          : t["side"],
+                "asset"         : t.get("asset"),
+                "strike"        : t.get("strike"),
+                "expiry"        : t.get("expiry"),
+                "week"          : t.get("week"),
+                "contracts"     : t.get("contracts"),
+                "entry_cents"   : t.get("entry_cents"),
+                "exit_cents"    : t.get("exit_cents"),
+                "buy_cost"      : t.get("buy_cost"),
+                "sell_proceeds" : t.get("sell_proceeds"),
+                "pnl"           : t.get("pnl"),
+                "result"        : t.get("result"),
+                "settled_at"    : t.get("settled_at"),
+                "synced_at"     : now,
+                "excluded"      : False,
+            })
+        client.table("kalshi_trades").upsert(rows, on_conflict="ticker,side").execute()
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"upsert_kalshi_trades failed: {e}")
+        return 0
+
+
+def exclude_kalshi_trade(ticker: str, side: str, excluded: bool = True) -> None:
+    """Soft-delete (or restore) a trade from performance metrics."""
+    client = _get_client()
+    if client:
+        try:
+            client.table("kalshi_trades").update({"excluded": excluded}) \
+                .eq("ticker", ticker).eq("side", side).execute()
+        except Exception as e:
+            logger.warning(f"exclude_kalshi_trade failed: {e}")
+
+
+def get_latest_kalshi_trade_ts() -> str | None:
+    """Return the most recent settled_at timestamp for incremental fill fetching."""
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("kalshi_trades")
+                    .select("settled_at")
+                    .order("settled_at", desc=True)
+                    .limit(1)
+                    .execute())
+            if resp.data:
+                return resp.data[0]["settled_at"]
+        except Exception as e:
+            logger.warning(f"get_latest_kalshi_trade_ts failed: {e}")
+    return None
