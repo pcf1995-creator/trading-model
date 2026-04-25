@@ -1461,22 +1461,33 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
             for i, t in enumerate(bucket_trades[:3]):
                 logger.info(f"  Top {i+1}: {t.get('ticker')} {t.get('side').upper()} EV={t.get('ev', 0)} bet_dollars={t.get('bet_dollars', 0)}")
 
-            # Take top 3
+            # Take top 3 by EV
             for trade in bucket_trades[:3]:
-                # For weekly bucket, recalculate contracts based on $200 budget
+                price_cents = trade.get("price_cents", 100)
+                price_dollars = price_cents / 100
+                kelly_pct = trade.get("kelly_pct", 0)
+
+                # For weekly bucket, size kelly based on remaining budget
                 if bucket == "weekly":
                     weekly_deployed_db = get_weekly_deployed_capital()
                     total_deployed = weekly_deployed_db + weekly_deployed_this_cycle
                     remaining_budget = max(0, 200.0 - total_deployed)
-                    if remaining_budget <= 0:
-                        logger.info(f"Weekly budget exhausted. Stopping placements.")
+
+                    if remaining_budget < 5.0:
+                        logger.info(f"Weekly budget too low (${remaining_budget:.2f}). Stopping placements.")
                         break
-                    price_dollars = trade.get("price_cents", 100) / 100
-                    kelly_pct = trade.get("kelly_pct", 0)
-                    bet_dollars = remaining_budget * (kelly_pct / 100) if kelly_pct > 0 else 0
+
+                    # Size kelly_pct based on remaining budget
+                    bet_dollars = (remaining_budget * kelly_pct / 100) if kelly_pct > 0 else 0
+
+                    if bet_dollars < 5.0:
+                        logger.info(f"{trade['ticker']}: Resized kelly to ${bet_dollars:.2f}, below $5 minimum. Skipping.")
+                        stats["skipped"] += 1
+                        continue
+
                     contracts = max(1, int(bet_dollars / price_dollars)) if price_dollars > 0 else 1
                 else:
-                    contracts = trade["contracts"]
+                    contracts = trade.get("contracts", 1)
                     bet_dollars = trade.get("bet_dollars", 0)
 
                 # Reconstruct recommendation dict from trade record
@@ -1485,9 +1496,9 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
                     "ticker": trade["ticker"],
                     "side": trade["side"],
                     "contracts_suggested": contracts,
-                    "price": trade["price_cents"],
+                    "price": price_cents,
                     "ev": trade.get("ev", 0),
-                    "kelly_pct": trade.get("kelly_pct", 0),
+                    "kelly_pct": kelly_pct,
                     "bet_dollars": bet_dollars,
                 }
 

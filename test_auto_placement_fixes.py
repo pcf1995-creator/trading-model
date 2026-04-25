@@ -216,8 +216,9 @@ def test_live_api_check_with_exception_proceeds_cautiously():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_weekly_budget_stops_at_200():
-    """Verify place_scheduled_orders() stops placing at $200/week budget."""
-    # Arrange: 4 weekly trades @ $60 each
+    """Verify place_scheduled_orders() sizes kelly by remaining budget and stops at $200/week."""
+    # Arrange: Top 3 weekly trades with kelly_pct=50% (large enough to test budget constraint)
+    # At $200 budget: 50% kelly = $100, $100, resized for 3rd
     kalshi_client = MockKalshiClient()
 
     trades = [
@@ -229,10 +230,10 @@ def test_weekly_budget_stops_at_200():
             "pnl_dollars": None,
             "hours_to_exp": 30,
             "ev": 0.20,
-            "kelly_pct": 5.0,
-            "price_cents": 6000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
+            "kelly_pct": 50.0,
+            "price_cents": 10000,
+            "contracts": 10,
+            "bet_dollars": 100.0,
         },
         {
             "id": "trade_2",
@@ -242,10 +243,10 @@ def test_weekly_budget_stops_at_200():
             "pnl_dollars": None,
             "hours_to_exp": 25,
             "ev": 0.15,
-            "kelly_pct": 5.0,
-            "price_cents": 4000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
+            "kelly_pct": 50.0,
+            "price_cents": 8000,
+            "contracts": 10,
+            "bet_dollars": 100.0,
         },
         {
             "id": "trade_3",
@@ -255,23 +256,10 @@ def test_weekly_budget_stops_at_200():
             "pnl_dollars": None,
             "hours_to_exp": 28,
             "ev": 0.18,
-            "kelly_pct": 5.0,
+            "kelly_pct": 50.0,
             "price_cents": 2000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
-        },
-        {
-            "id": "trade_4",
-            "ticker": "XRP",
-            "side": "long",
-            "status": "open",
-            "pnl_dollars": None,
-            "hours_to_exp": 26,
-            "ev": 0.12,
-            "kelly_pct": 5.0,
-            "price_cents": 2000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
+            "contracts": 50,
+            "bet_dollars": 100.0,
         },
     ]
 
@@ -289,46 +277,24 @@ def test_weekly_budget_stops_at_200():
                     # Act
                     stats = place_scheduled_orders(kalshi_client)
 
-                    # Assert: Should place only 3 (3 × $60 = $180 < $200)
+                    # Assert:
+                    # Trade 1: kelly_pct=50% of $200 = $100 ✓ placed
+                    # Trade 2: kelly_pct=50% of $100 remaining = $50 ✓ placed
+                    # Trade 3: kelly_pct=50% of $50 remaining = $25 ✓ placed (above $5 min)
+                    # Total: 3 placed, 0 skipped
                     assert stats["weekly_placed"] == 3
-                    assert stats["skipped"] == 1  # 4th trade skipped (would exceed budget)
+                    assert stats["skipped"] == 0
 
 
 def test_budget_tracking_includes_current_cycle():
     """Verify budget tracking includes trades placed in current cycle."""
-    # Arrange
+    # Arrange: $120 already deployed, 3 candidates with kelly_pct=50%
+    # Trade 1: kelly_pct=50% of $80 remaining = $40 ✓ placed
+    # Trade 2: kelly_pct=50% of $40 remaining = $20 ✓ placed
+    # Trade 3: kelly_pct=50% of $20 remaining = $10 ✓ placed
     kalshi_client = MockKalshiClient()
 
-    # 2 already-deployed trades
     trades = [
-        {
-            "id": "existing_1",
-            "ticker": "BTC",
-            "side": "long",
-            "status": "open",
-            "pnl_dollars": None,
-            "hours_to_exp": 30,
-            "ev": 0.20,
-            "kelly_pct": 5.0,
-            "price_cents": 6000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
-            "placement_status": "placed",  # Already placed
-        },
-        {
-            "id": "existing_2",
-            "ticker": "ETH",
-            "side": "long",
-            "status": "open",
-            "pnl_dollars": None,
-            "hours_to_exp": 25,
-            "ev": 0.15,
-            "kelly_pct": 5.0,
-            "price_cents": 4000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
-            "placement_status": "placed",  # Already placed
-        },
         {
             "id": "new_1",
             "ticker": "SOL",
@@ -336,12 +302,11 @@ def test_budget_tracking_includes_current_cycle():
             "status": "open",
             "pnl_dollars": None,
             "hours_to_exp": 28,
-            "ev": 0.18,
-            "kelly_pct": 5.0,
-            "price_cents": 2000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
-            "placed_at": datetime.now(timezone.utc).isoformat(),
+            "ev": 0.20,
+            "kelly_pct": 50.0,
+            "price_cents": 4000,
+            "contracts": 10,
+            "bet_dollars": 40.0,
         },
         {
             "id": "new_2",
@@ -350,12 +315,24 @@ def test_budget_tracking_includes_current_cycle():
             "status": "open",
             "pnl_dollars": None,
             "hours_to_exp": 26,
-            "ev": 0.12,
-            "kelly_pct": 5.0,
+            "ev": 0.18,
+            "kelly_pct": 50.0,
             "price_cents": 2000,
-            "contracts": 1,
-            "bet_dollars": 60.0,
-            "placed_at": datetime.now(timezone.utc).isoformat(),
+            "contracts": 10,
+            "bet_dollars": 20.0,
+        },
+        {
+            "id": "new_3",
+            "ticker": "ADA",
+            "side": "long",
+            "status": "open",
+            "pnl_dollars": None,
+            "hours_to_exp": 25,
+            "ev": 0.15,
+            "kelly_pct": 50.0,
+            "price_cents": 2000,
+            "contracts": 5,
+            "bet_dollars": 10.0,
         },
     ]
 
@@ -369,13 +346,14 @@ def test_budget_tracking_includes_current_cycle():
     with patch("db.load_paper_trades", return_value=trades):
         with patch("db.load_feature_flags", return_value=flags):
             with patch("db.mark_trade_as_placed"):
-                with patch("kalshi_crypto.get_weekly_deployed_capital", return_value=120.0):  # $60+$60 already deployed
+                with patch("kalshi_crypto.get_weekly_deployed_capital", return_value=120.0):  # $120 already deployed
                     # Act
                     stats = place_scheduled_orders(kalshi_client)
 
-                    # Assert: Can only place 1 more ($120 + $60 = $180 < $200)
-                    assert stats["weekly_placed"] == 1
-                    assert stats["skipped"] == 1  # Second trade skipped
+                    # Assert: With $120 already deployed and $200 budget, $80 remaining
+                    # All 3 trades fit within $80 (resized kelly: $40, $20, $10)
+                    assert stats["weekly_placed"] == 3
+                    assert stats["skipped"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,8 +361,8 @@ def test_budget_tracking_includes_current_cycle():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_reconstructed_rec_includes_bet_dollars_and_id():
-    """Verify place_scheduled_orders() includes bet_dollars and id in rec dict."""
-    # Arrange
+    """Verify place_scheduled_orders() includes kelly-sized bet_dollars and id in rec dict."""
+    # Arrange: kelly_pct=22.5% of $200 budget = $45
     kalshi_client = Mock()
     kalshi_client.place_order.return_value = {"order": {"order_id": "test_order"}}
     kalshi_client.get_positions.return_value = []
@@ -398,10 +376,10 @@ def test_reconstructed_rec_includes_bet_dollars_and_id():
             "pnl_dollars": None,
             "hours_to_exp": 30,
             "ev": 0.20,
-            "kelly_pct": 5.0,
+            "kelly_pct": 22.5,
             "price_cents": 6000,
             "contracts": 1,
-            "bet_dollars": 45.0,  # Original amount
+            "bet_dollars": 45.0,
             "placed_at": datetime.now(timezone.utc).isoformat(),
         },
     ]
@@ -427,7 +405,8 @@ def test_reconstructed_rec_includes_bet_dollars_and_id():
                     # Act
                     place_scheduled_orders(kalshi_client)
 
-                    # Assert: rec should have id and bet_dollars
+                    # Assert: rec should have id and kelly-sized bet_dollars
+                    # kelly_pct=22.5% of $200 = $45
                     assert captured_rec.get("id") == "trade_123"
                     assert captured_rec.get("bet_dollars") == 45.0
 
