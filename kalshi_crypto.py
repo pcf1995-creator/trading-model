@@ -1541,8 +1541,13 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
         logger.info(f"Syncing {len(unmatched_trades)} unmatched trades against Kalshi fills...")
 
         # Fetch all fills from Kalshi API
-        fills = kalshi_client.get_fills(limit=1000)
+        fills = kalshi_client.get_fills(limit=2000)
         logger.info(f"Fetched {len(fills)} fills from Kalshi API")
+
+        # Log a sample fill so we can see actual field names in Render logs
+        if fills:
+            sample = {k: v for k, v in list(fills[0].items())[:12]}
+            logger.info(f"Sample fill fields: {sample}")
 
         # Index buy fills by ticker+side for fast lookup.
         # Kalshi fill convention: action="buy", side="yes" = bought YES;
@@ -1550,11 +1555,23 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
         # Ticker field is "market_ticker" or "ticker".
         buy_fills: dict[tuple, list] = {}
         for fill in fills:
-            if fill.get("action", "buy") != "buy":
+            _action = fill.get("action", "")
+            # Accept buy fills; also accept fills with no action field (default to buy)
+            if _action and _action.lower() not in ("buy", "purchase"):
                 continue
             fill_ticker = (fill.get("market_ticker") or fill.get("ticker", "")).upper()
             fill_side   = fill.get("side", "yes").lower()
             buy_fills.setdefault((fill_ticker, fill_side), []).append(fill)
+
+        logger.info(f"Indexed {sum(len(v) for v in buy_fills.values())} buy fills "
+                    f"across {len(buy_fills)} ticker+side combos")
+        # Log which tickers appear in fills so we can cross-check with paper trades
+        fill_tickers = sorted({k[0] for k in buy_fills})
+        logger.info(f"Fill tickers: {fill_tickers[:20]}")
+        unmatched_tickers = sorted({t.get('ticker','').upper() for t in unmatched_trades})
+        logger.info(f"Paper trade tickers: {unmatched_tickers[:20]}")
+        stats["fills_fetched"] = len(fills)
+        stats["fill_tickers"]  = fill_tickers
 
         # For each unmatched trade, find matching buy fill
         for trade in unmatched_trades:

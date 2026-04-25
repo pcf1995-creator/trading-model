@@ -190,9 +190,16 @@ with tab_dash:
                 _client = make_kalshi_client()
                 with st.spinner("Syncing fills from Kalshi API..."):
                     _stats = sync_paper_trades_with_kalshi_fills(_client)
-                st.success(f"✓ Sync complete: {_stats['matched']} matched, {_stats['updated']} updated, {_stats['skipped']} skipped")
+                _msg = (f"matched={_stats['matched']}  updated={_stats['updated']}  "
+                        f"skipped={_stats['skipped']}  "
+                        f"fills_fetched={_stats.get('fills_fetched', '?')}  "
+                        f"fill_tickers={_stats.get('fill_tickers', [])[:5]}")
+                if _stats["matched"] > 0:
+                    st.success(f"✓ Sync complete: {_stats['matched']} matched, {_stats['updated']} updated, {_stats['skipped']} skipped")
+                else:
+                    st.warning(f"⚠ No matches found — debug: {_msg}")
                 st.cache_data.clear()
-                time.sleep(2)  # Let user see the success message before rerun
+                time.sleep(3)
                 st.rerun()
             except Exception as e:
                 st.error(f"Sync failed: {e}", icon="❌")
