@@ -1287,7 +1287,7 @@ def get_daily_vol_pnl(bucket: str = "vol") -> float:
 
 
 def get_weekly_deployed_capital(bucket: str = "weekly") -> float:
-    """Get this week's cumulative bet_dollars for weekly trades."""
+    """Get this week's cumulative bet_dollars for ACTUALLY PLACED weekly trades only."""
     try:
         import db
         trades = db.load_paper_trades()
@@ -1295,6 +1295,9 @@ def get_weekly_deployed_capital(bucket: str = "weekly") -> float:
         week_start = today - timedelta(days=today.weekday())  # Monday of this week
         weekly_trades = []
         for t in trades:
+            # Only count trades that were ACTUALLY PLACED (placement_status='placed')
+            if t.get("placement_status") != "placed":
+                continue
             # Determine bucket from hours_to_exp
             h_exp = t.get("hours_to_exp")
             if h_exp is not None and h_exp > 24:
