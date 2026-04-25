@@ -1544,52 +1544,53 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
         fills = kalshi_client.get_fills(limit=1000)
         logger.info(f"Fetched {len(fills)} fills from Kalshi API")
 
-        # For each unmatched trade, find matching fill
+        # Index buy fills by ticker+side for fast lookup.
+        # Kalshi fill convention: action="buy", side="yes" = bought YES;
+        #                         action="buy", side="no"  = bought NO.
+        # Ticker field is "market_ticker" or "ticker".
+        buy_fills: dict[tuple, list] = {}
+        for fill in fills:
+            if fill.get("action", "buy") != "buy":
+                continue
+            fill_ticker = (fill.get("market_ticker") or fill.get("ticker", "")).upper()
+            fill_side   = fill.get("side", "yes").lower()
+            buy_fills.setdefault((fill_ticker, fill_side), []).append(fill)
+
+        # For each unmatched trade, find matching buy fill
         for trade in unmatched_trades:
-            trade_id = trade.get("id")
-            ticker = trade.get("ticker", "").upper()
-            side = trade.get("side", "yes").lower()
-            price = trade.get("price_cents", 0)
+            trade_id  = trade.get("id")
+            ticker    = trade.get("ticker", "").upper()
+            side      = trade.get("side", "yes").lower()
+            price     = trade.get("price_cents", 0)      # integer cents
             contracts = trade.get("contracts", 1)
-            placed_at = trade.get("placed_at", "")
 
-            # Parse placed_at date for window matching (±2 days)
-            try:
-                if placed_at:
-                    placed_dt = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
-                else:
-                    placed_dt = datetime.now(timezone.utc) - timedelta(days=30)  # Default to 30 days ago
-            except Exception:
-                placed_dt = datetime.now(timezone.utc) - timedelta(days=30)
-
-            window_start = placed_dt - timedelta(days=2)
-            window_end = placed_dt + timedelta(days=2)
+            candidates = buy_fills.get((ticker, side), [])
 
             # Find matching fill
             matched_fill = None
-            for fill in fills:
-                fill_ticker = fill.get("ticker", "").upper()
-                fill_side = fill.get("side", "yes").lower()
-                fill_price = fill.get("yes_price", 0) if fill_side == "yes" else (100 - fill.get("yes_price", 0))
-                fill_contracts = fill.get("contracts", fill.get("amount", 1))
-                fill_date = fill.get("order_timestamp", "")
-
-                # Parse fill date
+            for fill in candidates:
+                # Normalize yes_price to cents (API returns dollars 0-1 or integer cents)
+                raw_yp = fill.get("yes_price_dollars") or fill.get("yes_price") or 0
                 try:
-                    fill_dt = datetime.fromisoformat(fill_date.replace("Z", "+00:00")) if fill_date else None
-                except Exception:
-                    fill_dt = None
+                    yp_cents = float(raw_yp)
+                    if yp_cents <= 1.0:
+                        yp_cents *= 100
+                except (ValueError, TypeError):
+                    yp_cents = 0
+                fill_price = yp_cents if side == "yes" else (100 - yp_cents)
 
-                # Match criteria:
-                # - Ticker and side must match exactly
-                # - Price within 5 cents
-                # - Contracts within 1
-                # - Date within window
-                if (fill_ticker == ticker and
-                    fill_side == side and
-                    abs(fill_price - price) <= 5 and
-                    abs(fill_contracts - contracts) <= 1 and
-                    fill_dt and window_start <= fill_dt <= window_end):
+                # Normalize contract count
+                try:
+                    fill_contracts = abs(float(
+                        fill.get("count_fp") or fill.get("count") or 1
+                    ))
+                except (ValueError, TypeError):
+                    fill_contracts = 1
+
+                # Match: ticker+side already guaranteed by index.
+                # Price within 5 cents, contracts within 1.
+                if (abs(fill_price - price) <= 5 and
+                        abs(fill_contracts - contracts) <= 1):
                     matched_fill = fill
                     stats["matched"] += 1
                     break
