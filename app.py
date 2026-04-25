@@ -186,13 +186,16 @@ with tab_dash:
         if st.button("Sync Historical Fills", key="sync_fills"):
             try:
                 from kalshi_crypto import sync_paper_trades_with_kalshi_fills
+                import time
                 _client = make_kalshi_client()
-                _stats = sync_paper_trades_with_kalshi_fills(_client)
-                st.success(f"Sync complete: {_stats['matched']} matched, {_stats['updated']} updated")
+                with st.spinner("Syncing fills from Kalshi API..."):
+                    _stats = sync_paper_trades_with_kalshi_fills(_client)
+                st.success(f"✓ Sync complete: {_stats['matched']} matched, {_stats['updated']} updated, {_stats['skipped']} skipped")
                 st.cache_data.clear()
+                time.sleep(2)  # Let user see the success message before rerun
                 st.rerun()
             except Exception as e:
-                st.error(f"Sync failed: {e}")
+                st.error(f"Sync failed: {e}", icon="❌")
 
     # ── Load positions: API is source of truth for open positions ─────────────────
     _client          = make_kalshi_client()
