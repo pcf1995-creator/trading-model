@@ -462,21 +462,29 @@ _FEATURE_FLAGS_JSON = Path("feature_flags.json")
 
 
 def load_feature_flags() -> dict:
-    """Load feature flags (auto-placement toggles, etc)."""
+    """Load feature flags (auto-placement toggles, etc) from Supabase."""
     defaults = {
         "auto_place_weekly": False,
         "auto_place_vol": False,
         "auto_place_intraday_short": False,
         "auto_place_intraday_long": False,
     }
-    data = _load_json(_FEATURE_FLAGS_JSON)
-    if not data:
+    try:
+        client = _get_client()
+        resp = client.table("feature_flags").select("*").execute()
+        if resp.data:
+            # Convert list of {key, value} rows to dict
+            return {row["key"]: row["value"] for row in resp.data}
         return defaults
-    return {**defaults, **data}
+    except Exception as e:
+        logger.warning(f"Could not load feature flags from Supabase: {e}. Using defaults.")
+        return defaults
 
 
 def set_feature_flag(key: str, value: bool) -> None:
-    """Set a feature flag value."""
-    flags = load_feature_flags()
-    flags[key] = value
-    _save_json(_FEATURE_FLAGS_JSON, flags)
+    """Set a feature flag value in Supabase."""
+    try:
+        client = _get_client()
+        client.table("feature_flags").upsert({"key": key, "value": value}).execute()
+    except Exception as e:
+        logger.error(f"Could not set feature flag {key}={value}: {e}")
