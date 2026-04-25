@@ -1589,36 +1589,11 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
                 if _action and _action.lower() not in ("buy", "purchase"):
                     continue
 
-                fill_side = fill.get("side", side).lower()
-
-                # Normalize yes_price to cents (API returns dollars 0-1 or integer cents)
-                raw_yp = fill.get("yes_price_dollars") or fill.get("yes_price") or 0
-                try:
-                    yp_cents = float(raw_yp)
-                    if yp_cents <= 1.0:
-                        yp_cents *= 100
-                except (ValueError, TypeError):
-                    yp_cents = 0
-                # Price from fill's perspective: if fill side = "yes", price = yp_cents.
-                # If fill side = "no", cost to buy NO = 100 - yp_cents.
-                fill_price = yp_cents if fill_side == "yes" else (100 - yp_cents)
-
-                # Normalize contract count
-                try:
-                    fill_contracts = abs(float(
-                        fill.get("count_fp") or fill.get("count") or 1
-                    ))
-                except (ValueError, TypeError):
-                    fill_contracts = 1
-
-                # Match on price within 10 cents (wider tolerance for slippage)
-                # or just match on ticker if price_cents wasn't recorded
-                price_ok = (price == 0) or (abs(fill_price - price) <= 10)
-                if (price_ok and
-                        abs(fill_contracts - contracts) <= 1):
-                    matched_fill = fill
-                    stats["matched"] += 1
-                    break
+                # Ticker match is sufficient — each Kalshi ticker uniquely
+                # identifies one contract (series + expiry + strike).
+                matched_fill = fill
+                stats["matched"] += 1
+                break
 
             # If matched, update paper trade with order_id and placement_status
             if matched_fill:
