@@ -37,6 +37,7 @@ KALSHI_CONFIG = {
     "demo_url" : "https://demo-api.kalshi.co/trade-api/v2",
     "key_id"   : os.environ.get("KALSHI_KEY_ID"),         # your API key ID
     "key_path" : os.environ.get("KALSHI_KEY_PATH"),       # path to .pem file
+    "key_content" : os.environ.get("KALSHI_KEY_CONTENT"), # raw PEM content
     "demo"     : os.environ.get("KALSHI_DEMO", "false").lower() == "true",
 }
 # ──────────────────────────────────────────────────────────────────────────────
