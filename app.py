@@ -2875,7 +2875,7 @@ with tab_perf:
                             _ps_deduped: list = []
                             for _psf in _pstk_fills:
                                 _ps_dk = (
-                                    _psf.get("ts") or _psf.get("created_time", ""),
+                                    str(_psf.get("ts") or _psf.get("created_time", "")),
                                     _psf.get("action", ""),
                                     _psf.get("side", ""),
                                     _fill_count(_psf),
@@ -2886,18 +2886,18 @@ with tab_perf:
                                     _ps_deduped.append(_psf)
 
                             _ps_sorted = sorted(_ps_deduped,
-                                                key=lambda f: f.get("ts") or f.get("created_time", ""))
+                                                key=lambda f: str(f.get("ts") or f.get("created_time", "")))
 
                             _py_buy_cost = _py_sell_proc = _py_bought = _py_pos = 0.0
                             _pn_buy_cost = _pn_sell_proc = _pn_bought = _pn_pos = 0.0
-                            _ps_latest_ts = ""
+                            _ps_latest_ts = 0
                             for _psf in _ps_sorted:
                                 _ps_cnt  = _fill_count(_psf)
                                 _ps_act  = _fill_action(_psf)
                                 _ps_side = _psf.get("side", "yes")
                                 _ps_yp   = _price_dollars(_psf, "yes_price")
                                 _ps_np   = _no_price_dollars(_psf)
-                                _ps_ts   = _psf.get("ts") or _psf.get("created_time", "")
+                                _ps_ts   = _psf.get("ts") or 0
                                 if _ps_ts > _ps_latest_ts:
                                     _ps_latest_ts = _ps_ts
                                 if _ps_act == "buy" and _ps_side == "yes":
