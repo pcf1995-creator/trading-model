@@ -1517,5 +1517,105 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
         return {"vol_placed": 0, "intraday_short_placed": 0, "intraday_long_placed": 0, "weekly_placed": 0, "skipped": 0}
 
 
+def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
+    """
+    Backfill placement_status and order_id for paper trades by matching against Kalshi fills.
+    One-time sync to correlate historical paper trades with actual fills from Kalshi API.
+
+    Returns: {"matched": int, "updated": int, "skipped": int}
+    """
+    stats = {"matched": 0, "updated": 0, "skipped": 0}
+
+    try:
+        import db
+        from datetime import datetime, timezone, timedelta
+
+        # Fetch all paper trades
+        trades = db.load_paper_trades()
+        unmatched_trades = [t for t in trades if t.get("placement_status") != "placed"]
+
+        if not unmatched_trades:
+            logger.info("All paper trades already have placement_status='placed'. Nothing to sync.")
+            return stats
+
+        logger.info(f"Syncing {len(unmatched_trades)} unmatched trades against Kalshi fills...")
+
+        # Fetch all fills from Kalshi API
+        fills = kalshi_client.get_fills(limit=1000)
+        logger.info(f"Fetched {len(fills)} fills from Kalshi API")
+
+        # For each unmatched trade, find matching fill
+        for trade in unmatched_trades:
+            trade_id = trade.get("id")
+            ticker = trade.get("ticker", "").upper()
+            side = trade.get("side", "yes").lower()
+            price = trade.get("price_cents", 0)
+            contracts = trade.get("contracts", 1)
+            placed_at = trade.get("placed_at", "")
+
+            # Parse placed_at date for window matching (±2 days)
+            try:
+                if placed_at:
+                    placed_dt = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
+                else:
+                    placed_dt = datetime.now(timezone.utc) - timedelta(days=30)  # Default to 30 days ago
+            except Exception:
+                placed_dt = datetime.now(timezone.utc) - timedelta(days=30)
+
+            window_start = placed_dt - timedelta(days=2)
+            window_end = placed_dt + timedelta(days=2)
+
+            # Find matching fill
+            matched_fill = None
+            for fill in fills:
+                fill_ticker = fill.get("ticker", "").upper()
+                fill_side = fill.get("side", "yes").lower()
+                fill_price = fill.get("yes_price", 0) if fill_side == "yes" else (100 - fill.get("yes_price", 0))
+                fill_contracts = fill.get("contracts", fill.get("amount", 1))
+                fill_date = fill.get("order_timestamp", "")
+
+                # Parse fill date
+                try:
+                    fill_dt = datetime.fromisoformat(fill_date.replace("Z", "+00:00")) if fill_date else None
+                except Exception:
+                    fill_dt = None
+
+                # Match criteria:
+                # - Ticker and side must match exactly
+                # - Price within 5 cents
+                # - Contracts within 1
+                # - Date within window
+                if (fill_ticker == ticker and
+                    fill_side == side and
+                    abs(fill_price - price) <= 5 and
+                    abs(fill_contracts - contracts) <= 1 and
+                    fill_dt and window_start <= fill_dt <= window_end):
+                    matched_fill = fill
+                    stats["matched"] += 1
+                    break
+
+            # If matched, update paper trade with order_id and placement_status
+            if matched_fill:
+                order_id = matched_fill.get("order_id", matched_fill.get("id", ""))
+                bet_dollars = trade.get("bet_dollars", (contracts * price) / 100)
+                try:
+                    db.mark_trade_as_placed(trade_id, order_id, bet_dollars)
+                    stats["updated"] += 1
+                    logger.info(f"Matched {ticker} {side} → order_id={order_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to update trade {trade_id}: {e}")
+                    stats["skipped"] += 1
+            else:
+                logger.debug(f"No fill match for {ticker} {side} @ {price}¢ x{contracts}")
+                stats["skipped"] += 1
+
+        logger.info(f"Sync complete: {stats['matched']} matched, {stats['updated']} updated, {stats['skipped']} skipped")
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error syncing fills: {e}", exc_info=True)
+        return stats
+
+
 if __name__ == "__main__":
     main()

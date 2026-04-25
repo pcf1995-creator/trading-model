@@ -177,11 +177,22 @@ with tab_dash:
     # ══════════════════════════════════════════════════════════════════════════════
     st.header("Kalshi — Open Positions")
 
-    c1, c2 = st.columns([1, 8])
+    c1, c2, c3 = st.columns([1, 2, 8])
     with c1:
         if st.button("↻ Refresh", type="primary"):
             st.cache_data.clear()
             st.rerun()
+    with c2:
+        if st.button("Sync Historical Fills", key="sync_fills"):
+            try:
+                from kalshi_crypto import sync_paper_trades_with_kalshi_fills
+                _client = make_kalshi_client()
+                _stats = sync_paper_trades_with_kalshi_fills(_client)
+                st.success(f"Sync complete: {_stats['matched']} matched, {_stats['updated']} updated")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Sync failed: {e}")
 
     # ── Load positions: API is source of truth for open positions ─────────────────
     _client          = make_kalshi_client()
@@ -1365,11 +1376,20 @@ with tab_dash:
         # ── Settled paper trades ──────────────────────────────────────────────────
         if _settled_paper:
             with st.expander(f"Settled Paper Trades ({len(_settled_paper)})"):
+                # Filter: show only ACTUAL trades (placement_status='placed')
+                _actual_count = sum(1 for t in _settled_paper if t.get("placement_status") == "placed")
+                _filter_actual = st.checkbox("Show ACTUAL trades only", value=True, key="filter_actual_trades")
+
+                _trades_to_show = ([t for t in _settled_paper if t.get("placement_status") == "placed"]
+                                   if _filter_actual else _settled_paper)
+
                 _s_rows = []
-                for _pt in sorted(_settled_paper, key=lambda x: x.get("placed_at", ""), reverse=True):
+                for _pt in sorted(_trades_to_show, key=lambda x: x.get("placed_at", ""), reverse=True):
                     _pnl = _pt.get("pnl_dollars")
                     _rec_h = _pt.get("hours_to_exp")
+                    _type = "ACTUAL" if _pt.get("placement_status") == "placed" else "PAPER"
                     _s_rows.append({
+                        "Type"     : _type,
                         "Ticker"   : _pt["ticker"],
                         "Side"     : _pt.get("side", "yes"),
                         "Bucket"   : _time_bucket(_pt.get("hours_to_exp")),
@@ -1387,9 +1407,10 @@ with tab_dash:
                     pd.DataFrame(_s_rows).style.map(color_pnl, subset=["P&L $"]),
                     hide_index=True, use_container_width=True,
                 )
+                st.caption(f"Actual trades: {_actual_count}/{len(_settled_paper)}")
 
         # ── Performance summary ───────────────────────────────────────────────────
-        _resolved = [p for p in _settled_paper if p.get("pnl_dollars") is not None]
+        _resolved = [p for p in _settled_paper if p.get("placement_status") == "placed"]
 
         def _win_prob(p):
             """Model's predicted probability of the side we BET ON winning."""
