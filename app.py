@@ -333,23 +333,6 @@ with tab_dash:
             use_container_width=True,
         )
 
-        # Show updated Bet $ and Stop $ based on edited values
-        preview_rows = []
-        for i, row in edited.iterrows():
-            entry_cents = int(row["Entry ¢"])
-            stop_cents = int(row["Stop ¢"])
-            contracts = int(row["Contracts"])
-            preview_rows.append({
-                "Asset": row["Asset"],
-                "Contracts": contracts,
-                "Entry ¢": entry_cents,
-                "Bet $": f"${entry_cents * contracts / 100:.2f}",
-                "Stop ¢": stop_cents,
-                "Stop $": f"${stop_cents * contracts / 100:.2f}",
-            })
-
-        st.dataframe(pd.DataFrame(preview_rows), hide_index=True, use_container_width=True)
-
         if st.button("💾 Save contracts, entry & stop"):
             for i, row in edited.iterrows():
                 tkr = df_open.iloc[i]["Ticker"]
