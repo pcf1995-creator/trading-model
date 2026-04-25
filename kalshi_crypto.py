@@ -1571,8 +1571,12 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
         logger.info(f"Fill tickers: {fill_tickers[:20]}")
         unmatched_tickers = sorted({t.get('ticker','').upper() for t in unmatched_trades})
         logger.info(f"Paper trade tickers: {unmatched_tickers[:20]}")
-        stats["fills_fetched"] = len(fills)
-        stats["fill_tickers"]  = fill_tickers
+        stats["fills_fetched"]    = len(fills)
+        stats["fill_tickers"]     = fill_tickers
+        stats["paper_tickers"]    = unmatched_tickers
+        # Tickers in paper trades that have NO matching fill at all
+        stats["unmatched_paper"]  = [t for t in unmatched_tickers
+                                     if not any(t == k[0] for k in buy_fills)]
 
         # For each unmatched trade, find matching buy fill
         for trade in unmatched_trades:
