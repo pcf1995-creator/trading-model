@@ -294,16 +294,22 @@ class KalshiClient:
             return []
         return self._request("GET", "/portfolio/positions").get("market_positions", [])
 
-    def get_fills(self, limit: int = 200) -> list[dict]:
-        """Return recent trade fills (executed orders)."""
+    def get_fills(self, limit: int = 200, min_ts: int | None = None) -> list[dict]:
+        """Return trade fills (executed orders).
+
+        min_ts: Unix timestamp in seconds — fetch fills at or after this time.
+                Pass None to get only recent fills (API default).
+        """
         if self.dry_run:
             return []
         fills  = []
         cursor = None
         while True:
-            params = {"limit": 200}   # API max per page
+            params: dict = {"limit": 200}   # API max per page
             if cursor:
                 params["cursor"] = cursor
+            if min_ts is not None:
+                params["min_ts"] = min_ts
             data   = self._request("GET", "/portfolio/fills", params=params)
             batch  = data.get("fills", [])
             fills.extend(batch)
