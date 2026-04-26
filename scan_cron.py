@@ -46,6 +46,12 @@ def _run_scan_background():
         )
 
         # Log output
+        logger.info(f"Scan subprocess exit code: {result.returncode}")
+        if result.returncode != 0:
+            logger.error(f"Scan failed with exit code {result.returncode}")
+            if result.stderr:
+                logger.error(f"STDERR: {result.stderr[:500]}")
+
         with open(SCAN_LOG_FILE, "a") as f:
             f.write(f"\n{'='*60}\n")
             f.write(f"Scan at {datetime.now(timezone.utc).isoformat()}\n")
