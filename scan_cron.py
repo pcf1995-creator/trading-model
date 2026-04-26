@@ -30,11 +30,8 @@ def _run_scan_background():
         logger.info("Background scan starting...")
         cmd = [
             sys.executable,
-            "kalshi_crypto.py",
-            "--scan",
+            "kalshi_crypto_weekly.py",
             "--auto-save-db",
-            "--skip-bucket",
-            "intraday_short",
         ]
 
         result = subprocess.run(

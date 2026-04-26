@@ -1551,7 +1551,7 @@ def sync_paper_trades_with_kalshi_fills(kalshi_client: KalshiClient) -> dict:
 
         # Fetch all fills from March 1 2026 onward — covers all real trades
         _since_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp())
-        fills = kalshi_client.get_fills(limit=10000, min_ts=_since_ts)
+        fills = kalshi_client.get_fills(limit=100, min_ts=_since_ts)
         logger.info(f"Fetched {len(fills)} fills from Kalshi API (since 2026-03-01)")
 
         # Log a sample fill so we can see actual field names in Render logs
