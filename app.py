@@ -2492,6 +2492,7 @@ with tab_conviction:
                 _pos_size_current = round(_shares_held * _cur, 2)
                 _cv_rows.append({
                     "Ticker"    : _cp["ticker"],
+                    "Entry Date": _cp["entry_date"],
                     "Dir"       : _dir,
                     "Shares"    : f"{_shares_held:.4f}" if _shares_held else "—",
                     "Position Size": f"${_pos_size_entry:,.0f}",

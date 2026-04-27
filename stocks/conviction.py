@@ -669,12 +669,11 @@ def assess_open_positions(positions: list[dict],
 def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     """
     Calculate weekly portfolio performance vs SPY, weighted by capital at risk.
-    Returns dict with weekly and cumulative returns, or None if no positions.
+    Uses end-of-week prices for open positions and exit price for closed positions.
     """
     if not positions:
         return None
 
-    # Get active positions and date range
     active = [p for p in positions if p.get("status") in ("open", "closed")]
     if not active:
         return None
@@ -694,7 +693,7 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     start_date = min(dates)
     end_date = max(dates)
 
-    # Download SPY data for full range
+    # Download SPY and all ticker data
     try:
         spy_data = yf.download("SPY", start=start_date, end=end_date + pd.Timedelta(days=1),
                                auto_adjust=True, progress=False)
@@ -706,74 +705,90 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     except Exception:
         return None
 
-    # Build daily price data for positions
+    # Download all position tickers
+    tickers_to_fetch = list(set(p["ticker"] for p in active))
+    ticker_prices = {}
+    try:
+        ticker_data = yf.download(tickers_to_fetch, start=start_date, end=end_date + pd.Timedelta(days=1),
+                                  auto_adjust=True, progress=False, group_by="ticker")
+        is_multi = isinstance(ticker_data.columns, pd.MultiIndex)
+        for tk in tickers_to_fetch:
+            try:
+                if is_multi:
+                    ticker_prices[tk] = ticker_data[tk]["Close"].dropna()
+                else:
+                    ticker_prices[tk] = ticker_data["Close"].dropna()
+            except (KeyError, TypeError):
+                pass
+    except Exception:
+        pass
+
+    # Build weekly performance
     weeks_data = []
     current_week_monday = start_date - pd.Timedelta(days=start_date.weekday())
 
     while current_week_monday <= end_date:
         week_end = current_week_monday + pd.Timedelta(days=6)
         week_dates = pd.date_range(current_week_monday, week_end, freq='D')
-        week_dates = [d.date() for d in week_dates if d.date() <= end_date]
+        week_dates_list = [d.date() for d in week_dates if d.date() <= end_date]
 
-        if not week_dates:
+        if not week_dates_list:
             current_week_monday += pd.Timedelta(days=7)
             continue
 
-        # Calculate portfolio daily P&L for this week
-        daily_pnl = []
-        daily_capital = []
+        # Calculate portfolio P&L using end-of-week price
+        week_pnl = 0.0
+        week_capital = 0.0
 
-        for day in week_dates:
-            day_pnl = 0.0
-            day_capital = 0.0
+        for pos in active:
+            try:
+                entry_date = date.fromisoformat(pos["entry_date"])
+                exit_date = None
+                if pos.get("exit_date"):
+                    exit_date = date.fromisoformat(pos["exit_date"])
 
-            for pos in active:
-                try:
-                    entry_date = date.fromisoformat(pos["entry_date"])
-                    exit_date = None
-                    if pos.get("exit_date"):
-                        exit_date = date.fromisoformat(pos["exit_date"])
-
-                    if day < entry_date or (exit_date and day > exit_date):
-                        continue
-
-                    entry_price = float(pos["entry_price"])
-                    shares = float(pos.get("shares", 0))
-                    direction = pos["direction"]
-
-                    # Get price for this day (use entry if before any data, use exit if closed)
-                    if exit_date and day >= exit_date:
-                        day_price = float(pos.get("exit_price", entry_price))
-                    else:
-                        day_price = entry_price  # Conservative: use entry if no intra-week price
-
-                    # Calculate P&L for this position on this day
-                    if direction == "LONG":
-                        pos_pnl = (day_price - entry_price) * shares
-                    elif direction == "SHORT":
-                        pos_pnl = (entry_price - day_price) * shares
-                    else:
-                        pos_pnl = 0.0
-
-                    day_pnl += pos_pnl
-                    day_capital += abs(shares * entry_price)
-
-                except (ValueError, TypeError, KeyError):
+                # Check if position is active in this week
+                if week_end < entry_date or (exit_date and week_dates_list[0] > exit_date):
                     continue
 
-            daily_pnl.append(day_pnl)
-            daily_capital.append(day_capital)
+                entry_price = float(pos["entry_price"])
+                shares = float(pos.get("shares", 0))
+                direction = pos["direction"]
+
+                # Get end-of-week price
+                if exit_date and week_end >= exit_date:
+                    week_price = float(pos.get("exit_price", entry_price))
+                else:
+                    # Use latest available price in this week
+                    tk = pos["ticker"]
+                    if tk in ticker_prices:
+                        week_closes = ticker_prices[tk][ticker_prices[tk].index.date.astype(object).isin(set(week_dates_list))]
+                        if len(week_closes) > 0:
+                            week_price = float(week_closes.iloc[-1])
+                        else:
+                            week_price = entry_price
+                    else:
+                        week_price = entry_price
+
+                # Calculate position P&L
+                if direction == "LONG":
+                    pos_pnl = (week_price - entry_price) * shares
+                elif direction == "SHORT":
+                    pos_pnl = (entry_price - week_price) * shares
+                else:
+                    pos_pnl = 0.0
+
+                week_pnl += pos_pnl
+                week_capital += abs(shares * entry_price)
+
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
 
         # Calculate week return
-        total_week_pnl = sum(daily_pnl)
-        avg_week_capital = np.mean(daily_capital) if daily_capital and any(daily_capital) else 1.0
-        week_return = total_week_pnl / avg_week_capital if avg_week_capital > 0 else 0.0
+        week_return = week_pnl / week_capital if week_capital > 0 else 0.0
 
         # Calculate SPY return for this week
-        spy_dates_set = set(spy_close.index.date)
-        week_dates_set = set(week_dates)
-        matching_dates = [d for d in spy_close.index if d.date() in week_dates_set]
-
+        matching_dates = [d for d in spy_close.index if d.date() in set(week_dates_list)]
         if len(matching_dates) >= 2:
             week_spy_close = spy_close[matching_dates]
             spy_week_return = (week_spy_close.iloc[-1] - week_spy_close.iloc[0]) / week_spy_close.iloc[0]
