@@ -2857,6 +2857,59 @@ with tab_conviction:
                     st.success(f"Closed {_cv_close_ticker}.")
                     st.rerun()
 
+        # ── Resize a position ──────────────────────────────────────────────────
+        if _cv_open:
+            with st.expander("Resize position"):
+                _cv_resize_ticker = st.selectbox(
+                    "Ticker", [p["ticker"] for p in _cv_open], key="cv_resize_sel"
+                )
+                # Find current position size
+                _cv_resize_current = next((p for p in _cv_open if p["ticker"] == _cv_resize_ticker), None)
+                if _cv_resize_current:
+                    _cv_current_size = _cv_resize_current.get("cost", _cv_resize_current["entry_price"] * _cv_resize_current.get("shares", 0))
+
+                    _cv_resize_method = st.radio(
+                        "Resize by",
+                        ["Dollar amount", "Percentage reduction"],
+                        key="cv_resize_method"
+                    )
+
+                    if _cv_resize_method == "Dollar amount":
+                        _cv_new_size = st.number_input(
+                            f"New position size (current: ${_cv_current_size:,.0f})",
+                            min_value=0.0,
+                            value=_cv_current_size * 0.75,
+                            step=50.0,
+                            key="cv_resize_dollars"
+                        )
+                    else:
+                        _cv_reduce_pct = st.slider(
+                            "Reduce position by (%)",
+                            min_value=0,
+                            max_value=100,
+                            value=25,
+                            step=5,
+                            key="cv_resize_pct"
+                        )
+                        _cv_new_size = _cv_current_size * (1 - _cv_reduce_pct / 100)
+
+                    st.caption(f"Current: ${_cv_current_size:,.0f} → New: ${_cv_new_size:,.0f}")
+
+                    if st.button("Resize Position", key="cv_resize_btn"):
+                        for _cp in _cv_positions:
+                            if _cp["ticker"] == _cv_resize_ticker and _cp["status"] == "open":
+                                _ep = _cp["entry_price"]
+                                _old_shares = _cp.get("shares", 0)
+                                _new_shares = round(_cv_new_size / _ep, 4) if _ep > 0 else 0
+                                _cp.update({
+                                    "shares": _new_shares,
+                                    "cost": round(_cv_new_size, 2),
+                                })
+                                break
+                        _cv_mod.save_conviction_positions(_cv_positions)
+                        st.success(f"Resized {_cv_resize_ticker} to ${_cv_new_size:,.0f}")
+                        st.rerun()
+
         # ── Closed positions history ──────────────────────────────────────────
         if _cv_closed:
             with st.expander(f"Closed conviction positions ({len(_cv_closed)})"):
