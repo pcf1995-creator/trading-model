@@ -736,14 +736,16 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     # Calculate total portfolio capital (sum of all position costs)
     total_portfolio_capital = sum(float(p.get("cost", p.get("shares", 0) * p["entry_price"])) for p in active)
 
-    # Build weekly performance (start from the Monday following first position entry)
+    # Build weekly performance - track cumulative P&L to handle partial weeks correctly
     weeks_data = []
     # Get the Monday of the week AFTER the first position entry
     days_until_monday = (7 - start_date.weekday()) % 7
     if days_until_monday == 0:
-        days_until_monday = 7  # If already Monday, start next Monday
+        days_until_monday = 7
     first_week_monday = start_date + pd.Timedelta(days=days_until_monday)
     current_week_monday = first_week_monday
+
+    prev_week_cumul_pnl = 0.0  # Track cumulative P&L from previous week
 
     while current_week_monday <= end_date:
         week_end = current_week_monday + pd.Timedelta(days=6)
@@ -754,9 +756,8 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
             current_week_monday += pd.Timedelta(days=7)
             continue
 
-        # Calculate portfolio P&L using end-of-week price
-        week_pnl = 0.0
-        week_capital = 0.0
+        # Calculate portfolio's cumulative P&L from entry to end of this week
+        cumul_pnl = 0.0
         week_has_positions = False
 
         for pos in active:
@@ -783,16 +784,15 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
                     # Use latest available price in this week
                     tk = pos["ticker"]
                     if tk in ticker_prices:
-                        # Filter to only dates in this week
                         week_close_dates = [d for d in ticker_prices[tk].index if d.date() in set(week_dates_list)]
                         if week_close_dates:
-                            week_price = float(ticker_prices[tk].loc[week_close_dates[-1]])  # Last date in this week
+                            week_price = float(ticker_prices[tk].loc[week_close_dates[-1]])
                         else:
                             week_price = entry_price
                     else:
                         week_price = entry_price
 
-                # Calculate position P&L
+                # Calculate cumulative P&L from entry price
                 if direction == "LONG":
                     pos_pnl = (week_price - entry_price) * shares
                 elif direction == "SHORT":
@@ -800,8 +800,7 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
                 else:
                     pos_pnl = 0.0
 
-                week_pnl += pos_pnl
-                week_capital += abs(shares * entry_price)
+                cumul_pnl += pos_pnl
 
             except (ValueError, TypeError, KeyError, AttributeError):
                 continue
@@ -811,12 +810,16 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
             current_week_monday += pd.Timedelta(days=7)
             continue
 
+        # Week's P&L = cumulative change from entry minus what was already earned last week
+        week_pnl = cumul_pnl - prev_week_cumul_pnl
+        prev_week_cumul_pnl = cumul_pnl
+
         # Calculate week return as % of total portfolio capital
         week_return = week_pnl / total_portfolio_capital if total_portfolio_capital > 0 else 0.0
 
-        # Calculate SPY return for this week
+        # Calculate SPY return for this week (including partial weeks with >= 1 trading day)
         matching_dates = [d for d in spy_close.index if d.date() in set(week_dates_list)]
-        if len(matching_dates) >= 2:
+        if len(matching_dates) >= 1:
             week_spy_close = spy_close[matching_dates]
             spy_week_return = (week_spy_close.iloc[-1] - week_spy_close.iloc[0]) / week_spy_close.iloc[0]
         else:
@@ -833,15 +836,15 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     if not weeks_data:
         return None
 
-    # Calculate cumulative returns
+    # Calculate cumulative returns (simple sum since each week's return is % of total capital)
     cumulative_portfolio = []
     cumulative_spy = []
     cum_port = 0.0
     cum_spy = 0.0
 
     for w in weeks_data:
-        cum_port = (1 + cum_port) * (1 + w["portfolio_return"]) - 1
-        cum_spy = (1 + cum_spy) * (1 + w["spy_return"]) - 1
+        cum_port += w["portfolio_return"]
+        cum_spy += w["spy_return"]
         cumulative_portfolio.append(cum_port)
         cumulative_spy.append(cum_spy)
 
