@@ -746,6 +746,7 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     current_week_monday = first_week_monday
 
     prev_week_cumul_pnl = 0.0  # Track cumulative P&L from previous week
+    prev_week_spy_price = None  # Track SPY close from previous week
 
     while current_week_monday <= end_date:
         week_end = current_week_monday + pd.Timedelta(days=6)
@@ -817,19 +818,29 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
         # Calculate week return as % of total portfolio capital
         week_return = week_pnl / total_portfolio_capital if total_portfolio_capital > 0 else 0.0
 
-        # Calculate SPY return for this week (including partial weeks with >= 1 trading day)
+        # Calculate SPY return for this week (including partial weeks)
         matching_dates = [d for d in spy_close.index if d.date() in set(week_dates_list)]
         if len(matching_dates) >= 1:
-            week_spy_close = spy_close[matching_dates]
-            spy_week_return = (week_spy_close.iloc[-1] - week_spy_close.iloc[0]) / week_spy_close.iloc[0]
+            current_spy_price = float(spy_close[matching_dates[-1]])  # Last price in this week
+            if prev_week_spy_price is None:
+                # First week: use opening price of the week
+                spy_week_return = (current_spy_price - spy_close[matching_dates[0]]) / spy_close[matching_dates[0]]
+            else:
+                # Subsequent weeks: use previous week's closing price
+                spy_week_return = (current_spy_price - prev_week_spy_price) / prev_week_spy_price
         else:
             spy_week_return = 0.0
+            current_spy_price = prev_week_spy_price
 
         weeks_data.append({
             "week_monday": current_week_monday,
             "portfolio_return": week_return,
             "spy_return": spy_week_return,
         })
+
+        # Update prev_week_spy_price for next iteration
+        if len(matching_dates) >= 1:
+            prev_week_spy_price = float(spy_close[matching_dates[-1]])
 
         current_week_monday += pd.Timedelta(days=7)
 
