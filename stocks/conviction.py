@@ -770,8 +770,12 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
         week_return = total_week_pnl / avg_week_capital if avg_week_capital > 0 else 0.0
 
         # Calculate SPY return for this week
-        week_spy_close = spy_close[spy_close.index.date.astype(object).isin(week_dates)]
-        if len(week_spy_close) >= 2:
+        spy_dates_set = set(spy_close.index.date)
+        week_dates_set = set(week_dates)
+        matching_dates = [d for d in spy_close.index if d.date() in week_dates_set]
+
+        if len(matching_dates) >= 2:
+            week_spy_close = spy_close[matching_dates]
             spy_week_return = (week_spy_close.iloc[-1] - week_spy_close.iloc[0]) / week_spy_close.iloc[0]
         else:
             spy_week_return = 0.0
