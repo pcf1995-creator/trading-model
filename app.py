@@ -2561,7 +2561,14 @@ with tab_conviction:
                 if _current_score is None:
                     _current_score = _cp.get("score_at_entry")
                 _pnl_val = _cv_pnl_dollars[i] if i < len(_cv_pnl_dollars) else 0
-                _score_status = "⚠️ Weak" if _current_score and _current_score < 0.05 else ("✓ OK" if _current_score else "—")
+                # Score weakness depends on direction: LONG wants positive scores, SHORT wants negative scores
+                _is_weak = False
+                if _current_score is not None:
+                    if _cp["direction"] == "LONG":
+                        _is_weak = _current_score < 0.05  # LONG weak if score near 0 or negative
+                    elif _cp["direction"] == "SHORT":
+                        _is_weak = _current_score > -0.05  # SHORT weak if score near 0 or positive
+                _score_status = ("⚠️ Weak" if _is_weak else "✓ OK") if _current_score is not None else "—"
                 _cv_score_review.append({
                     "Ticker": _cp["ticker"],
                     "Size": f"${_current_size:,.0f}",
