@@ -2539,6 +2539,42 @@ with tab_conviction:
             _ce1, _ce2 = st.columns(2)
             _ce1.metric("Net Exposure (Entry)",   f"{_cv_net_exposure_entry:+.1f}%")
             _ce2.metric("Net Exposure (Current)", f"{_cv_net_exposure_current:+.1f}%")
+
+            # ── Capital allocation & position review ───────────────────────────
+            st.divider()
+            st.subheader("Capital Allocation & Score Review")
+
+            _cv_deployed = sum(_cv_costs)
+            _cv_available = _cv_total_capital - _cv_deployed
+            _cpa1, _cpa2, _cpa3 = st.columns(3)
+            _cpa1.metric("Budget", f"${_cv_total_capital:,.0f}")
+            _cpa2.metric("Deployed", f"${_cv_deployed:,.0f}", delta=f"{_cv_deployed/_cv_total_capital*100:.1f}%")
+            _cpa3.metric("Available", f"${_cv_available:,.0f}", delta=f"{_cv_available/_cv_total_capital*100:.1f}%" if _cv_available >= 0 else f"{_cv_available/_cv_total_capital*100:.1f}%")
+
+            # Positions ranked by score (worst first) — helps identify what to close/resize
+            _cv_score_review = []
+            for i, _cp in enumerate(_cv_open):
+                _cur_price = _cv_live_price(_cp["ticker"]) or _cp["entry_price"]
+                _current_size = round(_cp.get("shares", 0) * _cur_price, 0)
+                _current_score = _cp.get("current_score")
+                if _current_score is None:
+                    _current_score = _cp.get("score_at_entry")
+                _pnl_val = _cv_pnl_dollars[i] if i < len(_cv_pnl_dollars) else 0
+                _score_status = "⚠️ Weak" if _current_score and _current_score < 0.05 else ("✓ OK" if _current_score else "—")
+                _cv_score_review.append({
+                    "Ticker": _cp["ticker"],
+                    "Size": f"${_current_size:,.0f}",
+                    "Score": f"{_current_score:+.3f}" if _current_score is not None else "—",
+                    "P&L": f"${_pnl_val:+.0f}",
+                    "Status": _score_status,
+                })
+
+            _cv_score_review = sorted(_cv_score_review, key=lambda x: float(x["Score"].replace("—", "999")) if x["Score"] != "—" else 999.0)
+            st.caption("Positions ranked by score (weak scores = good candidates to close/resize)")
+            st.dataframe(
+                pd.DataFrame(_cv_score_review).style.map(color_pnl, subset=["P&L"]),
+                hide_index=True, use_container_width=True,
+            )
         else:
             st.info("No open conviction positions. Run a scan to get recommendations.")
 
