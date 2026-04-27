@@ -38,7 +38,7 @@ def _run_scan_background():
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=900,
             cwd=os.path.dirname(__file__),
         )
 
@@ -72,9 +72,9 @@ def _run_scan_background():
         logger.info("Background scan completed")
 
     except subprocess.TimeoutExpired:
-        logger.error("Scan timed out after 5 minutes")
+        logger.error("Scan timed out after 15 minutes")
         with open(SCAN_LOG_FILE, "a") as f:
-            f.write("Scan timed out after 5 minutes\n")
+            f.write("Scan timed out after 15 minutes\n")
     except Exception as e:
         logger.error(f"Error in background scan: {e}")
         with open(SCAN_LOG_FILE, "a") as f:
