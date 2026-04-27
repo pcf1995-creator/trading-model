@@ -664,6 +664,150 @@ def assess_open_positions(positions: list[dict],
     return updated
 
 
+# ── Weekly performance tracking ────────────────────────────────────────────────
+
+def calculate_weekly_performance(positions: list[dict]) -> dict | None:
+    """
+    Calculate weekly portfolio performance vs SPY, weighted by capital at risk.
+    Returns dict with weekly and cumulative returns, or None if no positions.
+    """
+    if not positions:
+        return None
+
+    # Get active positions and date range
+    active = [p for p in positions if p.get("status") in ("open", "closed")]
+    if not active:
+        return None
+
+    dates = []
+    for p in active:
+        try:
+            dates.append(date.fromisoformat(p["entry_date"]))
+            if p.get("status") == "closed" and p.get("exit_date"):
+                dates.append(date.fromisoformat(p["exit_date"]))
+        except (ValueError, TypeError):
+            pass
+
+    if not dates:
+        return None
+
+    start_date = min(dates)
+    end_date = max(dates)
+
+    # Download SPY data for full range
+    try:
+        spy_data = yf.download("SPY", start=start_date, end=end_date + pd.Timedelta(days=1),
+                               auto_adjust=True, progress=False)
+        if isinstance(spy_data.columns, pd.MultiIndex):
+            spy_data.columns = spy_data.columns.get_level_values(0)
+        spy_close = spy_data["Close"] if "Close" in spy_data.columns else None
+        if spy_close is None or len(spy_close) == 0:
+            return None
+    except Exception:
+        return None
+
+    # Build daily price data for positions
+    weeks_data = []
+    current_week_monday = start_date - pd.Timedelta(days=start_date.weekday())
+
+    while current_week_monday <= end_date:
+        week_end = current_week_monday + pd.Timedelta(days=6)
+        week_dates = pd.date_range(current_week_monday, week_end, freq='D')
+        week_dates = [d.date() for d in week_dates if d.date() <= end_date]
+
+        if not week_dates:
+            current_week_monday += pd.Timedelta(days=7)
+            continue
+
+        # Calculate portfolio daily P&L for this week
+        daily_pnl = []
+        daily_capital = []
+
+        for day in week_dates:
+            day_pnl = 0.0
+            day_capital = 0.0
+
+            for pos in active:
+                try:
+                    entry_date = date.fromisoformat(pos["entry_date"])
+                    exit_date = None
+                    if pos.get("exit_date"):
+                        exit_date = date.fromisoformat(pos["exit_date"])
+
+                    if day < entry_date or (exit_date and day > exit_date):
+                        continue
+
+                    entry_price = float(pos["entry_price"])
+                    shares = float(pos.get("shares", 0))
+                    direction = pos["direction"]
+
+                    # Get price for this day (use entry if before any data, use exit if closed)
+                    if exit_date and day >= exit_date:
+                        day_price = float(pos.get("exit_price", entry_price))
+                    else:
+                        day_price = entry_price  # Conservative: use entry if no intra-week price
+
+                    # Calculate P&L for this position on this day
+                    if direction == "LONG":
+                        pos_pnl = (day_price - entry_price) * shares
+                    elif direction == "SHORT":
+                        pos_pnl = (entry_price - day_price) * shares
+                    else:
+                        pos_pnl = 0.0
+
+                    day_pnl += pos_pnl
+                    day_capital += abs(shares * entry_price)
+
+                except (ValueError, TypeError, KeyError):
+                    continue
+
+            daily_pnl.append(day_pnl)
+            daily_capital.append(day_capital)
+
+        # Calculate week return
+        total_week_pnl = sum(daily_pnl)
+        avg_week_capital = np.mean(daily_capital) if daily_capital and any(daily_capital) else 1.0
+        week_return = total_week_pnl / avg_week_capital if avg_week_capital > 0 else 0.0
+
+        # Calculate SPY return for this week
+        week_spy_close = spy_close[spy_close.index.date.astype(object).isin(week_dates)]
+        if len(week_spy_close) >= 2:
+            spy_week_return = (week_spy_close.iloc[-1] - week_spy_close.iloc[0]) / week_spy_close.iloc[0]
+        else:
+            spy_week_return = 0.0
+
+        weeks_data.append({
+            "week_monday": current_week_monday,
+            "portfolio_return": week_return,
+            "spy_return": spy_week_return,
+        })
+
+        current_week_monday += pd.Timedelta(days=7)
+
+    if not weeks_data:
+        return None
+
+    # Calculate cumulative returns
+    cumulative_portfolio = []
+    cumulative_spy = []
+    cum_port = 0.0
+    cum_spy = 0.0
+
+    for w in weeks_data:
+        cum_port = (1 + cum_port) * (1 + w["portfolio_return"]) - 1
+        cum_spy = (1 + cum_spy) * (1 + w["spy_return"]) - 1
+        cumulative_portfolio.append(cum_port)
+        cumulative_spy.append(cum_spy)
+
+    return {
+        "weeks": [w["week_monday"].strftime("%Y-%m-%d") for w in weeks_data],
+        "portfolio_returns": [w["portfolio_return"] for w in weeks_data],
+        "spy_returns": [w["spy_return"] for w in weeks_data],
+        "cumulative_portfolio": cumulative_portfolio,
+        "cumulative_spy": cumulative_spy,
+    }
+
+
 # ── Storage passthrough ────────────────────────────────────────────────────────
 
 def load_conviction_positions() -> list[dict]:

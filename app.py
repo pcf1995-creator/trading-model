@@ -2818,6 +2818,66 @@ with tab_conviction:
                     hide_index=True, use_container_width=True,
                 )
 
+        # ── Weekly performance tracking ───────────────────────────────────────────
+        st.divider()
+        st.subheader("Weekly Performance vs S&P 500")
+
+        _cv_weekly_perf = _cv_mod.calculate_weekly_performance(_cv_positions)
+        if _cv_weekly_perf is None:
+            st.info("Need positions to calculate weekly performance.")
+        else:
+            # Build weekly performance table
+            _cv_weekly_rows = []
+            for i, week in enumerate(_cv_weekly_perf["weeks"]):
+                port_ret = _cv_weekly_perf["portfolio_returns"][i]
+                spy_ret = _cv_weekly_perf["spy_returns"][i]
+                outperf = port_ret - spy_ret
+                _cv_weekly_rows.append({
+                    "Week": week,
+                    "Portfolio %": f"{port_ret*100:+.2f}%",
+                    "S&P 500 %": f"{spy_ret*100:+.2f}%",
+                    "Outperformance %": f"{outperf*100:+.2f}%",
+                })
+
+            st.dataframe(
+                pd.DataFrame(_cv_weekly_rows).style.map(
+                    color_pnl,
+                    subset=["Portfolio %", "S&P 500 %", "Outperformance %"]
+                ),
+                hide_index=True, use_container_width=True,
+            )
+
+            # Cumulative returns chart
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            from matplotlib.dates import DateFormatter
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+
+            # Convert week dates to datetime for plotting
+            week_dates = pd.to_datetime(_cv_weekly_perf["weeks"])
+            portfolio_cum = [x * 100 for x in _cv_weekly_perf["cumulative_portfolio"]]
+            spy_cum = [x * 100 for x in _cv_weekly_perf["cumulative_spy"]]
+
+            ax.plot(week_dates, portfolio_cum, marker="o", linewidth=2.5, label="Portfolio",
+                   color="#3498db", markersize=6)
+            ax.plot(week_dates, spy_cum, marker="s", linewidth=2.5, label="S&P 500",
+                   color="#95a5a6", markersize=6)
+
+            ax.set_xlabel("Week", fontsize=11, color="white")
+            ax.set_ylabel("Cumulative Return %", fontsize=11, color="white")
+            ax.legend(loc="best", framealpha=0.9, fontsize=10)
+            ax.grid(True, alpha=0.2, color="white")
+            ax.set_facecolor("#0e1117")
+            fig.patch.set_facecolor("#0e1117")
+            ax.tick_params(colors="white", labelsize=10)
+            for spine in ax.spines.values():
+                spine.set_color("white")
+
+            st.pyplot(fig)
+            plt.close(fig)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB
 # ══════════════════════════════════════════════════════════════════════════════
