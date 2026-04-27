@@ -690,14 +690,16 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     if not dates:
         return None
 
-    end_date = max(dates)
     start_date = min(dates)
-    # Adjust start_date to Monday of that week for proper historical data
-    start_date = start_date - pd.Timedelta(days=start_date.weekday())
+    end_date = max(dates)
 
-    # Download SPY and all ticker data
+    # If there are open positions, extend end_date to today
+    if any(p.get("status") == "open" for p in active):
+        end_date = max(end_date, date.today())
+
+    # Download SPY and all ticker data (extend range to ensure we get full trading weeks)
     try:
-        spy_data = yf.download("SPY", start=start_date, end=end_date + pd.Timedelta(days=1),
+        spy_data = yf.download("SPY", start=start_date - pd.Timedelta(days=7), end=end_date + pd.Timedelta(days=1),
                                auto_adjust=True, progress=False)
         if isinstance(spy_data.columns, pd.MultiIndex):
             spy_data.columns = spy_data.columns.get_level_values(0)
@@ -707,11 +709,11 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     except Exception:
         return None
 
-    # Download all position tickers
+    # Download all position tickers (extend range to ensure we get full trading weeks)
     tickers_to_fetch = list(set(p["ticker"] for p in active))
     ticker_prices = {}
     try:
-        ticker_data = yf.download(tickers_to_fetch, start=start_date, end=end_date + pd.Timedelta(days=1),
+        ticker_data = yf.download(tickers_to_fetch, start=start_date - pd.Timedelta(days=7), end=end_date + pd.Timedelta(days=1),
                                   auto_adjust=True, progress=False)
 
         # Handle different data structure depending on number of tickers
@@ -731,9 +733,17 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     except Exception:
         pass
 
-    # Build weekly performance
+    # Calculate total portfolio capital (sum of all position costs)
+    total_portfolio_capital = sum(float(p.get("cost", p.get("shares", 0) * p["entry_price"])) for p in active)
+
+    # Build weekly performance (start from the Monday following first position entry)
     weeks_data = []
-    current_week_monday = start_date - pd.Timedelta(days=start_date.weekday())
+    # Get the Monday of the week AFTER the first position entry
+    days_until_monday = (7 - start_date.weekday()) % 7
+    if days_until_monday == 0:
+        days_until_monday = 7  # If already Monday, start next Monday
+    first_week_monday = start_date + pd.Timedelta(days=days_until_monday)
+    current_week_monday = first_week_monday
 
     while current_week_monday <= end_date:
         week_end = current_week_monday + pd.Timedelta(days=6)
@@ -747,6 +757,7 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
         # Calculate portfolio P&L using end-of-week price
         week_pnl = 0.0
         week_capital = 0.0
+        week_has_positions = False
 
         for pos in active:
             try:
@@ -758,6 +769,8 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
                 # Check if position is active in this week
                 if week_end < entry_date or (exit_date and week_dates_list[0] > exit_date):
                     continue
+
+                week_has_positions = True
 
                 entry_price = float(pos["entry_price"])
                 shares = float(pos.get("shares", 0))
@@ -793,8 +806,13 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
             except (ValueError, TypeError, KeyError, AttributeError):
                 continue
 
-        # Calculate week return
-        week_return = week_pnl / week_capital if week_capital > 0 else 0.0
+        # Only include weeks with active positions
+        if not week_has_positions:
+            current_week_monday += pd.Timedelta(days=7)
+            continue
+
+        # Calculate week return as % of total portfolio capital
+        week_return = week_pnl / total_portfolio_capital if total_portfolio_capital > 0 else 0.0
 
         # Calculate SPY return for this week
         matching_dates = [d for d in spy_close.index if d.date() in set(week_dates_list)]
