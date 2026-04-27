@@ -1,11 +1,11 @@
 """
-kalshi_crypto_weekly.py — Minimal weekly-only crypto scan for Kalshi
+kalshi_crypto_weekly.py — Lightweight weekly-only crypto scan for Kalshi
 
 Stripped-down version of kalshi_crypto.py that:
 - Only loads daily model (no intraday)
 - Only scores markets with >24h to expiry (weekly bucket)
-- Uses 2 years of history instead of 5
-- ~60% less memory usage
+- Uses full 5 years of history for accuracy
+- Significantly less memory than full scan (no hourly/minute data)
 
 To restore full scan (all buckets + intraday), revert to kalshi_crypto.py --scan
 """
