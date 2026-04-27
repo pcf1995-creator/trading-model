@@ -28,11 +28,14 @@ def _run_scan_background():
     """Run scan in background thread so HTTP response returns quickly."""
     try:
         logger.info("Background scan starting...")
+        logger.info(f"Using Python: {sys.executable}")
+        logger.info(f"Working directory: {os.path.dirname(__file__)}")
         cmd = [
             sys.executable,
             "kalshi_crypto_weekly.py",
             "--auto-save-db",
         ]
+        logger.info(f"Running command: {' '.join(cmd)}")
 
         result = subprocess.run(
             cmd,
@@ -44,10 +47,14 @@ def _run_scan_background():
 
         # Log output
         logger.info(f"Scan subprocess exit code: {result.returncode}")
+        logger.info(f"STDOUT length: {len(result.stdout) if result.stdout else 0} chars")
+        logger.info(f"STDERR length: {len(result.stderr) if result.stderr else 0} chars")
         if result.returncode != 0:
             logger.error(f"Scan failed with exit code {result.returncode}")
             if result.stderr:
-                logger.error(f"STDERR: {result.stderr[:500]}")
+                logger.error(f"STDERR (first 1000 chars): {result.stderr[:1000]}")
+            if result.stdout:
+                logger.error(f"STDOUT (last 500 chars): {result.stdout[-500:]}")
 
         with open(SCAN_LOG_FILE, "a") as f:
             f.write(f"\n{'='*60}\n")
