@@ -2442,6 +2442,24 @@ with tab_conviction:
             except Exception:
                 def _cv_live_price(tk): return None
 
+            # Auto-refresh scores from latest scan or do mini-scan
+            _score_map = {}
+            if "cv_scan_result" in st.session_state and not st.session_state["cv_scan_result"].empty:
+                _scan_df = st.session_state["cv_scan_result"]
+                _score_map = dict(zip(_scan_df["ticker"], _scan_df["composite_score"]))
+            else:
+                # No recent scan, do quick score fetch for open positions only
+                try:
+                    _mini_scan_df = _cv_mod.run_conviction_scan(_cv_tks)
+                    _score_map = dict(zip(_mini_scan_df["ticker"], _mini_scan_df["composite_score"]))
+                except Exception:
+                    pass
+
+            # Update current_score for each open position
+            for _cp in _cv_open:
+                if _cp["ticker"] in _score_map:
+                    _cp["current_score"] = _score_map[_cp["ticker"]]
+
             _cv_rows        = []
             _cv_pnl_dollars = []
             _cv_costs       = []
