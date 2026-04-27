@@ -690,8 +690,10 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     if not dates:
         return None
 
-    start_date = min(dates)
     end_date = max(dates)
+    start_date = min(dates)
+    # Adjust start_date to Monday of that week for proper historical data
+    start_date = start_date - pd.Timedelta(days=start_date.weekday())
 
     # Download SPY and all ticker data
     try:
@@ -710,14 +712,20 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
     ticker_prices = {}
     try:
         ticker_data = yf.download(tickers_to_fetch, start=start_date, end=end_date + pd.Timedelta(days=1),
-                                  auto_adjust=True, progress=False, group_by="ticker")
-        is_multi = isinstance(ticker_data.columns, pd.MultiIndex)
+                                  auto_adjust=True, progress=False)
+
+        # Handle different data structure depending on number of tickers
         for tk in tickers_to_fetch:
             try:
-                if is_multi:
-                    ticker_prices[tk] = ticker_data[tk]["Close"].dropna()
-                else:
+                if len(tickers_to_fetch) == 1:
+                    # Single ticker: ticker_data is a DataFrame with Close column
                     ticker_prices[tk] = ticker_data["Close"].dropna()
+                else:
+                    # Multiple tickers: ticker_data has MultiIndex columns
+                    if isinstance(ticker_data.columns, pd.MultiIndex):
+                        ticker_prices[tk] = ticker_data[("Close", tk)].dropna() if ("Close", tk) in ticker_data.columns else ticker_data[(tk, "Close")].dropna()
+                    else:
+                        ticker_prices[tk] = ticker_data[tk].dropna()
             except (KeyError, TypeError):
                 pass
     except Exception:
@@ -762,9 +770,10 @@ def calculate_weekly_performance(positions: list[dict]) -> dict | None:
                     # Use latest available price in this week
                     tk = pos["ticker"]
                     if tk in ticker_prices:
-                        week_closes = ticker_prices[tk][ticker_prices[tk].index.date.astype(object).isin(set(week_dates_list))]
-                        if len(week_closes) > 0:
-                            week_price = float(week_closes.iloc[-1])
+                        # Filter to only dates in this week
+                        week_close_dates = [d for d in ticker_prices[tk].index if d.date() in set(week_dates_list)]
+                        if week_close_dates:
+                            week_price = float(ticker_prices[tk].loc[week_close_dates[-1]])  # Last date in this week
                         else:
                             week_price = entry_price
                     else:
