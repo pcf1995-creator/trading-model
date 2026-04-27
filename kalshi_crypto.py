@@ -1463,43 +1463,71 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
                     bucket_trades.append(t)
             bucket_trades.sort(key=lambda t: t.get("ev", 0), reverse=True)
             logger.info(f"{bucket} has {len(bucket_trades)} candidates, taking top 3")
-            # Debug: log top 3 selected
-            for i, t in enumerate(bucket_trades[:3]):
-                logger.info(f"  Top {i+1}: {t.get('ticker')} {t.get('side').upper()} EV={t.get('ev', 0)} bet_dollars={t.get('bet_dollars', 0)}")
 
-            # Take top 3 by EV
-            for trade in bucket_trades[:3]:
+            # Calculate allocations with correlation discounts (matching web app logic)
+            top3 = bucket_trades[:3]
+            SAME_ASSET_SAME_SIDE_CORR = 0.90
+            BTC_ETH_CORR = 0.80
+
+            def _get_asset(ticker: str) -> str:
+                """Extract asset from ticker (KXBTCD... -> BTC, KXETHD... -> ETH)."""
+                return "BTC" if "BTC" in ticker.upper() else "ETH"
+
+            def _corr_discount(trade: dict, earlier: list[dict]) -> float:
+                """Calculate allocation discount based on correlation with earlier picks."""
+                max_corr = 0.0
+                for e in earlier:
+                    if e.get("side", "").lower() == trade.get("side", "").lower():
+                        if _get_asset(e.get("ticker", "")) == _get_asset(trade.get("ticker", "")):
+                            max_corr = max(max_corr, SAME_ASSET_SAME_SIDE_CORR)
+                        else:
+                            max_corr = max(max_corr, BTC_ETH_CORR)
+                return 1.0 - max_corr
+
+            # Get remaining budget once for all 3 trades
+            if bucket == "weekly":
+                weekly_deployed_live = get_weekly_deployed_capital(kalshi_client)
+                budget = max(0, 200.0 - weekly_deployed_live)
+            else:
+                budget = 500.0  # default for other buckets
+
+            # Calculate raw allocations with discounts
+            discounts = []
+            raw_allocations = []
+            for i, trade in enumerate(top3):
+                discount = _corr_discount(trade, top3[:i])
+                discounts.append(discount)
+                kelly_pct = min(trade.get("ev", 0) * 100, MAX_KELLY * 100)
+                raw = kelly_pct / 100 * budget * discount
+                raw_allocations.append(raw)
+
+            # Normalize if total exceeds budget
+            total_raw = sum(raw_allocations) or 1.0
+            scale = min(1.0, budget / total_raw)
+
+            # Debug: log top 3 selected with allocations
+            for i, (t, raw, d) in enumerate(zip(top3, raw_allocations, discounts)):
+                final_alloc = raw * scale
+                logger.info(f"  Top {i+1}: {t.get('ticker')} {t.get('side').upper()} EV={t.get('ev', 0):.4f} "
+                           f"discount={d:.2f} raw=${raw:.2f} final=${final_alloc:.2f}")
+
+            # Take top 3 by EV with calculated allocations
+            for i, (trade, raw_alloc) in enumerate(zip(top3, raw_allocations)):
                 price_cents = trade.get("price_cents", 100)
                 price_dollars = price_cents / 100
-                ev = trade.get("ev", 0)
 
-                # Derive kelly from EV (capped at MAX_KELLY)
-                kelly_pct = min(ev * 100, MAX_KELLY * 100)
+                # Use normalized allocation
+                bet_dollars = round(raw_alloc * scale, 2)
 
-                # For weekly bucket, size kelly based on remaining budget
-                if bucket == "weekly":
-                    weekly_deployed_live = get_weekly_deployed_capital(kalshi_client)
-                    total_deployed = weekly_deployed_live + weekly_deployed_this_cycle
-                    remaining_budget = max(0, 200.0 - total_deployed)
+                if bet_dollars < 2.5:
+                    logger.info(f"{trade['ticker']}: Allocation ${bet_dollars:.2f} below $2.50 minimum. Skipping.")
+                    stats["skipped"] += 1
+                    continue
 
-                    if remaining_budget < 2.5:
-                        logger.info(f"Weekly budget too low (${remaining_budget:.2f}). Stopping placements.")
-                        break
-
-                    # Size kelly_pct based on remaining budget
-                    bet_dollars = (remaining_budget * kelly_pct / 100) if kelly_pct > 0 else 0
-
-                    if bet_dollars < 2.5:
-                        logger.info(f"{trade['ticker']}: Resized kelly to ${bet_dollars:.2f}, below $2.50 minimum. Skipping.")
-                        stats["skipped"] += 1
-                        continue
-
-                    contracts = max(1, int(bet_dollars / price_dollars)) if price_dollars > 0 else 1
-                else:
-                    contracts = trade.get("contracts", 1)
-                    bet_dollars = trade.get("bet_dollars", 0)
+                contracts = max(1, int(bet_dollars / price_dollars)) if price_dollars > 0 else 1
 
                 # Reconstruct recommendation dict from trade record
+                kelly_pct = min(trade.get("ev", 0) * 100, MAX_KELLY * 100)
                 rec = {
                     "id": trade.get("id"),
                     "ticker": trade["ticker"],
