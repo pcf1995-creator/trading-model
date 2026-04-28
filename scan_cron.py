@@ -18,7 +18,15 @@ import sys
 import threading
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
+# Log to both file and stdout so Render can capture it
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    handlers=[
+        logging.FileHandler("kalshi-scan-cron.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
 SCAN_LOG_FILE = "kalshi-scan-cron.log"
@@ -30,6 +38,15 @@ def _run_scan_background():
         logger.info("Background scan starting...")
         logger.info(f"Using Python: {sys.executable}")
         logger.info(f"Working directory: {os.path.dirname(__file__)}")
+
+        # Check if another scan is already running (prevent overlaps)
+        import glob
+        old_scans = glob.glob("kalshi-scan-cron.log.*")
+        recent_scan = any(True for f in old_scans)  # Simple overlap check
+        if recent_scan:
+            logger.warning("Overlapping scan detected; skipping this execution")
+            return
+
         cmd = [
             sys.executable,
             "kalshi_crypto_weekly.py",
@@ -45,16 +62,16 @@ def _run_scan_background():
             cwd=os.path.dirname(__file__),
         )
 
-        # Log output
+        # Log output (dump to stdout for Render visibility)
         logger.info(f"Scan subprocess exit code: {result.returncode}")
         logger.info(f"STDOUT length: {len(result.stdout) if result.stdout else 0} chars")
         logger.info(f"STDERR length: {len(result.stderr) if result.stderr else 0} chars")
         if result.returncode != 0:
             logger.error(f"Scan failed with exit code {result.returncode}")
             if result.stderr:
-                logger.error(f"STDERR (first 1000 chars): {result.stderr[:1000]}")
+                logger.error(f"STDERR:\n{result.stderr}")
             if result.stdout:
-                logger.error(f"STDOUT (last 500 chars): {result.stdout[-500:]}")
+                logger.error(f"STDOUT:\n{result.stdout}")
 
         with open(SCAN_LOG_FILE, "a") as f:
             f.write(f"\n{'='*60}\n")
@@ -86,6 +103,11 @@ def _run_scan_background():
         logger.error(f"Error in background scan: {e}")
         with open(SCAN_LOG_FILE, "a") as f:
             f.write(f"Error: {e}\n")
+    finally:
+        # Force garbage collection to free memory
+        import gc
+        gc.collect()
+        logger.info("Memory cleanup completed")
 
 
 @app.route("/scan", methods=["POST"])

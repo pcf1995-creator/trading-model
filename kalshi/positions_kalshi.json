@@ -11,17 +11,6 @@
     "synced": true
   },
   {
-    "ticker": "KXETHD-26MAY0117-T2339.99",
-    "side": "yes",
-    "contracts": 20,
-    "entry_cents": 48,
-    "stop_cents": 24,
-    "close_time": "2026-05-01T21:00:00Z",
-    "entered_at": "2026-04-25T12:30:04.563426+00:00",
-    "status": "open",
-    "synced": true
-  },
-  {
     "ticker": "KXBTCD-26MAY0117-T77499.99",
     "side": "yes",
     "contracts": 91,
