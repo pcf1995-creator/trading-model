@@ -1399,7 +1399,7 @@ with tab_dash:
                 st.caption(f"Actual trades: {_actual_count}/{len(_settled_paper)}")
 
         # ── Performance summary ───────────────────────────────────────────────────
-        _resolved = [p for p in _settled_paper if p.get("placement_status") == "placed"]
+        _resolved = _settled_paper
 
         def _win_prob(p):
             """Model's predicted probability of the side we BET ON winning."""
