@@ -110,7 +110,7 @@ def _run_scan_background():
         logger.info("Memory cleanup completed")
 
 
-@app.route("/scan", methods=["POST"])
+@app.route("/scan", methods=["GET", "POST"])
 def trigger_scan():
     """Trigger a Kalshi scan asynchronously and return immediately."""
     try:
