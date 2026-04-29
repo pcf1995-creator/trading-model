@@ -3040,11 +3040,8 @@ with tab_perf:
                     else:
                         # Filter out Kalshi bug entries ($0 price/cost) - keep only real trades
                         _pbf_real = [f for f in _pbf_fills
-                                    if (_price_dollars(f, "yes_price_dollars") or
-                                        _price_dollars(f, "yes_price") or
-                                        f.get("yes_price_dollars") or
-                                        f.get("yes_price")) and
-                                    float(f.get("yes_price_dollars", 0) or f.get("yes_price", 0) or 0) > 0]
+                                    if (_price_dollars(f, "yes_price_dollars") > 0 or
+                                        _price_dollars(f, "no_price_dollars") > 0)]
 
                         from collections import defaultdict as _dd_bf
                         _pbf_by_tkr: dict = _dd_bf(list)

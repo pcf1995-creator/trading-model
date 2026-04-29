@@ -11,28 +11,6 @@
     "synced": true
   },
   {
-    "ticker": "KXBTCD-26MAY0117-T76999.99",
-    "side": "yes",
-    "contracts": 7,
-    "entry_cents": 56,
-    "stop_cents": 28,
-    "close_time": "2026-05-01T21:00:00Z",
-    "entered_at": "2026-04-26T17:48:01.119931+00:00",
-    "status": "open",
-    "synced": true
-  },
-  {
-    "ticker": "KXETHD-26MAY0117-T2299.99",
-    "side": "yes",
-    "contracts": 100,
-    "entry_cents": 48,
-    "stop_cents": 24,
-    "close_time": "2026-05-01T21:00:00Z",
-    "entered_at": "2026-04-29T02:33:04.012625+00:00",
-    "status": "open",
-    "synced": true
-  },
-  {
     "ticker": "KXBTCD-26MAY0117-T75999.99",
     "side": "yes",
     "contracts": 19,
