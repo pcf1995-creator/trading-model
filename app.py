@@ -3126,6 +3126,16 @@ with tab_perf:
                             # Exit price per contract
                             _pbf_exit_c = round(_pbf_sp / _pbf_ctrs * 100) if _pbf_ctrs > 0 else None
 
+                            # Convert timestamp to ISO format for database
+                            _pbf_settled_iso = None
+                            if _pbf_row["_latest_ts"]:
+                                try:
+                                    _pbf_settled_iso = datetime.fromtimestamp(
+                                        _pbf_row["_latest_ts"], tz=timezone.utc
+                                    ).isoformat()
+                                except:
+                                    _pbf_settled_iso = None
+
                             _pbf_final.append({
                                 k: v for k, v in _pbf_row.items()
                                 if not k.startswith("_")
@@ -3133,7 +3143,7 @@ with tab_perf:
                                 "exit_cents" : _pbf_exit_c,
                                 "pnl"        : _pbf_pnl,
                                 "result"     : _pbf_res,
-                                "settled_at" : _pbf_row["_latest_ts"] or None,
+                                "settled_at" : _pbf_settled_iso,
                             })
 
                         st.write(f"**DEBUG:** {len(_pbf_final)} final positions ready to store")
