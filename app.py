@@ -3055,7 +3055,7 @@ with tab_perf:
 
                         _pbf_positions = []
                         for _pbtk, _pbf_tkr_fills in _pbf_by_tkr.items():
-                            # Track buys vs sells PER SIDE
+                            # Group fills by side (YES and NO tracks separately)
                             _pbf_by_side = {"yes": [], "no": []}
                             for _pbf in _pbf_tkr_fills:
                                 _pbf_side = _pbf.get("side", "yes")
@@ -3064,7 +3064,7 @@ with tab_perf:
                             _pbf_asset, _pbf_exp_str, _pbf_strike = parse_ticker(_pbtk)
                             _pbf_exp_dt = _parse_expiry(_pbtk)
 
-                            # Process each side independently
+                            # Process each side: BUY YES + SELL YES, or BUY NO + SELL NO
                             for _pbf_side, _pbf_side_fills in _pbf_by_side.items():
                                 if not _pbf_side_fills:
                                     continue
@@ -3091,7 +3091,7 @@ with tab_perf:
                                         _pbf_total_sold += _pbf_cnt
                                         _pbf_sell_proceeds += _pbf_cnt * _pbf_yp
 
-                                # Only include fully closed positions for this side
+                                # Closed position: bought and sold same amount on same side
                                 if _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0:
                                     _pbf_positions.append({
                                         "ticker"    : _pbtk,
