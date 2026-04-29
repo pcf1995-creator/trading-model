@@ -3110,6 +3110,8 @@ with tab_perf:
                                     _pbf_settle[_pbtk2] = None
 
                         # Build final rows with PnL
+                        st.write(f"**DEBUG:** {len(_pbf_positions)} positions before settlement fetch")
+
                         _pbf_final = []
                         for _pbf_row in _pbf_positions:
                             _pbtk2   = _pbf_row["ticker"]
@@ -3134,7 +3136,12 @@ with tab_perf:
                                 "settled_at" : _pbf_row["_latest_ts"] or None,
                             })
 
+                        st.write(f"**DEBUG:** {len(_pbf_final)} final positions ready to store")
+                        if _pbf_final:
+                            st.write(f"Sample position: {_pbf_final[0]}")
+
                         _pbf_n = db.upsert_kalshi_trades(_pbf_final)
+                        st.write(f"**DEBUG:** upsert_kalshi_trades returned: {_pbf_n}")
                         st.success(f"Backfilled {_pbf_n} historical positions from Mar 1+.")
                         st.cache_data.clear()
                         st.rerun()
