@@ -508,6 +508,17 @@ def load_kalshi_trades() -> list[dict]:
     return []
 
 
+def clear_kalshi_trades() -> None:
+    """Delete all Kalshi trades (for backfill refresh)."""
+    client = _get_client()
+    if not client:
+        return
+    try:
+        client.table("kalshi_trades").delete().neq("id", 0).execute()
+    except Exception as e:
+        logger.warning(f"clear_kalshi_trades failed: {e}")
+
+
 def upsert_kalshi_trades(trades: list[dict]) -> int:
     """Upsert closed positions keyed by (ticker, side). Returns count upserted."""
     if not trades:

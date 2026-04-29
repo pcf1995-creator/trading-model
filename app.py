@@ -3163,6 +3163,8 @@ with tab_perf:
                         if _pbf_final:
                             st.write(f"Sample position: {_pbf_final[0]}")
 
+                        # Clear old data before fresh backfill
+                        db.clear_kalshi_trades()
                         _pbf_n = db.upsert_kalshi_trades(_pbf_final)
                         st.write(f"**DEBUG:** upsert_kalshi_trades returned: {_pbf_n}")
                         st.success(f"Backfilled {_pbf_n} historical positions from Mar 1+.")
