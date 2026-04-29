@@ -3034,7 +3034,9 @@ with tab_perf:
             else:
                 with st.spinner("Fetching fills from Kalshi..."):
                     try:
-                        _psync_fills = _psync_client.get_fills(limit=5000)
+                        # Fetch fills since March 1, 2026 to recover historical closed trades
+                        _march_1_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp())
+                        _psync_fills = _psync_client.get_fills(limit=2000, min_ts=_march_1_ts)
 
                         # Group all BTC/ETH fills by ticker
                         _psync_by_tkr: dict = _dd_perf(list)
