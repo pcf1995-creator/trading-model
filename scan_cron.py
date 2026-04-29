@@ -30,6 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SCAN_LOG_FILE = "kalshi-scan-cron.log"
+LAST_SCAN_STATUS = {"timestamp": None, "status": None, "error": None}
 
 
 def _run_scan_background():
@@ -66,12 +67,22 @@ def _run_scan_background():
         logger.info(f"Scan subprocess exit code: {result.returncode}")
         logger.info(f"STDOUT length: {len(result.stdout) if result.stdout else 0} chars")
         logger.info(f"STDERR length: {len(result.stderr) if result.stderr else 0} chars")
+
+        # Track status for health check
+        LAST_SCAN_STATUS["timestamp"] = datetime.now(timezone.utc).isoformat()
+
         if result.returncode != 0:
             logger.error(f"Scan failed with exit code {result.returncode}")
+            LAST_SCAN_STATUS["status"] = "failed"
+            LAST_SCAN_STATUS["error"] = f"Exit code {result.returncode}"
             if result.stderr:
                 logger.error(f"STDERR:\n{result.stderr}")
+                LAST_SCAN_STATUS["error"] = result.stderr[:500]
             if result.stdout:
                 logger.error(f"STDOUT:\n{result.stdout}")
+        else:
+            LAST_SCAN_STATUS["status"] = "success"
+            LAST_SCAN_STATUS["error"] = None
 
         with open(SCAN_LOG_FILE, "a") as f:
             f.write(f"\n{'='*60}\n")
@@ -97,10 +108,16 @@ def _run_scan_background():
 
     except subprocess.TimeoutExpired:
         logger.error("Scan timed out after 15 minutes")
+        LAST_SCAN_STATUS["timestamp"] = datetime.now(timezone.utc).isoformat()
+        LAST_SCAN_STATUS["status"] = "timeout"
+        LAST_SCAN_STATUS["error"] = "Scan timed out after 15 minutes"
         with open(SCAN_LOG_FILE, "a") as f:
             f.write("Scan timed out after 15 minutes\n")
     except Exception as e:
         logger.error(f"Error in background scan: {e}")
+        LAST_SCAN_STATUS["timestamp"] = datetime.now(timezone.utc).isoformat()
+        LAST_SCAN_STATUS["status"] = "error"
+        LAST_SCAN_STATUS["error"] = str(e)
         with open(SCAN_LOG_FILE, "a") as f:
             f.write(f"Error: {e}\n")
     finally:
@@ -127,6 +144,12 @@ def trigger_scan():
 def health_check():
     """Health check endpoint."""
     return jsonify({"status": "healthy"}), 200
+
+
+@app.route("/status", methods=["GET"])
+def scan_status():
+    """Return status of the last scan attempt."""
+    return jsonify(LAST_SCAN_STATUS), 200
 
 
 if __name__ == "__main__":
