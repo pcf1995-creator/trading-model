@@ -27,8 +27,8 @@ if client.dry_run:
 print(f"Connected to Kalshi API (dry_run={client.dry_run})")
 
 # Fetch all fills since March 1
-since_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp())
-print(f"\nFetching fills since March 1, 2026 (timestamp: {since_ts})...")
+since_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp() * 1000)
+print(f"\nFetching fills since March 1, 2026 (timestamp: {since_ts} ms)...")
 
 fills = client.get_fills(limit=1000, min_ts=since_ts)
 print(f"✓ Fetched {len(fills)} fills")
