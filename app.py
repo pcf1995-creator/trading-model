@@ -3078,7 +3078,9 @@ with tab_perf:
                                 for _pbf in _pbf_side_fills:
                                     _pbf_cnt = _fill_count(_pbf)
                                     _pbf_act = _fill_action(_pbf)
-                                    _pbf_yp = _price_dollars(_pbf, "yes_price_dollars")
+                                    # Use the correct price field based on side
+                                    _pbf_price_field = "no_price_dollars" if _pbf_side == "no" else "yes_price_dollars"
+                                    _pbf_price = _price_dollars(_pbf, _pbf_price_field)
                                     _pbf_ts = _pbf.get("ts") or 0
 
                                     if _pbf_ts > _pbf_latest_ts:
@@ -3086,10 +3088,10 @@ with tab_perf:
 
                                     if _pbf_act == "buy":
                                         _pbf_total_bought += _pbf_cnt
-                                        _pbf_buy_cost += _pbf_cnt * _pbf_yp
+                                        _pbf_buy_cost += _pbf_cnt * _pbf_price
                                     elif _pbf_act == "sell":
                                         _pbf_total_sold += _pbf_cnt
-                                        _pbf_sell_proceeds += _pbf_cnt * _pbf_yp
+                                        _pbf_sell_proceeds += _pbf_cnt * _pbf_price
 
                                 # Closed position: bought and sold same amount on same side
                                 if _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0:
