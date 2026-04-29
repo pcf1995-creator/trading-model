@@ -3055,71 +3055,44 @@ with tab_perf:
 
                         _pbf_positions = []
                         for _pbtk, _pbf_tkr_fills in _pbf_by_tkr.items():
-                            # Deduplicate fills
-                            _pbf_seen: set = set()
-                            _pbf_deduped: list = []
-                            for _pbf in _pbf_tkr_fills:
-                                _pbf_dk = (
-                                    str(_pbf.get("ts") or _pbf.get("created_time", "")),
-                                    _pbf.get("action", ""),
-                                    _pbf.get("side", ""),
-                                    _fill_count(_pbf),
-                                    round(_price_dollars(_pbf, "yes_price") * 10000),
-                                )
-                                if _pbf_dk not in _pbf_seen:
-                                    _pbf_seen.add(_pbf_dk)
-                                    _pbf_deduped.append(_pbf)
-
-                            _pbf_sorted = sorted(_pbf_deduped,
-                                                key=lambda f: str(f.get("ts") or f.get("created_time", "")))
-
-                            _py_buy_cost = _py_sell_proc = _py_bought = _py_pos = 0.0
-                            _pn_buy_cost = _pn_sell_proc = _pn_bought = _pn_pos = 0.0
+                            # Track all buys vs sells per ticker (ignore side)
+                            _pbf_total_bought = 0
+                            _pbf_total_sold = 0
+                            _pbf_buy_cost = 0.0
+                            _pbf_sell_proceeds = 0.0
                             _pbf_latest_ts = 0
-                            for _pbf in _pbf_sorted:
-                                _pbf_cnt  = _fill_count(_pbf)
-                                _pbf_act  = _fill_action(_pbf)
-                                _pbf_side = _pbf.get("side", "yes")
-                                _pbf_yp   = _price_dollars(_pbf, "yes_price")
-                                _pbf_np   = _no_price_dollars(_pbf)
-                                _pbf_ts   = _pbf.get("ts") or 0
+
+                            for _pbf in _pbf_tkr_fills:
+                                _pbf_cnt = _fill_count(_pbf)
+                                _pbf_act = _fill_action(_pbf)
+                                _pbf_yp = _price_dollars(_pbf, "yes_price_dollars")
+                                _pbf_ts = _pbf.get("ts") or 0
+
                                 if _pbf_ts > _pbf_latest_ts:
                                     _pbf_latest_ts = _pbf_ts
-                                if _pbf_act == "buy" and _pbf_side == "yes":
-                                    _py_buy_cost += _pbf_cnt * _pbf_yp
-                                    _py_pos      += _pbf_cnt
-                                    _py_bought   += _pbf_cnt
-                                elif _pbf_act == "sell" and _pbf_side == "no":
-                                    _py_sell_proc += _pbf_cnt * _pbf_yp
-                                    _py_pos       -= _pbf_cnt
-                                elif _pbf_act == "buy" and _pbf_side == "no":
-                                    _pn_buy_cost += _pbf_cnt * _pbf_np
-                                    _pn_pos      += _pbf_cnt
-                                    _pn_bought   += _pbf_cnt
-                                elif _pbf_act == "sell" and _pbf_side == "yes":
-                                    _pn_sell_proc += _pbf_cnt * _pbf_np
-                                    _pn_pos       -= _pbf_cnt
 
-                            for _pbf_side2, _pbf_bought, _pbf_bc, _pbf_sp, _pbf_rem in [
-                                ("yes", _py_bought, _py_buy_cost, _py_sell_proc, max(0.0, _py_pos)),
-                                ("no",  _pn_bought, _pn_buy_cost, _pn_sell_proc, max(0.0, _pn_pos)),
-                            ]:
-                                if _pbf_bought <= 0:
-                                    continue
+                                if _pbf_act == "buy":
+                                    _pbf_total_bought += _pbf_cnt
+                                    _pbf_buy_cost += _pbf_cnt * _pbf_yp
+                                elif _pbf_act == "sell":
+                                    _pbf_total_sold += _pbf_cnt
+                                    _pbf_sell_proceeds += _pbf_cnt * _pbf_yp
+
+                            # Only include fully closed positions
+                            if _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0:
                                 _pbf_asset, _pbf_exp_str, _pbf_strike = parse_ticker(_pbtk)
                                 _pbf_exp_dt = _parse_expiry(_pbtk)
                                 _pbf_positions.append({
                                     "ticker"    : _pbtk,
-                                    "side"      : _pbf_side2,
+                                    "side"      : "yes",
                                     "asset"     : _pbf_asset,
                                     "strike"    : _pbf_strike,
                                     "expiry"    : _pbf_exp_str,
                                     "week"      : _week_label(_pbf_exp_dt),
-                                    "contracts" : int(_pbf_bought),
-                                    "entry_cents": round(_pbf_bc / _pbf_bought * 100),
-                                    "buy_cost"  : _pbf_bc,
-                                    "sell_proceeds": _pbf_sp,
-                                    "_rem"      : _pbf_rem,
+                                    "contracts" : int(_pbf_total_bought),
+                                    "entry_cents": round(_pbf_buy_cost / _pbf_total_bought * 100) if _pbf_total_bought > 0 else 0,
+                                    "buy_cost"  : round(_pbf_buy_cost, 2),
+                                    "sell_proceeds": round(_pbf_sell_proceeds, 2),
                                     "_latest_ts": _pbf_latest_ts,
                                 })
 
@@ -3140,33 +3113,16 @@ with tab_perf:
                         _pbf_final = []
                         for _pbf_row in _pbf_positions:
                             _pbtk2   = _pbf_row["ticker"]
-                            _pbf_sd  = _pbf_row["side"]
-                            _pbf_res = _pbf_settle.get(_pbtk2)
-                            _pbf_rem = _pbf_row["_rem"]
                             _pbf_bc  = _pbf_row["buy_cost"]
                             _pbf_sp  = _pbf_row["sell_proceeds"]
                             _pbf_ctrs = _pbf_row["contracts"]
+                            _pbf_res = _pbf_settle.get(_pbtk2)
 
-                            if _pbf_res is not None and _pbf_rem > 0:
-                                _pbf_sv = _pbf_rem if (
-                                    (_pbf_sd == "yes" and _pbf_res == "yes") or
-                                    (_pbf_sd == "no"  and _pbf_res == "no")
-                                ) else 0
-                                _pbf_pnl = round(_pbf_sp - _pbf_bc + _pbf_sv, 2)
-                            elif _pbf_rem == 0:
-                                _pbf_pnl = round(_pbf_sp - _pbf_bc, 2)
-                            else:
-                                _pbf_pnl = None
+                            # Fully closed position: PnL = sell_proceeds - buy_cost
+                            _pbf_pnl = round(_pbf_sp - _pbf_bc, 2)
 
-                            _pbf_sold = _pbf_ctrs - int(_pbf_rem)
-                            if _pbf_sold > 0 and _pbf_sp > 0:
-                                _pbf_exit_c = round(_pbf_sp / _pbf_sold * 100)
-                            elif _pbf_res is not None:
-                                _pbf_won = ((_pbf_sd == "yes" and _pbf_res == "yes") or
-                                           (_pbf_sd == "no"  and _pbf_res == "no"))
-                                _pbf_exit_c = 100 if _pbf_won else 0
-                            else:
-                                _pbf_exit_c = None
+                            # Exit price per contract
+                            _pbf_exit_c = round(_pbf_sp / _pbf_ctrs * 100) if _pbf_ctrs > 0 else None
 
                             _pbf_final.append({
                                 k: v for k, v in _pbf_row.items()
