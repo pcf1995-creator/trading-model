@@ -3054,6 +3054,15 @@ with tab_perf:
                         st.write(f"**DEBUG:** {len(_pbf_by_tkr)} crypto tickers found: {list(_pbf_by_tkr.keys())[:5]}")
                         st.write(f"**DEBUG:** Fills per ticker: {dict((k, len(v)) for k, v in list(_pbf_by_tkr.items())[:5])}")
 
+                        # Pre-fetch all market results upfront
+                        _pbf_all_settle = {}
+                        for _pbtk in _pbf_by_tkr.keys():
+                            try:
+                                _pbf_mkt = _pbf_client._request("GET", f"/markets/{_pbtk}").get("market", {})
+                                _pbf_all_settle[_pbtk] = _pbf_mkt.get("result")
+                            except Exception:
+                                _pbf_all_settle[_pbtk] = None
+
                         _pbf_positions = []
                         for _pbtk, _pbf_tkr_fills in _pbf_by_tkr.items():
                             # Group fills by side (YES and NO tracks separately)
@@ -3064,6 +3073,7 @@ with tab_perf:
 
                             _pbf_asset, _pbf_exp_str, _pbf_strike = parse_ticker(_pbtk)
                             _pbf_exp_dt = _parse_expiry(_pbtk)
+                            _pbf_is_expired = _pbf_exp_dt < datetime.now(timezone.utc) if _pbf_exp_dt else False
 
                             # Process each side: BUY YES + SELL YES, or BUY NO + SELL NO
                             for _pbf_side, _pbf_side_fills in _pbf_by_side.items():
@@ -3094,8 +3104,13 @@ with tab_perf:
                                         _pbf_total_sold += _pbf_cnt
                                         _pbf_sell_proceeds += _pbf_cnt * _pbf_price
 
-                                # Closed position: bought and sold same amount on same side
-                                if _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0:
+                                # Check for closed positions (matching buy/sell)
+                                _is_closed = _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0
+
+                                # Also check for expired open positions (auto-settled at expiry)
+                                _is_auto_settled = _pbf_is_expired and _pbf_total_bought > 0 and _pbf_total_sold == 0 and _pbf_all_settle.get(_pbtk) is not None
+
+                                if _is_closed:
                                     _pbf_positions.append({
                                         "ticker"    : _pbtk,
                                         "side"      : _pbf_side,
@@ -3108,25 +3123,32 @@ with tab_perf:
                                         "buy_cost"  : round(_pbf_buy_cost, 2),
                                         "sell_proceeds": round(_pbf_sell_proceeds, 2),
                                         "_latest_ts": _pbf_latest_ts,
+                                        "_settlement_result": _pbf_all_settle.get(_pbtk),
                                     })
+                                elif _is_auto_settled:
+                                    # Expired position: auto-settled. YES is worth 100 if result=yes else 0. NO is opposite.
+                                    _pbf_result = _pbf_all_settle.get(_pbtk)
+                                    _pbf_exit_price = 1.0 if (_pbf_side == "yes" and _pbf_result == "yes") or (_pbf_side == "no" and _pbf_result == "no") else 0.0
+                                    _pbf_sell_proceeds = _pbf_total_bought * _pbf_exit_price
+                                    _pbf_positions.append({
+                                        "ticker"    : _pbtk,
+                                        "side"      : _pbf_side,
+                                        "asset"     : _pbf_asset,
+                                        "strike"    : _pbf_strike,
+                                        "expiry"    : _pbf_exp_str,
+                                        "week"      : _week_label(_pbf_exp_dt),
+                                        "contracts" : int(_pbf_total_bought),
+                                        "entry_cents": round(_pbf_buy_cost / _pbf_total_bought * 100) if _pbf_total_bought > 0 else 0,
+                                        "buy_cost"  : round(_pbf_buy_cost, 2),
+                                        "sell_proceeds": round(_pbf_sell_proceeds, 2),
+                                        "_latest_ts": _pbf_latest_ts,
+                                        "_settlement_result": _pbf_result,
+                                    })
+                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: AUTO-SETTLED @ {_pbf_exit_price} ({_pbf_result})")
                                 elif _pbf_side_fills:
-                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: bought={_pbf_total_bought}, sold={_pbf_total_sold}, buy_cost=${_pbf_buy_cost:.2f}, sell_proceeds=${_pbf_sell_proceeds:.2f} (OPEN or PARTIAL)")
+                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: bought={_pbf_total_bought}, sold={_pbf_total_sold} (STILL OPEN)")
 
-                        # Fetch settlement results
-                        _pbf_settle: dict = {}
-                        for _pbf_row in _pbf_positions:
-                            _pbtk2 = _pbf_row["ticker"]
-                            if _pbtk2 not in _pbf_settle:
-                                try:
-                                    _pbf_mkt = _pbf_client._request(
-                                        "GET", f"/markets/{_pbtk2}"
-                                    ).get("market", {})
-                                    _pbf_settle[_pbtk2] = _pbf_mkt.get("result")
-                                except Exception:
-                                    _pbf_settle[_pbtk2] = None
-
-                        # Build final rows with PnL
-                        st.write(f"**DEBUG:** {len(_pbf_positions)} positions before settlement fetch")
+                        st.write(f"**DEBUG:** {len(_pbf_positions)} closed/settled positions found")
 
                         _pbf_final = []
                         for _pbf_row in _pbf_positions:
@@ -3134,7 +3156,7 @@ with tab_perf:
                             _pbf_bc  = _pbf_row["buy_cost"]
                             _pbf_sp  = _pbf_row["sell_proceeds"]
                             _pbf_ctrs = _pbf_row["contracts"]
-                            _pbf_res = _pbf_settle.get(_pbtk2)
+                            _pbf_res = _pbf_row.get("_settlement_result")
 
                             # Fully closed position: PnL = sell_proceeds - buy_cost
                             _pbf_pnl = round(_pbf_sp - _pbf_bc, 2)
