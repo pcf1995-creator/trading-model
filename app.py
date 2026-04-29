@@ -3055,46 +3055,57 @@ with tab_perf:
 
                         _pbf_positions = []
                         for _pbtk, _pbf_tkr_fills in _pbf_by_tkr.items():
-                            # Track all buys vs sells per ticker (ignore side)
-                            _pbf_total_bought = 0
-                            _pbf_total_sold = 0
-                            _pbf_buy_cost = 0.0
-                            _pbf_sell_proceeds = 0.0
-                            _pbf_latest_ts = 0
-
+                            # Track buys vs sells PER SIDE
+                            _pbf_by_side = {"yes": [], "no": []}
                             for _pbf in _pbf_tkr_fills:
-                                _pbf_cnt = _fill_count(_pbf)
-                                _pbf_act = _fill_action(_pbf)
-                                _pbf_yp = _price_dollars(_pbf, "yes_price_dollars")
-                                _pbf_ts = _pbf.get("ts") or 0
+                                _pbf_side = _pbf.get("side", "yes")
+                                _pbf_by_side[_pbf_side].append(_pbf)
 
-                                if _pbf_ts > _pbf_latest_ts:
-                                    _pbf_latest_ts = _pbf_ts
+                            _pbf_asset, _pbf_exp_str, _pbf_strike = parse_ticker(_pbtk)
+                            _pbf_exp_dt = _parse_expiry(_pbtk)
 
-                                if _pbf_act == "buy":
-                                    _pbf_total_bought += _pbf_cnt
-                                    _pbf_buy_cost += _pbf_cnt * _pbf_yp
-                                elif _pbf_act == "sell":
-                                    _pbf_total_sold += _pbf_cnt
-                                    _pbf_sell_proceeds += _pbf_cnt * _pbf_yp
+                            # Process each side independently
+                            for _pbf_side, _pbf_side_fills in _pbf_by_side.items():
+                                if not _pbf_side_fills:
+                                    continue
 
-                            # Only include fully closed positions
-                            if _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0:
-                                _pbf_asset, _pbf_exp_str, _pbf_strike = parse_ticker(_pbtk)
-                                _pbf_exp_dt = _parse_expiry(_pbtk)
-                                _pbf_positions.append({
-                                    "ticker"    : _pbtk,
-                                    "side"      : "yes",
-                                    "asset"     : _pbf_asset,
-                                    "strike"    : _pbf_strike,
-                                    "expiry"    : _pbf_exp_str,
-                                    "week"      : _week_label(_pbf_exp_dt),
-                                    "contracts" : int(_pbf_total_bought),
-                                    "entry_cents": round(_pbf_buy_cost / _pbf_total_bought * 100) if _pbf_total_bought > 0 else 0,
-                                    "buy_cost"  : round(_pbf_buy_cost, 2),
-                                    "sell_proceeds": round(_pbf_sell_proceeds, 2),
-                                    "_latest_ts": _pbf_latest_ts,
-                                })
+                                _pbf_total_bought = 0
+                                _pbf_total_sold = 0
+                                _pbf_buy_cost = 0.0
+                                _pbf_sell_proceeds = 0.0
+                                _pbf_latest_ts = 0
+
+                                for _pbf in _pbf_side_fills:
+                                    _pbf_cnt = _fill_count(_pbf)
+                                    _pbf_act = _fill_action(_pbf)
+                                    _pbf_yp = _price_dollars(_pbf, "yes_price_dollars")
+                                    _pbf_ts = _pbf.get("ts") or 0
+
+                                    if _pbf_ts > _pbf_latest_ts:
+                                        _pbf_latest_ts = _pbf_ts
+
+                                    if _pbf_act == "buy":
+                                        _pbf_total_bought += _pbf_cnt
+                                        _pbf_buy_cost += _pbf_cnt * _pbf_yp
+                                    elif _pbf_act == "sell":
+                                        _pbf_total_sold += _pbf_cnt
+                                        _pbf_sell_proceeds += _pbf_cnt * _pbf_yp
+
+                                # Only include fully closed positions for this side
+                                if _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0:
+                                    _pbf_positions.append({
+                                        "ticker"    : _pbtk,
+                                        "side"      : _pbf_side,
+                                        "asset"     : _pbf_asset,
+                                        "strike"    : _pbf_strike,
+                                        "expiry"    : _pbf_exp_str,
+                                        "week"      : _week_label(_pbf_exp_dt),
+                                        "contracts" : int(_pbf_total_bought),
+                                        "entry_cents": round(_pbf_buy_cost / _pbf_total_bought * 100) if _pbf_total_bought > 0 else 0,
+                                        "buy_cost"  : round(_pbf_buy_cost, 2),
+                                        "sell_proceeds": round(_pbf_sell_proceeds, 2),
+                                        "_latest_ts": _pbf_latest_ts,
+                                    })
 
                         # Fetch settlement results
                         _pbf_settle: dict = {}
