@@ -1,5 +1,15 @@
 # Claude Code Guidelines
 
+## Session Log (Read This First)
+
+**At the start of every session, read `SESSION_LOG.md` in this repo.** It contains open bugs, failed fix attempts, and in-progress context from previous sessions. Treat it as ground truth — do not ask the user to re-explain issues already logged there.
+
+**At the end of every session** (before the final commit/push), update `SESSION_LOG.md`:
+- Add any new errors encountered, with exact messages and file:line references
+- Record what was tried and why it failed, so the next session doesn't repeat it
+- Move fixed issues to the Resolved section with the commit hash
+- Commit and push: `git add SESSION_LOG.md && git commit -m "chore: update session log" && git push origin <branch>`
+
 ## Commits & Push to GitHub
 
 **CRITICAL: Always commit AND push code changes to GitHub.** Render auto-deploys from GitHub — commits stay local until pushed.

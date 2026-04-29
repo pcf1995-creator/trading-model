@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\n--- SESSION LOG REMINDER ---\nBefore this session ends, update SESSION_LOG.md:\n  1. Log any new errors or failed fix attempts under Open Issues\n  2. Move resolved issues to the Resolved section with commit hash\n  3. git add SESSION_LOG.md && git commit -m \"chore: update session log\" && git push\n---'"
+          }
+        ]
+      }
+    ]
+  }
+}

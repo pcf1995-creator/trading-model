@@ -20,8 +20,6 @@ feature_importances.csv
 # Live trading state — personal data (excluding tracked portfolio files)
 positions.json
 
-# Claude config — user-specific
-.claude/
 
 # Kalshi trading artifacts
 kalshi/debug_*.py
