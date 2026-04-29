@@ -131,12 +131,25 @@ def _run_scan_background():
 def trigger_scan():
     """Trigger a Kalshi scan asynchronously and return immediately."""
     try:
+        LAST_SCAN_STATUS["timestamp"] = datetime.now(timezone.utc).isoformat()
+        LAST_SCAN_STATUS["status"] = "running"
+        LAST_SCAN_STATUS["error"] = None
+
+        logger.info("="*70)
         logger.info("Cron request received, spawning background scan...")
+        logger.info(f"Status: {LAST_SCAN_STATUS}")
+
         thread = threading.Thread(target=_run_scan_background, daemon=True)
         thread.start()
+
+        logger.info(f"Thread started: {thread.name}, alive: {thread.is_alive()}")
+        logger.info("="*70)
+
         return jsonify({"status": "accepted", "message": "Scan queued"}), 202
     except Exception as e:
         logger.error(f"Error queuing scan: {e}")
+        LAST_SCAN_STATUS["status"] = "error"
+        LAST_SCAN_STATUS["error"] = str(e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -150,6 +163,16 @@ def health_check():
 def scan_status():
     """Return status of the last scan attempt."""
     return jsonify(LAST_SCAN_STATUS), 200
+
+
+@app.route("/test", methods=["GET", "POST"])
+def test_scan():
+    """Quick test endpoint to verify the app is working."""
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "last_scan": LAST_SCAN_STATUS
+    }), 200
 
 
 if __name__ == "__main__":
