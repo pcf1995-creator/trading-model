@@ -3038,9 +3038,17 @@ with tab_perf:
                     if not _pbf_fills:
                         st.warning("No fills found in that date range.")
                     else:
+                        # Filter out Kalshi bug entries ($0 price/cost) - keep only real trades
+                        _pbf_real = [f for f in _pbf_fills
+                                    if (_price_dollars(f, "yes_price_dollars") or
+                                        _price_dollars(f, "yes_price") or
+                                        f.get("yes_price_dollars") or
+                                        f.get("yes_price")) and
+                                    float(f.get("yes_price_dollars", 0) or f.get("yes_price", 0) or 0) > 0]
+
                         from collections import defaultdict as _dd_bf
                         _pbf_by_tkr: dict = _dd_bf(list)
-                        for _pbf in _pbf_fills:
+                        for _pbf in _pbf_real:
                             _pbtk = _pbf.get("market_ticker") or _pbf.get("ticker", "")
                             if _pbtk and (_pbtk.startswith("KXBTC") or _pbtk.startswith("KXETH")):
                                 _pbf_by_tkr[_pbtk].append(_pbf)
