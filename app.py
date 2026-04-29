@@ -3085,6 +3085,8 @@ with tab_perf:
                                 _pbf_buy_cost = 0.0
                                 _pbf_sell_proceeds = 0.0
                                 _pbf_latest_ts = 0
+                                _pbf_buy_count = 0
+                                _pbf_sell_count = 0
 
                                 for _pbf in _pbf_side_fills:
                                     _pbf_cnt = _fill_count(_pbf)
@@ -3100,9 +3102,14 @@ with tab_perf:
                                     if _pbf_act == "buy":
                                         _pbf_total_bought += _pbf_cnt
                                         _pbf_buy_cost += _pbf_cnt * _pbf_price
+                                        _pbf_buy_count += 1
                                     elif _pbf_act == "sell":
                                         _pbf_total_sold += _pbf_cnt
                                         _pbf_sell_proceeds += _pbf_cnt * _pbf_price
+                                        _pbf_sell_count += 1
+
+                                if _pbf_sell_count > 0:
+                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: {_pbf_buy_count} buy fills, {_pbf_sell_count} sell fills")
 
                                 # Check for closed positions (matching buy/sell)
                                 _is_closed = _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0
