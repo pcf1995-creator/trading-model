@@ -64,7 +64,9 @@ def _run_scan_background():
         try:
             result = subprocess.run(
                 cmd,
-                capture_output=True,
+                stdin=subprocess.DEVNULL,  # Explicitly close stdin
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 timeout=600,
                 cwd=os.path.dirname(__file__),
