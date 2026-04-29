@@ -48,20 +48,31 @@ def _run_scan_background():
             logger.warning("Overlapping scan detected; skipping this execution")
             return
 
+        # Run with unbuffered output to see logs in real-time
         cmd = [
             sys.executable,
+            "-u",  # unbuffered
             "kalshi_crypto_weekly.py",
             "--auto-save-db",
         ]
         logger.info(f"Running command: {' '.join(cmd)}")
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=900,
-            cwd=os.path.dirname(__file__),
-        )
+        # Run subprocess with timeout - if it hangs, it will be killed
+        logger.info(f"Starting subprocess: {' '.join(cmd)}")
+        logger.info(f"Timeout: 600 seconds (10 min)")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=os.path.dirname(__file__),
+            )
+            logger.info(f"Subprocess completed with exit code {result.returncode}")
+        except subprocess.TimeoutExpired:
+            logger.error("SUBPROCESS TIMEOUT: Scan did not complete within 10 minutes")
+            raise
 
         # Log output (dump to stdout for Render visibility)
         logger.info(f"Scan subprocess exit code: {result.returncode}")
