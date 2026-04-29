@@ -59,6 +59,10 @@ def download_crypto_minimal(symbol: str, period: str = INFERENCE_PERIOD) -> pd.D
 
 
 def main():
+    import sys
+    print("SCAN_START: kalshi_crypto_weekly.py starting", flush=True)
+    sys.stdout.flush()
+
     parser = argparse.ArgumentParser(description="Weekly-only Kalshi crypto scan")
     parser.add_argument("--bankroll", type=float, default=DEFAULT_BANKROLL)
     parser.add_argument("--min-ev", type=float, default=MIN_EV)
@@ -66,14 +70,30 @@ def main():
     parser.add_argument("--auto-save-db", action="store_true",
                         help="Save results to Supabase")
     args = parser.parse_args()
+    print(f"SCAN_ARGS: parsed args OK", flush=True)
+    sys.stdout.flush()
 
     # ── Kalshi client ──
+    print("SCAN_INIT: Initializing Kalshi client...", flush=True)
+    sys.stdout.flush()
     client = KalshiClient()
+    print("SCAN_INIT: Kalshi client created", flush=True)
+    sys.stdout.flush()
     if not client.dry_run:
+        print("SCAN_LOGIN: Logging in to Kalshi...", flush=True)
+        sys.stdout.flush()
         client.login()
+        print("SCAN_LOGIN: Login successful", flush=True)
+        sys.stdout.flush()
     try:
+        print("SCAN_BALANCE: Fetching balance...", flush=True)
+        sys.stdout.flush()
         balance_cents = client.get_balance().get("balance", 0)
-    except Exception:
+        print(f"SCAN_BALANCE: Balance = {balance_cents}", flush=True)
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"SCAN_BALANCE_ERROR: {e}", flush=True)
+        sys.stdout.flush()
         balance_cents = 0
     bankroll = args.bankroll or balance_cents / 100 or DEFAULT_BANKROLL
     mode = "DRY RUN" if client.dry_run else "LIVE"
