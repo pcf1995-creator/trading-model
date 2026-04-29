@@ -514,7 +514,12 @@ def clear_kalshi_trades() -> None:
     if not client:
         return
     try:
-        client.table("kalshi_trades").delete().neq("id", 0).execute()
+        # Delete all rows with a filter that always matches
+        response = client.table("kalshi_trades").select("id").execute()
+        if response.data:
+            ids = [row["id"] for row in response.data]
+            client.table("kalshi_trades").delete().in_("id", ids).execute()
+        logger.info(f"Cleared {len(response.data or [])} old Kalshi trades")
     except Exception as e:
         logger.warning(f"clear_kalshi_trades failed: {e}")
 
