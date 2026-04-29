@@ -514,14 +514,11 @@ def clear_kalshi_trades() -> None:
     if not client:
         return
     try:
-        # Delete all rows with a filter that always matches
-        response = client.table("kalshi_trades").select("id").execute()
-        if response.data:
-            ids = [row["id"] for row in response.data]
-            client.table("kalshi_trades").delete().in_("id", ids).execute()
-        logger.info(f"Cleared {len(response.data or [])} old Kalshi trades")
+        # Use gte filter to match all rows (all ids >= 0 or 1 depending on schema)
+        client.table("kalshi_trades").delete().gte("id", 0).execute()
+        logger.info("Cleared all Kalshi trades")
     except Exception as e:
-        logger.warning(f"clear_kalshi_trades failed: {e}")
+        logger.error(f"clear_kalshi_trades failed: {e}")
 
 
 def upsert_kalshi_trades(trades: list[dict]) -> int:
