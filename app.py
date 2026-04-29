@@ -3034,6 +3034,7 @@ with tab_perf:
                 try:
                     _pbf_since_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp() * 1000)
                     _pbf_fills = _pbf_client.get_fills(limit=1000, min_ts=_pbf_since_ts)
+                    st.write(f"**DEBUG:** API returned {len(_pbf_fills)} total fills")
 
                     if not _pbf_fills:
                         st.warning("No fills found in that date range.")
@@ -3042,6 +3043,7 @@ with tab_perf:
                         _pbf_real = [f for f in _pbf_fills
                                     if (_price_dollars(f, "yes_price_dollars") > 0 or
                                         _price_dollars(f, "no_price_dollars") > 0)]
+                        st.write(f"**DEBUG:** {len(_pbf_real)} fills with valid prices")
 
                         from collections import defaultdict as _dd_bf
                         _pbf_by_tkr: dict = _dd_bf(list)
@@ -3049,6 +3051,8 @@ with tab_perf:
                             _pbtk = _pbf.get("market_ticker") or _pbf.get("ticker", "")
                             if _pbtk and (_pbtk.startswith("KXBTC") or _pbtk.startswith("KXETH")):
                                 _pbf_by_tkr[_pbtk].append(_pbf)
+                        st.write(f"**DEBUG:** {len(_pbf_by_tkr)} crypto tickers found: {list(_pbf_by_tkr.keys())[:5]}")
+                        st.write(f"**DEBUG:** Fills per ticker: {dict((k, len(v)) for k, v in list(_pbf_by_tkr.items())[:5])}")
 
                         _pbf_positions = []
                         for _pbtk, _pbf_tkr_fills in _pbf_by_tkr.items():
@@ -3105,6 +3109,8 @@ with tab_perf:
                                         "sell_proceeds": round(_pbf_sell_proceeds, 2),
                                         "_latest_ts": _pbf_latest_ts,
                                     })
+                                elif _pbf_side_fills:
+                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: bought={_pbf_total_bought}, sold={_pbf_total_sold}, buy_cost=${_pbf_buy_cost:.2f}, sell_proceeds=${_pbf_sell_proceeds:.2f} (OPEN or PARTIAL)")
 
                         # Fetch settlement results
                         _pbf_settle: dict = {}
