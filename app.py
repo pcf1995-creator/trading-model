@@ -3073,7 +3073,11 @@ with tab_perf:
 
                             _pbf_asset, _pbf_exp_str, _pbf_strike = parse_ticker(_pbtk)
                             _pbf_exp_dt = _parse_expiry(_pbtk)
-                            _pbf_is_expired = _pbf_exp_dt < datetime.now(timezone.utc) if _pbf_exp_dt else False
+                            # Ensure timezone-aware comparison
+                            _pbf_is_expired = False
+                            if _pbf_exp_dt:
+                                _pbf_exp_aware = _pbf_exp_dt.replace(tzinfo=timezone.utc) if _pbf_exp_dt.tzinfo is None else _pbf_exp_dt
+                                _pbf_is_expired = _pbf_exp_aware < datetime.now(timezone.utc)
 
                             # Process each side: BUY YES + SELL YES, or BUY NO + SELL NO
                             for _pbf_side, _pbf_side_fills in _pbf_by_side.items():
