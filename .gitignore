@@ -17,8 +17,15 @@ features_*.csv
 feature_importances.csv
 *_meta.json
 
-# Live trading state — personal data (excluding tracked portfolio files)
+# Live trading state — runtime JSON fallbacks for Supabase tables.
+# Source of truth is Supabase; these files only exist on a single machine
+# and drift from cloud state. Never commit.
 positions.json
+paper_trades.json
+lt_positions.json
+conviction_positions.json
+stock_real_trades.json
+kalshi/positions_kalshi.json
 
 # Claude config — user-specific
 .claude/
