@@ -16,23 +16,14 @@ This file is the cross-session memory for Claude Code. Read it at the start of e
 
 ## Open Issues
 
-### [ISSUE-1] Performance tab — Kalshi backfill not showing actual settled bets
-- **First seen:** ~2026-04-28
-- **File(s):** `app.py:3044`, `app.py:3099`, `app.py:3119`, `app.py:3122`
-- **Symptom:** After clicking "📥 Backfill Mar 1+", the Performance tab still shows no closed positions (or wrong data). ~15 commits across 36+ hours have not fully resolved it.
-- **What the code does:** Fetches fills from Kalshi `/portfolio/fills` API since March 1, 2026 → groups by ticker+side → identifies "closed" positions → upserts to `kalshi_trades` Supabase table → `load_kalshi_trades()` reads them for the Performance tab.
-- **Attempts so far:**
-  - Fixed price field to use `yes_price_dollars` vs `no_price_dollars` per side (commit 2846636)
-  - Fixed tracking YES and NO sides separately (commits f52fba0, 8ddc476)
-  - Fixed Unix timestamp → ISO for `settled_at` (commit 518715f)
-  - Added auto-settled expired position handling (commit 22d6423)
-  - Fixed timezone-aware expiry comparison (commit 4003860)
-  - Added extensive DEBUG output (commits 7bce4b7, b3ea479, ee86db4)
-  - Fixed `clear_kalshi_trades` delete query (commits ac7b1a0, 47ea243)
-- **Suspected remaining bugs (code analysis, not yet tested):**
-  1. **Price field prefix mismatch** (`app.py:3044-3045`, `app.py:3099`): Backfill calls `_price_dollars(f, "yes_price_dollars")` but the function tries suffixes `_dollars`, `_fixed`, `""` — so it looks for `"yes_price_dollars_dollars"` first (doesn't exist), then `"yes_price_dollars"` last. The rest of the code calls `_price_dollars(f, "yes_price")` which correctly tries `"yes_price_dollars"` as the first attempt. If the Kalshi API returns only `"yes_price"` (in cents) and not `"yes_price_dollars"`, the backfill filter at line 3044 would return 0.0 for all fills, filtering them all out.
-  2. **Partial-close + expiry gap** (`app.py:3119-3122`): `_is_closed` requires `bought == sold` exactly. `_is_auto_settled` requires `sold == 0`. A position that was partially sold then expired (bought=5, sold=3) satisfies neither condition and is silently dropped.
-- **Status:** Fixed in commit 89c8d86 — see Resolved section
+### [ISSUE-2] Performance tab — P&L wrong for NO positions; YES P&L shows flat
+- **First seen:** 2026-04-30
+- **File(s):** `app.py:3044-3046`, `app.py:3099-3103`
+- **Symptom:** Table shows -$23.75 for an ETH NO position that had a partial sell of ~$20 before expiry. YES side shows $0 P&L despite having winning bets. P&L numbers don't match Kalshi order history.
+- **Root cause:** Kalshi fills only include `yes_price` — there is no `no_price` field. Backfill was calling `_price_dollars(fill, "no_price")` which returned 0 when the field was absent, causing all NO sell proceeds to be $0 (every closed NO position looked like it expired worthless). The `_no_price_dollars()` helper that computes `1 - yes_price` existed but wasn't used in the backfill path.
+- **Fix applied:** commit 9c0695d — use `_no_price_dollars()` for NO-side price extraction in both the fill validity filter and the per-fill price calculation.
+- **Next step:** User must re-run "📥 Backfill Mar 1+" to refresh the Supabase data with corrected P&Ls. After that, verify YES P&L is no longer flat.
+- **Status:** Code fixed, awaiting user to re-run backfill to confirm
 
 <!--
 TEMPLATE — copy and fill in for each new issue:
@@ -56,7 +47,7 @@ TEMPLATE — copy and fill in for each new issue:
 - **Resolved:** 2026-04-30
 - **Fix 1 (price filter):** Backfill called `_price_dollars(f, "yes_price_dollars")` as prefix, causing the function to try `"yes_price_dollars_dollars"` first (doesn't exist), only accidentally finding the right field as a fallback. Changed to `"yes_price"` / `"no_price"` (consistent with the rest of the codebase), so the function correctly tries `"yes_price_dollars"` first.
 - **Fix 2 (partial close + expiry):** `_is_auto_settled` required `sold == 0`, silently dropping positions that were partially sold then expired. Now computes `remaining = bought - sold` and captures any expired position with `remaining > 0`, adding both manual sell proceeds and expiry settlement value to the total.
-- **Commit:** 89c8d86
+- **Fix 3 (NO price fallback):** Kalshi fills don't include `no_price`; backfill was calling `_price_dollars(fill, "no_price")` → returned 0 → all NO sell proceeds were $0. Changed to use `_no_price_dollars()` which derives `1 - yes_price`. Commit: 9c0695d.
 - **Note:** DEBUG output is still in place in `app.py` — remove `st.write("**DEBUG:**...")` lines once confirmed working.
 
 <!--
