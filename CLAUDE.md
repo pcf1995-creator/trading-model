@@ -10,39 +10,35 @@
 - Move fixed issues to the Resolved section with the commit hash
 - Commit and push: `git add SESSION_LOG.md && git commit -m "chore: update session log" && git push origin <branch>`
 
-## Commits & Push to GitHub
+## Deployment Model — Two Separate Systems
 
-**CRITICAL: Always commit AND push code changes to GitHub.** Render auto-deploys from GitHub — commits stay local until pushed.
+This project has two distinct runtime environments. Do not conflate them.
 
+### 1. Render — cron job only (`scan_cron.py`)
+Render runs `scan_cron.py` as a web process (see `Procfile: web: python scan_cron.py`). It auto-deploys from GitHub on every push to `main`.
+
+- Changes to `scan_cron.py`, `predict.py`, `features.py`, `db.py`, `kalshi_api.py`, or anything the cron imports → **push to `main` and wait ~1-2 min for Render to redeploy**.
+- Render does NOT run `app.py`.
+
+### 2. Local machine — Streamlit dashboard (`app.py`)
+The Streamlit dashboard runs locally. Changes to `app.py` take effect when the user pulls and restarts Streamlit — Render is not involved.
+
+- Changes to `app.py` → **push to GitHub, then the user pulls locally and restarts Streamlit**.
+- Do NOT tell the user to "wait for Render to redeploy" for `app.py` changes.
+
+### Commits & Push — Always Required
+Regardless of which system is affected, always commit and push:
 1. Make the change
-2. Test it (refresh browser, check output)
-3. **Commit** with clear message: `git commit -m "..."`
-4. **Push to GitHub**: `git push origin main`
-5. Wait for Render to redeploy (~1-2 min)
-6. Only then consider the task complete
+2. `git commit -m "..."`
+3. `git push origin main`
+4. For cron changes: wait for Render (~1-2 min). For dashboard changes: user pulls locally.
 
-This is essential for:
-- App modifications (Streamlit dashboard changes)
-- Any changes to Python files that are actively running
-- Bug fixes and feature updates
-- Feature flags and cloud-first state changes
+## Architecture: Cloud-First State
 
-If you commit without pushing, Render won't see the changes and the user won't see them on the deployed app.
+State and configuration must live in the cloud, not local files — the cron runs on Render and cannot read files that only exist on the user's machine.
 
-## Architecture: Cloud-First, Not Local
+- **Shared config / flags** → Supabase
+- **Secrets** → Render environment variables
+- **NOT local JSON files** (e.g. `feature_flags.json`) — Render has its own copy, changes made locally never reach the cron
 
-**Always design for cloud deployment (Render), not local development.** This project is automated trading that runs 24/7 on Render. Default to:
-- **Cloud state (Supabase)** for any shared configuration, flags, or state
-- **Environment variables (Render)** for secrets and configuration
-- **NOT local JSON files** (feature_flags.json, etc) — local files only exist on your machine, Render doesn't have them
-
-**Why:** Local JSON files create sync issues:
-- User toggles flag locally → saves to local feature_flags.json
-- Render has its own copy (empty or stale)
-- Cron runs on Render, reads stale flags, nothing happens
-- Hours wasted debugging
-
-**How to apply:** When adding a feature that needs state/config:
-1. Store it in Supabase (preferred), not local files
-2. Or store it as Render environment variables
-3. Not in local JSON unless it's dev-only and explicitly ignored
+**Why this matters:** User toggles a flag locally → saves to local JSON → Render cron reads its own stale copy → nothing happens → hours wasted debugging.
