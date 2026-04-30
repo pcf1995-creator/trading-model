@@ -3039,10 +3039,11 @@ with tab_perf:
                     if not _pbf_fills:
                         st.warning("No fills found in that date range.")
                     else:
-                        # Filter out Kalshi bug entries ($0 price/cost) - keep only real trades
+                        # Filter out Kalshi bug entries ($0 price/cost) - keep only real trades.
+                        # Kalshi fills only include yes_price; NO price = 1 - yes_price.
                         _pbf_real = [f for f in _pbf_fills
                                     if (_price_dollars(f, "yes_price") > 0 or
-                                        _price_dollars(f, "no_price") > 0)]
+                                        _no_price_dollars(f) > 0)]
                         st.write(f"**DEBUG:** {len(_pbf_real)} fills with valid prices")
 
                         from collections import defaultdict as _dd_bf
@@ -3095,9 +3096,11 @@ with tab_perf:
                                 for _pbf in _pbf_side_fills:
                                     _pbf_cnt = _fill_count(_pbf)
                                     _pbf_act = _fill_action(_pbf)
-                                    # Use the correct price field based on side
-                                    _pbf_price_field = "no_price" if _pbf_side == "no" else "yes_price"
-                                    _pbf_price = _price_dollars(_pbf, _pbf_price_field)
+                                    # Kalshi fills only include yes_price; derive NO price as 1-yes_price.
+                                    if _pbf_side == "no":
+                                        _pbf_price = _no_price_dollars(_pbf)
+                                    else:
+                                        _pbf_price = _price_dollars(_pbf, "yes_price")
                                     _pbf_ts = _pbf.get("ts") or 0
 
                                     if _pbf_ts > _pbf_latest_ts:
