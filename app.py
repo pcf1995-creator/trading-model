@@ -1761,7 +1761,17 @@ with tab_dash:
         st.write("")
         for s in _ss:
             _side_label = "Short" if s.get("side") == "short" else "Long"
-            if st.button(f"📝 Paper Trade {s['ticker']} ({_side_label})", key=f"pt_stock_{s['ticker']}_{s.get('side','long')}"):
+            _key_suffix = f"{s['ticker']}_{s.get('side','long')}"
+            _btn_paper, _btn_real, _spacer = st.columns([2, 2, 3])
+            _do_paper = _btn_paper.button(
+                f"📝 Paper {s['ticker']} ({_side_label})",
+                key=f"pt_stock_{_key_suffix}",
+            )
+            _do_real = _btn_real.button(
+                f"💰 Real {s['ticker']} ({_side_label})",
+                key=f"rt_stock_{_key_suffix}",
+            )
+            if _do_paper or _do_real:
                 import uuid, traceback as _tb
                 try:
                     _live = yf.Ticker(s["ticker"]).fast_info
@@ -1786,11 +1796,15 @@ with tab_dash:
                     "placed_at"  : datetime.now(timezone.utc).isoformat(),
                 }
                 try:
-                    db.add_stock_paper_trade(_trade)
-                    st.success(f"Recorded {_side_label}: {s['ticker']} @ ${s['close']:.2f} × {s['shares']} shares (${s['alloc']:.0f})")
+                    if _do_paper:
+                        db.add_stock_paper_trade(_trade)
+                        st.success(f"Paper {_side_label}: {s['ticker']} @ ${_live_price:.2f} × {s['shares']} shares")
+                    else:
+                        db.add_stock_real_trade(_trade, source="scan")
+                        st.success(f"💰 Real {_side_label}: {s['ticker']} @ ${_live_price:.2f} × {s['shares']} shares")
                     st.rerun()
                 except Exception as _e:
-                    st.error(f"Failed to save paper trade: {_e}")
+                    st.error(f"Failed to save trade: {_e}")
                     st.code(_tb.format_exc())
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1995,6 +2009,21 @@ with tab_dash:
                 hide_index=True, use_container_width=True,
             )
 
+            # ── Promote to Real Trades ───────────────────────────────────────
+            st.caption("🚀 Copy a paper trade into Real Trades (paper row stays untouched).")
+            for _sp in _open_sp:
+                _side_short = "SHORT" if _sp.get("side") == "short" else "LONG"
+                if st.button(
+                    f"🚀 Promote {_sp['ticker']} ({_side_short}) to Real",
+                    key=f"promote_{_sp['id']}",
+                ):
+                    try:
+                        db.promote_paper_to_real(_sp["id"])
+                        st.success(f"Copied {_sp['ticker']} to Real Trades.")
+                        st.rerun()
+                    except Exception as _pe:
+                        st.error(f"Promote failed: {_pe}")
+
         # ── Closed trades ────────────────────────────────────────────────────
         if _closed_sp:
             _reason_labels = {"target": "✓ Target +2%", "stop": "✗ Stop −2%", "time": "⏱ Time exit"}
@@ -2035,6 +2064,142 @@ with tab_dash:
                 c2.metric("Win Rate", f"{_wins/len(_with_pnl):.0%}")
                 c3.metric("Avg P&L", f"{_avg_pnl:+.1f}%")
                 c4.metric("Total P&L", f"${_total_pnl:+.2f}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Stocks — Real Trade Tracker")
+    st.caption("Real money trades. Manual entry/close — no auto-settlement. "
+               "Populated by the 💰 Real button on a scan or 🚀 Promote on a paper row.")
+
+    _stock_real = db.load_stock_real_trades()
+    _open_rt   = [t for t in _stock_real if t.get("status") == "open"]
+    _closed_rt = [t for t in _stock_real if t.get("status") == "closed"]
+
+    if not _stock_real:
+        st.info("No real trades yet. Use 💰 Real on a scan suggestion, or 🚀 Promote a paper trade.")
+    else:
+        # Live prices for open real trades
+        _rt_cur_prices: dict[str, float | None] = {}
+        if _open_rt:
+            import yfinance as _yf_rt
+            _rt_tks = list({t["ticker"] for t in _open_rt})
+            try:
+                _rt_px = _yf_rt.download(_rt_tks, period="5d", auto_adjust=True, progress=False)
+                if isinstance(_rt_px.columns, pd.MultiIndex):
+                    _rt_closes = _rt_px["Close"]
+                else:
+                    _rt_closes = _rt_px[["Close"]]
+                    _rt_closes.columns = _rt_tks
+                for _tk in _rt_tks:
+                    try:
+                        _rt_cur_prices[_tk] = float(_rt_closes[_tk].dropna().iloc[-1])
+                    except Exception:
+                        _rt_cur_prices[_tk] = None
+            except Exception:
+                _rt_cur_prices = {tk: None for tk in _rt_tks}
+
+        # Open real trades
+        if _open_rt:
+            st.subheader(f"Open ({len(_open_rt)})")
+            _rt_open_rows = []
+            for _rt in _open_rt:
+                _ep = float(_rt["entry_price"])
+                _sh = float(_rt.get("shares") or 0)
+                _is_short = _rt.get("side") == "short"
+                _cur = _rt_cur_prices.get(_rt["ticker"])
+                if _cur and _ep > 0:
+                    _pnl_pct = ((_ep - _cur) / _ep * 100) if _is_short else ((_cur - _ep) / _ep * 100)
+                    _pnl_d   = round(((_ep - _cur) if _is_short else (_cur - _ep)) * _sh, 2)
+                else:
+                    _pnl_pct, _pnl_d = 0.0, 0.0
+                try:
+                    _entry_d = date.fromisoformat(_rt.get("entry_date", ""))
+                    _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
+                except Exception:
+                    _days = 0
+                _rt_open_rows.append({
+                    "Side"      : "SHORT" if _is_short else "LONG",
+                    "Ticker"    : _rt["ticker"],
+                    "Source"    : _rt.get("source", "scan"),
+                    "Entry $"   : f"${_ep:.2f}",
+                    "Shares"    : f"{_sh:.2f}",
+                    "Invested"  : f"${_ep * _sh:.2f}",
+                    "Cur Price" : f"${_cur:.2f}" if _cur else "—",
+                    "Days Held" : _days,
+                    "P&L %"     : f"{_pnl_pct:+.1f}%",
+                    "P&L $"     : f"${_pnl_d:+.2f}",
+                    "Entry Date": _rt.get("entry_date", ""),
+                })
+            st.dataframe(
+                pd.DataFrame(_rt_open_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                hide_index=True, use_container_width=True,
+            )
+
+            # Per-row close form
+            st.caption("✅ Close a real trade with the actual fill price:")
+            for _rt in _open_rt:
+                _side_short = "SHORT" if _rt.get("side") == "short" else "LONG"
+                with st.expander(f"Close {_rt['ticker']} ({_side_short}) — entered ${float(_rt['entry_price']):.2f}"):
+                    with st.form(f"close_rt_{_rt['id']}"):
+                        _exit_price = st.number_input(
+                            "Exit price ($)", min_value=0.0, step=0.01,
+                            value=float(_rt_cur_prices.get(_rt["ticker"]) or _rt["entry_price"]),
+                            key=f"rt_exit_px_{_rt['id']}",
+                        )
+                        _exit_date = st.date_input(
+                            "Exit date", value=date.today(), key=f"rt_exit_dt_{_rt['id']}",
+                        )
+                        _exit_reason = st.selectbox(
+                            "Reason", ["target", "stop", "time", "manual", "other"],
+                            key=f"rt_exit_rs_{_rt['id']}",
+                        )
+                        _notes = st.text_input("Notes (optional)", key=f"rt_notes_{_rt['id']}")
+                        if st.form_submit_button("Close trade"):
+                            try:
+                                db.close_stock_real_trade(
+                                    _rt["id"], float(_exit_price),
+                                    _exit_date.isoformat(), _exit_reason,
+                                    notes=_notes or None,
+                                )
+                                st.success(f"Closed {_rt['ticker']} @ ${_exit_price:.2f}")
+                                st.rerun()
+                            except Exception as _ce:
+                                st.error(f"Close failed: {_ce}")
+
+        # Closed real trades
+        if _closed_rt:
+            with st.expander(f"Closed ({len(_closed_rt)})"):
+                _rt_closed_rows = []
+                for _rt in sorted(_closed_rt, key=lambda x: x.get("exit_date", ""), reverse=True):
+                    _pnl = _rt.get("pnl_dollars")
+                    _rt_closed_rows.append({
+                        "Side"      : "SHORT" if _rt.get("side") == "short" else "LONG",
+                        "Ticker"    : _rt["ticker"],
+                        "Source"    : _rt.get("source", "scan"),
+                        "Entry $"   : f"${float(_rt['entry_price']):.2f}",
+                        "Exit $"    : f"${float(_rt['exit_price']):.2f}" if _rt.get("exit_price") else "—",
+                        "Shares"    : _rt.get("shares", 0),
+                        "Reason"    : _rt.get("exit_reason", "—"),
+                        "P&L %"     : f"{_rt.get('pnl_pct', 0):+.1f}%",
+                        "P&L $"     : f"${_pnl:+.2f}" if _pnl is not None else "—",
+                        "Entry Date": _rt.get("entry_date", ""),
+                        "Exit Date" : _rt.get("exit_date", ""),
+                    })
+                st.dataframe(
+                    pd.DataFrame(_rt_closed_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                    hide_index=True, use_container_width=True,
+                )
+
+            _rt_with_pnl = [t for t in _closed_rt if t.get("pnl_dollars") is not None]
+            if _rt_with_pnl:
+                _rt_wins      = sum(1 for t in _rt_with_pnl if t.get("pnl_pct", 0) > 0)
+                _rt_total_pnl = sum(t["pnl_dollars"] for t in _rt_with_pnl)
+                _rt_avg_pnl   = sum(t.get("pnl_pct", 0) for t in _rt_with_pnl) / len(_rt_with_pnl)
+                rc1, rc2, rc3, rc4 = st.columns(4)
+                rc1.metric("Real Trades", len(_rt_with_pnl))
+                rc2.metric("Win Rate", f"{_rt_wins/len(_rt_with_pnl):.0%}")
+                rc3.metric("Avg P&L", f"{_rt_avg_pnl:+.1f}%")
+                rc4.metric("Total P&L", f"${_rt_total_pnl:+.2f}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LONG-TERM L/S TAB
@@ -2542,6 +2707,34 @@ with tab_conviction:
             _ce2.metric("Net Exposure (Current)", f"{_cv_net_exposure_current:+.1f}%")
 
             # ── Capital allocation & position review ───────────────────────────
+            # ── Promote open paper positions to Real Trades ───────────────────
+            st.caption("🚀 Copy a paper position into Real Trades (paper position stays untouched).")
+            for _cp in _cv_open:
+                _cp_dir = "SHORT" if _cp.get("direction") == "SHORT" else "LONG"
+                if st.button(
+                    f"🚀 Promote {_cp['ticker']} ({_cp_dir}) to Real",
+                    key=f"cv_promote_{_cp['ticker']}",
+                ):
+                    try:
+                        import uuid as _uuid
+                        _rt_row = {
+                            "id"         : str(_uuid.uuid4()),
+                            "ticker"     : _cp["ticker"],
+                            "side"       : "short" if _cp.get("direction") == "SHORT" else "long",
+                            "entry_price": float(_cp["entry_price"]),
+                            "entry_date" : _cp.get("entry_date", str(date.today())),
+                            "shares"     : float(_cp.get("shares") or 0),
+                            "dollars"    : float(_cp.get("cost") or 0),
+                            "model_prob" : _cp.get("score_at_entry"),
+                            "status"     : "open",
+                            "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                        }
+                        db.add_stock_real_trade(_rt_row, source="paper_promotion")
+                        st.success(f"Copied {_cp['ticker']} to Real Trades.")
+                        st.rerun()
+                    except Exception as _pe:
+                        st.error(f"Promote failed: {_pe}")
+
             st.divider()
             st.subheader("Capital Allocation & Score Review")
 
@@ -2681,6 +2874,78 @@ with tab_conviction:
                     f"{len(_cv_longs)} LONG + {len(_cv_shorts)} SHORT recommendations"
                 )
 
+                # ── Select-all buttons ───────────────────────────────────────
+                _sa_col1, _sa_col2, _sa_col3 = st.columns([2, 2, 3])
+                _cv_paper_all = _sa_col1.button("📈 Paper All Recommendations", key="cv_paper_all")
+                _cv_real_all  = _sa_col2.button("💰 Real All Recommendations",  key="cv_real_all")
+
+                if _cv_paper_all or _cv_real_all:
+                    import uuid as _uuid
+                    _cv_existing_set = {p["ticker"] for p in _cv_open}
+                    _added = 0
+                    # Derive allocations independently (these vars aren't in scope yet)
+                    _lcs = _cv_longs["composite_score"].sum() if not _cv_longs.empty else 0
+                    _scs = abs(_cv_shorts["composite_score"].sum()) if not _cv_shorts.empty else 0
+                    _tc  = _lcs + _scs
+                    _alloc_long_all  = _cv_budget_used * (_lcs / _tc) if _tc > 0 else _cv_budget_used / 2
+                    _alloc_short_all = _cv_budget_used * (_scs / _tc) if _tc > 0 else _cv_budget_used / 2
+                    for _, _lr in _cv_longs.iterrows():
+                        _tk = _lr["ticker"]
+                        if _tk in _cv_existing_set:
+                            continue
+                        _pl = _alloc_long_all * (_lr["composite_score"] / _lcs) if _lcs > 0 else _alloc_long_all / max(len(_cv_longs), 1)
+                        _sh = round(_pl / _lr["current_price"], 4) if _lr["current_price"] else 0
+                        _new_cv = {
+                            "ticker": _tk, "direction": "LONG", "status": "open",
+                            "entry_price": _lr["current_price"], "entry_date": str(date.today()),
+                            "shares": _sh, "cost": round(_sh * _lr["current_price"], 2),
+                            "composite_score": float(_lr["composite_score"]),
+                            "score_at_entry": float(_lr["composite_score"]),
+                            "exit_signal": None, "reassess_signal": None,
+                            "earnings_flag": bool(_lr.get("earnings_flag", False)),
+                            "earnings_days_out": _lr.get("earnings_days_out"),
+                        }
+                        _cv_positions.append(_new_cv)
+                        if _cv_real_all:
+                            db.add_stock_real_trade({
+                                "id": str(_uuid.uuid4()), "ticker": _tk, "side": "long",
+                                "entry_price": float(_lr["current_price"]), "entry_date": str(date.today()),
+                                "shares": float(_sh), "dollars": round(_sh * _lr["current_price"], 2),
+                                "model_prob": float(_lr["composite_score"]), "status": "open",
+                                "placed_at": datetime.now(timezone.utc).isoformat(),
+                            }, source="conviction")
+                        _added += 1
+                    for _, _sr in _cv_shorts.iterrows():
+                        _tk = _sr["ticker"]
+                        if _tk in _cv_existing_set:
+                            continue
+                        _ps = _alloc_short_all * (abs(_sr["composite_score"]) / _scs) if _scs > 0 else _alloc_short_all / max(len(_cv_shorts), 1)
+                        _sh = round(_ps / _sr["current_price"], 4) if _sr["current_price"] else 0
+                        _new_cv = {
+                            "ticker": _tk, "direction": "SHORT", "status": "open",
+                            "entry_price": _sr["current_price"], "entry_date": str(date.today()),
+                            "shares": _sh, "cost": round(_sh * _sr["current_price"], 2),
+                            "composite_score": float(_sr["composite_score"]),
+                            "score_at_entry": float(_sr["composite_score"]),
+                            "exit_signal": None, "reassess_signal": None,
+                            "earnings_flag": bool(_sr.get("earnings_flag", False)),
+                            "earnings_days_out": _sr.get("earnings_days_out"),
+                        }
+                        _cv_positions.append(_new_cv)
+                        if _cv_real_all:
+                            db.add_stock_real_trade({
+                                "id": str(_uuid.uuid4()), "ticker": _tk, "side": "short",
+                                "entry_price": float(_sr["current_price"]), "entry_date": str(date.today()),
+                                "shares": float(_sh), "dollars": round(_sh * _sr["current_price"], 2),
+                                "model_prob": float(_sr["composite_score"]), "status": "open",
+                                "placed_at": datetime.now(timezone.utc).isoformat(),
+                            }, source="conviction")
+                        _added += 1
+                    _cv_mod.save_conviction_positions(_cv_positions)
+                    _label = "💰 Real + Paper" if _cv_real_all else "📈 Paper"
+                    st.success(f"{_label}: added {_added} position(s).")
+                    st.rerun()
+
                 # LONG recommendations
                 st.subheader("LONG Recommendations")
                 if _cv_longs.empty:
@@ -2720,26 +2985,47 @@ with tab_conviction:
                         with _col2:
                             if _already:
                                 st.caption("Already held")
-                            elif st.button(f"📈 Record Long {_tk}", key=f"cv_long_{_tk}"):
-                                _new_cv = {
-                                    "ticker"          : _tk,
-                                    "direction"       : "LONG",
-                                    "status"          : "open",
-                                    "entry_price"     : _lr["current_price"],
-                                    "entry_date"      : str(date.today()),
-                                    "shares"          : _shares,
-                                    "cost"            : round(_shares * _lr["current_price"], 2),
-                                    "composite_score" : float(_lr["composite_score"]),
-                                    "score_at_entry"  : float(_lr["composite_score"]),
-                                    "exit_signal"     : None,
-                                    "reassess_signal" : None,
-                                    "earnings_flag"   : bool(_eflag),
-                                    "earnings_days_out": _edays,
-                                }
-                                _cv_positions.append(_new_cv)
-                                _cv_mod.save_conviction_positions(_cv_positions)
-                                st.success(f"Recorded LONG {_tk} @ ${_lr['current_price']}")
-                                st.rerun()
+                            else:
+                                _cv_do_paper = st.button(f"📈 Paper Long {_tk}", key=f"cv_long_{_tk}")
+                                _cv_do_real  = st.button(f"💰 Real Long {_tk}",  key=f"cv_real_long_{_tk}")
+                                if _cv_do_paper or _cv_do_real:
+                                    _new_cv = {
+                                        "ticker"          : _tk,
+                                        "direction"       : "LONG",
+                                        "status"          : "open",
+                                        "entry_price"     : _lr["current_price"],
+                                        "entry_date"      : str(date.today()),
+                                        "shares"          : _shares,
+                                        "cost"            : round(_shares * _lr["current_price"], 2),
+                                        "composite_score" : float(_lr["composite_score"]),
+                                        "score_at_entry"  : float(_lr["composite_score"]),
+                                        "exit_signal"     : None,
+                                        "reassess_signal" : None,
+                                        "earnings_flag"   : bool(_eflag),
+                                        "earnings_days_out": _edays,
+                                    }
+                                    # Always write paper trade
+                                    _cv_positions.append(_new_cv)
+                                    _cv_mod.save_conviction_positions(_cv_positions)
+                                    if _cv_do_real:
+                                        import uuid as _uuid
+                                        _rt_row = {
+                                            "id"         : str(_uuid.uuid4()),
+                                            "ticker"     : _tk,
+                                            "side"       : "long",
+                                            "entry_price": float(_lr["current_price"]),
+                                            "entry_date" : str(date.today()),
+                                            "shares"     : float(_shares),
+                                            "dollars"    : round(_shares * _lr["current_price"], 2),
+                                            "model_prob" : float(_lr["composite_score"]),
+                                            "status"     : "open",
+                                            "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                                        }
+                                        db.add_stock_real_trade(_rt_row, source="conviction")
+                                        st.success(f"💰 Real + Paper LONG {_tk} @ ${_lr['current_price']}")
+                                    else:
+                                        st.success(f"📈 Paper LONG {_tk} @ ${_lr['current_price']}")
+                                    st.rerun()
 
                 # SHORT recommendations
                 st.subheader("SHORT Recommendations")
@@ -2776,26 +3062,47 @@ with tab_conviction:
                         with _col2:
                             if _already:
                                 st.caption("Already held")
-                            elif st.button(f"📉 Record Short {_tk}", key=f"cv_short_{_tk}"):
-                                _new_cv = {
-                                    "ticker"          : _tk,
-                                    "direction"       : "SHORT",
-                                    "status"          : "open",
-                                    "entry_price"     : _sr["current_price"],
-                                    "entry_date"      : str(date.today()),
-                                    "shares"          : _shares,
-                                    "cost"            : round(_shares * _sr["current_price"], 2),
-                                    "composite_score" : float(_sr["composite_score"]),
-                                    "score_at_entry"  : float(_sr["composite_score"]),
-                                    "exit_signal"     : None,
-                                    "reassess_signal" : None,
-                                    "earnings_flag"   : bool(_eflag),
-                                    "earnings_days_out": _edays,
-                                }
-                                _cv_positions.append(_new_cv)
-                                _cv_mod.save_conviction_positions(_cv_positions)
-                                st.success(f"Recorded SHORT {_tk} @ ${_sr['current_price']}")
-                                st.rerun()
+                            else:
+                                _cv_do_paper_s = st.button(f"📉 Paper Short {_tk}", key=f"cv_short_{_tk}")
+                                _cv_do_real_s  = st.button(f"💰 Real Short {_tk}",  key=f"cv_real_short_{_tk}")
+                                if _cv_do_paper_s or _cv_do_real_s:
+                                    _new_cv = {
+                                        "ticker"          : _tk,
+                                        "direction"       : "SHORT",
+                                        "status"          : "open",
+                                        "entry_price"     : _sr["current_price"],
+                                        "entry_date"      : str(date.today()),
+                                        "shares"          : _shares,
+                                        "cost"            : round(_shares * _sr["current_price"], 2),
+                                        "composite_score" : float(_sr["composite_score"]),
+                                        "score_at_entry"  : float(_sr["composite_score"]),
+                                        "exit_signal"     : None,
+                                        "reassess_signal" : None,
+                                        "earnings_flag"   : bool(_eflag),
+                                        "earnings_days_out": _edays,
+                                    }
+                                    # Always write paper trade
+                                    _cv_positions.append(_new_cv)
+                                    _cv_mod.save_conviction_positions(_cv_positions)
+                                    if _cv_do_real_s:
+                                        import uuid as _uuid
+                                        _rt_row = {
+                                            "id"         : str(_uuid.uuid4()),
+                                            "ticker"     : _tk,
+                                            "side"       : "short",
+                                            "entry_price": float(_sr["current_price"]),
+                                            "entry_date" : str(date.today()),
+                                            "shares"     : float(_shares),
+                                            "dollars"    : round(_shares * _sr["current_price"], 2),
+                                            "model_prob" : float(_sr["composite_score"]),
+                                            "status"     : "open",
+                                            "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                                        }
+                                        db.add_stock_real_trade(_rt_row, source="conviction")
+                                        st.success(f"💰 Real + Paper SHORT {_tk} @ ${_sr['current_price']}")
+                                    else:
+                                        st.success(f"📉 Paper SHORT {_tk} @ ${_sr['current_price']}")
+                                    st.rerun()
 
                 # Deployment summary
                 st.divider()
@@ -2992,6 +3299,134 @@ with tab_conviction:
 
             st.pyplot(fig)
             plt.close(fig)
+
+        # ── Real Trade Tracker (conviction) ───────────────────────────────────
+        st.divider()
+        st.header("S&P Benchmark — Real Trade Tracker")
+        st.caption("Real money trades for the conviction model. Manual entry/close — no auto-settlement.")
+
+        _cv_real = [t for t in db.load_stock_real_trades() if t.get("source") in ("conviction", "paper_promotion", "scan")]
+        _cv_real_open   = [t for t in _cv_real if t.get("status") == "open"]
+        _cv_real_closed = [t for t in _cv_real if t.get("status") == "closed"]
+
+        if not _cv_real:
+            st.info("No real trades yet. Use 💰 Real Long/Short on a scan result, or 🚀 Promote a paper position.")
+        else:
+            # Live prices for open real trades
+            _cvr_prices: dict[str, float | None] = {}
+            if _cv_real_open:
+                import yfinance as _yf_cvr
+                _cvr_tks = list({t["ticker"] for t in _cv_real_open})
+                try:
+                    _cvr_px = _yf_cvr.download(_cvr_tks, period="5d", auto_adjust=True, progress=False)
+                    if isinstance(_cvr_px.columns, pd.MultiIndex):
+                        _cvr_cls = _cvr_px["Close"]
+                    else:
+                        _cvr_cls = _cvr_px[["Close"]]
+                        _cvr_cls.columns = _cvr_tks
+                    for _tk in _cvr_tks:
+                        try:
+                            _cvr_prices[_tk] = float(_cvr_cls[_tk].dropna().iloc[-1])
+                        except Exception:
+                            _cvr_prices[_tk] = None
+                except Exception:
+                    _cvr_prices = {tk: None for tk in _cvr_tks}
+
+            if _cv_real_open:
+                st.subheader(f"Open ({len(_cv_real_open)})")
+                _cvr_rows = []
+                for _rt in _cv_real_open:
+                    _ep  = float(_rt["entry_price"])
+                    _sh  = float(_rt.get("shares") or 0)
+                    _cur = _cvr_prices.get(_rt["ticker"])
+                    _is_short = _rt.get("side") == "short"
+                    if _cur and _ep > 0:
+                        _pnl_pct = ((_ep - _cur) / _ep * 100) if _is_short else ((_cur - _ep) / _ep * 100)
+                        _pnl_d   = round(((_ep - _cur) if _is_short else (_cur - _ep)) * _sh, 2)
+                    else:
+                        _pnl_pct, _pnl_d = 0.0, 0.0
+                    try:
+                        _ed  = date.fromisoformat(_rt.get("entry_date", ""))
+                        _days = sum(1 for _d in pd.bdate_range(_ed, date.today()) if _d.date() > _ed)
+                    except Exception:
+                        _days = 0
+                    _cvr_rows.append({
+                        "Dir"       : "SHORT" if _is_short else "LONG",
+                        "Ticker"    : _rt["ticker"],
+                        "Source"    : _rt.get("source", "—"),
+                        "Entry $"   : f"${_ep:.2f}",
+                        "Shares"    : f"{_sh:.4f}",
+                        "Invested"  : f"${_ep * _sh:,.2f}",
+                        "Cur Price" : f"${_cur:.2f}" if _cur else "—",
+                        "Days Held" : _days,
+                        "P&L %"     : f"{_pnl_pct:+.2f}%",
+                        "P&L $"     : f"${_pnl_d:+.2f}",
+                        "Entry Date": _rt.get("entry_date", ""),
+                    })
+                st.dataframe(
+                    pd.DataFrame(_cvr_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                    hide_index=True, use_container_width=True,
+                )
+
+                st.caption("✅ Close a real trade with the actual fill price:")
+                for _rt in _cv_real_open:
+                    _dir_lbl = "SHORT" if _rt.get("side") == "short" else "LONG"
+                    with st.expander(f"Close {_rt['ticker']} ({_dir_lbl}) — entered ${float(_rt['entry_price']):.2f}"):
+                        with st.form(f"close_cvr_{_rt['id']}"):
+                            _cvr_exit_px = st.number_input(
+                                "Exit price ($)", min_value=0.0, step=0.01,
+                                value=float(_cvr_prices.get(_rt["ticker"]) or _rt["entry_price"]),
+                            )
+                            _cvr_exit_dt = st.date_input("Exit date", value=date.today())
+                            _cvr_reason  = st.selectbox(
+                                "Reason", ["target", "stop", "reassessment", "hard_stop", "manual", "other"]
+                            )
+                            _cvr_notes = st.text_input("Notes (optional)")
+                            if st.form_submit_button("Close trade"):
+                                try:
+                                    db.close_stock_real_trade(
+                                        _rt["id"], float(_cvr_exit_px),
+                                        _cvr_exit_dt.isoformat(), _cvr_reason,
+                                        notes=_cvr_notes or None,
+                                    )
+                                    st.success(f"Closed {_rt['ticker']} @ ${_cvr_exit_px:.2f}")
+                                    st.rerun()
+                                except Exception as _ce:
+                                    st.error(f"Close failed: {_ce}")
+
+            if _cv_real_closed:
+                with st.expander(f"Closed ({len(_cv_real_closed)})"):
+                    _cvrc_rows = []
+                    for _rt in sorted(_cv_real_closed, key=lambda x: x.get("exit_date", ""), reverse=True):
+                        _pnl = _rt.get("pnl_dollars")
+                        _cvrc_rows.append({
+                            "Dir"       : "SHORT" if _rt.get("side") == "short" else "LONG",
+                            "Ticker"    : _rt["ticker"],
+                            "Source"    : _rt.get("source", "—"),
+                            "Entry $"   : f"${float(_rt['entry_price']):.2f}",
+                            "Exit $"    : f"${float(_rt['exit_price']):.2f}" if _rt.get("exit_price") else "—",
+                            "Shares"    : _rt.get("shares", 0),
+                            "Reason"    : _rt.get("exit_reason", "—"),
+                            "P&L %"     : f"{_rt.get('pnl_pct', 0):+.2f}%",
+                            "P&L $"     : f"${_pnl:+.2f}" if _pnl is not None else "—",
+                            "Entry Date": _rt.get("entry_date", ""),
+                            "Exit Date" : _rt.get("exit_date", ""),
+                        })
+                    st.dataframe(
+                        pd.DataFrame(_cvrc_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
+                        hide_index=True, use_container_width=True,
+                    )
+
+                _cvr_with_pnl = [t for t in _cv_real_closed if t.get("pnl_dollars") is not None]
+                if _cvr_with_pnl:
+                    _cvr_wins      = sum(1 for t in _cvr_with_pnl if t.get("pnl_pct", 0) > 0)
+                    _cvr_total_pnl = sum(t["pnl_dollars"] for t in _cvr_with_pnl)
+                    _cvr_avg_pnl   = sum(t.get("pnl_pct", 0) for t in _cvr_with_pnl) / len(_cvr_with_pnl)
+                    _cr1, _cr2, _cr3, _cr4 = st.columns(4)
+                    _cr1.metric("Real Trades", len(_cvr_with_pnl))
+                    _cr2.metric("Win Rate",    f"{_cvr_wins/len(_cvr_with_pnl):.0%}")
+                    _cr3.metric("Avg P&L",     f"{_cvr_avg_pnl:+.2f}%")
+                    _cr4.metric("Total P&L",   f"${_cvr_total_pnl:+.2f}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB

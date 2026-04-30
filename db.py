@@ -198,6 +198,120 @@ def close_stock_paper_trade(trade_id: str, exit_price: float, exit_date: str,
     _save_json(_STOCK_PAPER_TRADES_JSON, trades)
 
 
+# ── Stock REAL trades (actual money) ───────────────────────────────────────────
+# Parallel log to stock_paper_trades. Never auto-settled — closes are manual so
+# the row reflects the real fill price. Populated only by explicit user action
+# (Add-to-Real button on a scan, or Promote button on a paper row).
+_STOCK_REAL_TRADES_JSON = ROOT / "stock_real_trades.json"
+
+
+def load_stock_real_trades() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("stock_real_trades")
+                    .select("*")
+                    .order("placed_at", desc=False)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_stock_real_trades failed: {e}")
+    return _load_json(_STOCK_REAL_TRADES_JSON)
+
+
+def add_stock_real_trade(trade: dict, source: str = "scan",
+                          paper_trade_id: str | None = None) -> None:
+    """Insert a real-trade row. `source` is 'scan', 'paper_promotion', or 'manual'."""
+    row = {**trade, "source": source}
+    if paper_trade_id is not None:
+        row["paper_trade_id"] = paper_trade_id
+    client = _get_client()
+    if client:
+        client.table("stock_real_trades").insert(row).execute()
+        return
+    trades = _load_json(_STOCK_REAL_TRADES_JSON)
+    trades.append(row)
+    _save_json(_STOCK_REAL_TRADES_JSON, trades)
+
+
+def close_stock_real_trade(trade_id: str, exit_price: float, exit_date: str,
+                            exit_reason: str, notes: str | None = None) -> None:
+    """Manually close a real trade. Computes P&L from the row's entry_price/shares/side."""
+    client = _get_client()
+    rows = []
+    if client:
+        try:
+            resp = client.table("stock_real_trades").select("*").eq("id", trade_id).execute()
+            rows = resp.data or []
+        except Exception as e:
+            logger.warning(f"close_stock_real_trade fetch failed: {e}")
+    if not rows:
+        rows = [t for t in _load_json(_STOCK_REAL_TRADES_JSON) if t.get("id") == trade_id]
+    if not rows:
+        raise ValueError(f"real trade {trade_id} not found")
+    r = rows[0]
+
+    entry_price = float(r["entry_price"])
+    shares = float(r.get("shares") or 0)
+    side = r.get("side", "long")
+    if side == "short":
+        pnl_pct = (entry_price - exit_price) / entry_price if entry_price else 0.0
+        pnl_dollars = round((entry_price - exit_price) * shares, 2)
+    else:
+        pnl_pct = (exit_price - entry_price) / entry_price if entry_price else 0.0
+        pnl_dollars = round((exit_price - entry_price) * shares, 2)
+
+    updates = {
+        "status": "closed",
+        "exit_price": exit_price,
+        "exit_date": exit_date,
+        "exit_reason": exit_reason,
+        "pnl_dollars": pnl_dollars,
+        "pnl_pct": round(pnl_pct * 100, 2),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if notes:
+        updates["notes"] = notes
+
+    if client:
+        try:
+            client.table("stock_real_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"close_stock_real_trade failed: {e}")
+    trades = _load_json(_STOCK_REAL_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(updates)
+    _save_json(_STOCK_REAL_TRADES_JSON, trades)
+
+
+def promote_paper_to_real(paper_trade_id: str) -> str:
+    """Copy an existing paper trade into stock_real_trades, leaving the paper row untouched.
+    Returns the new real-trade id."""
+    import uuid
+    paper_rows = [t for t in load_stock_paper_trades() if t.get("id") == paper_trade_id]
+    if not paper_rows:
+        raise ValueError(f"paper trade {paper_trade_id} not found")
+    p = paper_rows[0]
+
+    new_id = str(uuid.uuid4())
+    new_row = {
+        "id"         : new_id,
+        "ticker"     : p["ticker"],
+        "side"       : p.get("side", "long"),
+        "entry_price": float(p["entry_price"]),
+        "entry_date" : p.get("entry_date"),
+        "shares"     : float(p.get("shares") or 0),
+        "dollars"    : float(p.get("dollars") or 0),
+        "model_prob" : p.get("model_prob"),
+        "status"     : "open",
+        "placed_at"  : datetime.now(timezone.utc).isoformat(),
+    }
+    add_stock_real_trade(new_row, source="paper_promotion", paper_trade_id=paper_trade_id)
+    return new_id
+
+
 # ── Position overrides ─────────────────────────────────────────────────────────
 def load_position_overrides() -> dict[str, dict]:
     """Returns {ticker: {ticker, contracts, entry_cents, stop_cents}}"""
