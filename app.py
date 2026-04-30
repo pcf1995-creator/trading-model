@@ -3041,8 +3041,8 @@ with tab_perf:
                     else:
                         # Filter out Kalshi bug entries ($0 price/cost) - keep only real trades
                         _pbf_real = [f for f in _pbf_fills
-                                    if (_price_dollars(f, "yes_price_dollars") > 0 or
-                                        _price_dollars(f, "no_price_dollars") > 0)]
+                                    if (_price_dollars(f, "yes_price") > 0 or
+                                        _price_dollars(f, "no_price") > 0)]
                         st.write(f"**DEBUG:** {len(_pbf_real)} fills with valid prices")
 
                         from collections import defaultdict as _dd_bf
@@ -3096,7 +3096,7 @@ with tab_perf:
                                     _pbf_cnt = _fill_count(_pbf)
                                     _pbf_act = _fill_action(_pbf)
                                     # Use the correct price field based on side
-                                    _pbf_price_field = "no_price_dollars" if _pbf_side == "no" else "yes_price_dollars"
+                                    _pbf_price_field = "no_price" if _pbf_side == "no" else "yes_price"
                                     _pbf_price = _price_dollars(_pbf, _pbf_price_field)
                                     _pbf_ts = _pbf.get("ts") or 0
 
@@ -3115,11 +3115,16 @@ with tab_perf:
                                 if _pbf_sell_count > 0:
                                     st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: {_pbf_buy_count} buy fills, {_pbf_sell_count} sell fills")
 
-                                # Check for closed positions (matching buy/sell)
-                                _is_closed = _pbf_total_bought == _pbf_total_sold and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0
+                                # Fully manually closed (contracts sold exactly match contracts bought)
+                                _is_closed = (_pbf_total_bought == _pbf_total_sold
+                                              and _pbf_buy_cost > 0 and _pbf_sell_proceeds > 0)
 
-                                # Also check for expired open positions (auto-settled at expiry)
-                                _is_auto_settled = _pbf_is_expired and _pbf_total_bought > 0 and _pbf_total_sold == 0 and _pbf_all_settle.get(_pbtk) is not None
+                                # Expired with unsold contracts: covers both fully auto-settled (sold=0)
+                                # and partially sold then expired (0 < sold < bought)
+                                _pbf_remaining = _pbf_total_bought - _pbf_total_sold
+                                _is_auto_settled = (_pbf_is_expired and _pbf_remaining > 0
+                                                    and _pbf_buy_cost > 0
+                                                    and _pbf_all_settle.get(_pbtk) is not None)
 
                                 if _is_closed:
                                     _pbf_positions.append({
@@ -3137,10 +3142,12 @@ with tab_perf:
                                         "_settlement_result": _pbf_all_settle.get(_pbtk),
                                     })
                                 elif _is_auto_settled:
-                                    # Expired position: auto-settled. YES is worth 100 if result=yes else 0. NO is opposite.
+                                    # Expired contracts settle at $1 if won, $0 if lost.
+                                    # Add manual sell proceeds (if any partial sells) to settlement proceeds.
                                     _pbf_result = _pbf_all_settle.get(_pbtk)
-                                    _pbf_exit_price = 1.0 if (_pbf_side == "yes" and _pbf_result == "yes") or (_pbf_side == "no" and _pbf_result == "no") else 0.0
-                                    _pbf_sell_proceeds = _pbf_total_bought * _pbf_exit_price
+                                    _pbf_exit_price = 1.0 if ((_pbf_side == "yes" and _pbf_result == "yes")
+                                                               or (_pbf_side == "no" and _pbf_result == "no")) else 0.0
+                                    _pbf_total_proceeds = _pbf_sell_proceeds + _pbf_remaining * _pbf_exit_price
                                     _pbf_positions.append({
                                         "ticker"    : _pbtk,
                                         "side"      : _pbf_side,
@@ -3151,11 +3158,11 @@ with tab_perf:
                                         "contracts" : int(_pbf_total_bought),
                                         "entry_cents": round(_pbf_buy_cost / _pbf_total_bought * 100) if _pbf_total_bought > 0 else 0,
                                         "buy_cost"  : round(_pbf_buy_cost, 2),
-                                        "sell_proceeds": round(_pbf_sell_proceeds, 2),
+                                        "sell_proceeds": round(_pbf_total_proceeds, 2),
                                         "_latest_ts": _pbf_latest_ts,
                                         "_settlement_result": _pbf_result,
                                     })
-                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: AUTO-SETTLED @ {_pbf_exit_price} ({_pbf_result})")
+                                    st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: {_pbf_total_sold} sold + {_pbf_remaining} AUTO-SETTLED @ {_pbf_exit_price} ({_pbf_result})")
                                 elif _pbf_side_fills:
                                     st.write(f"**DEBUG:** {_pbtk} {_pbf_side}: bought={_pbf_total_bought}, sold={_pbf_total_sold} (STILL OPEN)")
 
