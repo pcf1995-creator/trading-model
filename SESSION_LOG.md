@@ -32,9 +32,7 @@ This file is the cross-session memory for Claude Code. Read it at the start of e
 - **Suspected remaining bugs (code analysis, not yet tested):**
   1. **Price field prefix mismatch** (`app.py:3044-3045`, `app.py:3099`): Backfill calls `_price_dollars(f, "yes_price_dollars")` but the function tries suffixes `_dollars`, `_fixed`, `""` — so it looks for `"yes_price_dollars_dollars"` first (doesn't exist), then `"yes_price_dollars"` last. The rest of the code calls `_price_dollars(f, "yes_price")` which correctly tries `"yes_price_dollars"` as the first attempt. If the Kalshi API returns only `"yes_price"` (in cents) and not `"yes_price_dollars"`, the backfill filter at line 3044 would return 0.0 for all fills, filtering them all out.
   2. **Partial-close + expiry gap** (`app.py:3119-3122`): `_is_closed` requires `bought == sold` exactly. `_is_auto_settled` requires `sold == 0`. A position that was partially sold then expired (bought=5, sold=3) satisfies neither condition and is silently dropped.
-- **Status:** In-progress — debug output is still in place, root cause of price field not confirmed
-
-_Suggested next step: add a `st.write(f"Sample fill keys: {list(_pbf_fills[0].keys())}")` after line 3037 to see actual API field names, then fix the prefix accordingly._
+- **Status:** Fixed in commit 89c8d86 — see Resolved section
 
 <!--
 TEMPLATE — copy and fill in for each new issue:
@@ -54,7 +52,12 @@ TEMPLATE — copy and fill in for each new issue:
 
 ## Resolved Issues
 
-_Issues closed in previous sessions._
+### [ISSUE-1] Performance tab — Kalshi backfill not showing actual settled bets
+- **Resolved:** 2026-04-30
+- **Fix 1 (price filter):** Backfill called `_price_dollars(f, "yes_price_dollars")` as prefix, causing the function to try `"yes_price_dollars_dollars"` first (doesn't exist), only accidentally finding the right field as a fallback. Changed to `"yes_price"` / `"no_price"` (consistent with the rest of the codebase), so the function correctly tries `"yes_price_dollars"` first.
+- **Fix 2 (partial close + expiry):** `_is_auto_settled` required `sold == 0`, silently dropping positions that were partially sold then expired. Now computes `remaining = bought - sold` and captures any expired position with `remaining > 0`, adding both manual sell proceeds and expiry settlement value to the total.
+- **Commit:** 89c8d86
+- **Note:** DEBUG output is still in place in `app.py` — remove `st.write("**DEBUG:**...")` lines once confirmed working.
 
 <!--
 TEMPLATE:
