@@ -2708,7 +2708,30 @@ with tab_conviction:
 
             # ── Capital allocation & position review ───────────────────────────
             # ── Promote open paper positions to Real Trades ───────────────────
-            st.caption("🚀 Copy a paper position into Real Trades (paper position stays untouched).")
+            st.caption("🚀 Copy paper positions into Real Trades (paper positions stay untouched).")
+            if st.button("🚀 Promote All to Real", key="cv_promote_all"):
+                import uuid as _uuid
+                _promoted = 0
+                for _cp in _cv_open:
+                    try:
+                        db.add_stock_real_trade({
+                            "id"         : str(_uuid.uuid4()),
+                            "ticker"     : _cp["ticker"],
+                            "side"       : "short" if _cp.get("direction") == "SHORT" else "long",
+                            "entry_price": float(_cp["entry_price"]),
+                            "entry_date" : _cp.get("entry_date", str(date.today())),
+                            "shares"     : float(_cp.get("shares") or 0),
+                            "dollars"    : float(_cp.get("cost") or 0),
+                            "model_prob" : _cp.get("score_at_entry"),
+                            "status"     : "open",
+                            "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                        }, source="paper_promotion")
+                        _promoted += 1
+                    except Exception as _pe:
+                        st.error(f"Failed to promote {_cp['ticker']}: {_pe}")
+                if _promoted:
+                    st.success(f"Promoted {_promoted} position(s) to Real Trades.")
+                    st.rerun()
             for _cp in _cv_open:
                 _cp_dir = "SHORT" if _cp.get("direction") == "SHORT" else "LONG"
                 if st.button(
