@@ -1,1 +1,1 @@
-web: python scan_cron.py
+web: python kalshi/scan_cron.py
