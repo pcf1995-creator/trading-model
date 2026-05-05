@@ -591,7 +591,10 @@ with tab_dash:
     st.caption("Real money trades. Manual entry/close — no auto-settlement. "
                "Populated by the 💰 Real button on a scan or 🚀 Promote on a paper row.")
 
-    _stock_real = db.load_stock_real_trades()
+    # Per-ticker probability model trades only — exclude conviction-model trades
+    # which have their own tracker on the S&P Benchmark tab.
+    _stock_real = [t for t in db.load_stock_real_trades()
+                   if t.get("source") in ("scan",)]
     _open_rt   = [t for t in _stock_real if t.get("status") == "open"]
     _closed_rt = [t for t in _stock_real if t.get("status") == "closed"]
 
@@ -1469,7 +1472,7 @@ with tab_conviction:
                                 "shares": float(_sh), "dollars": round(_sh * _lr["current_price"], 2),
                                 "model_prob": float(_lr["composite_score"]), "status": "open",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
-                            }, source="manual")
+                            }, source="conviction")
                             _real_added += 1
                     for _, _sr in _cv_shorts.iterrows():
                         _tk = _sr["ticker"]
@@ -1494,7 +1497,7 @@ with tab_conviction:
                                 "shares": float(_sh), "dollars": round(_sh * _sr["current_price"], 2),
                                 "model_prob": float(_sr["composite_score"]), "status": "open",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
-                            }, source="manual")
+                            }, source="conviction")
                             _real_added += 1
                     if _paper_added:
                         _cv_mod.save_conviction_positions(_cv_positions)
@@ -1581,7 +1584,7 @@ with tab_conviction:
                                             "status"     : "open",
                                             "placed_at"  : datetime.now(timezone.utc).isoformat(),
                                         }
-                                        db.add_stock_real_trade(_rt_row, source="manual")
+                                        db.add_stock_real_trade(_rt_row, source="conviction")
                                         st.success(f"💰 Real + Paper LONG {_tk} @ ${_lr['current_price']}")
                                     else:
                                         st.success(f"📈 Paper LONG {_tk} @ ${_lr['current_price']}")
@@ -1658,7 +1661,7 @@ with tab_conviction:
                                             "status"     : "open",
                                             "placed_at"  : datetime.now(timezone.utc).isoformat(),
                                         }
-                                        db.add_stock_real_trade(_rt_row, source="manual")
+                                        db.add_stock_real_trade(_rt_row, source="conviction")
                                         st.success(f"💰 Real + Paper SHORT {_tk} @ ${_sr['current_price']}")
                                     else:
                                         st.success(f"📉 Paper SHORT {_tk} @ ${_sr['current_price']}")
@@ -1865,12 +1868,12 @@ with tab_conviction:
         st.header("S&P Benchmark — Real Trade Tracker")
         st.caption("Real money trades for the conviction model. Manual entry/close — no auto-settlement.")
 
-        # Source filter accepts every value the stock_real_trades CHECK constraint
-        # currently allows. ("conviction" was never a valid value — schema is
-        # ('scan','paper_promotion','manual') — so the bulk Real-All button
-        # writes 'manual'. Including it here so those trades are visible.)
+        # Conviction-model trades only — fresh adds (source='conviction') and
+        # promotions from this tab's paper book (source='paper_promotion').
+        # Per-ticker probability-model trades have source='scan' and live on
+        # the Stocks Dashboard tab tracker.
         _cv_real = [t for t in db.load_stock_real_trades()
-                    if t.get("source") in ("conviction", "paper_promotion", "scan", "manual")]
+                    if t.get("source") in ("conviction", "paper_promotion")]
         _cv_real_open   = [t for t in _cv_real if t.get("status") == "open"]
         _cv_real_closed = [t for t in _cv_real if t.get("status") == "closed"]
 
