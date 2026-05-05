@@ -1426,8 +1426,17 @@ with tab_conviction:
 
                 if _cv_paper_all or _cv_real_all:
                     import uuid as _uuid
-                    _cv_existing_set = {p["ticker"] for p in _cv_open}
-                    _added = 0
+                    # Paper open set: skip these on Paper All (idempotent paper add).
+                    _cv_paper_open = {p["ticker"] for p in _cv_open}
+                    # Real open set: skip these on Real All (idempotent real add — paper
+                    # state is irrelevant; we want every recommendation in real, but only
+                    # one open real position per ticker).
+                    _cv_real_open = {
+                        r["ticker"] for r in db.load_stock_real_trades()
+                        if r.get("status") == "open"
+                    }
+                    _paper_added = 0
+                    _real_added  = 0
                     # Derive allocations independently (these vars aren't in scope yet)
                     _lcs = _cv_longs["composite_score"].sum() if not _cv_longs.empty else 0
                     _scs = abs(_cv_shorts["composite_score"].sum()) if not _cv_shorts.empty else 0
@@ -1436,22 +1445,24 @@ with tab_conviction:
                     _alloc_short_all = _cv_budget_used * (_scs / _tc) if _tc > 0 else _cv_budget_used / 2
                     for _, _lr in _cv_longs.iterrows():
                         _tk = _lr["ticker"]
-                        if _tk in _cv_existing_set:
-                            continue
                         _pl = _alloc_long_all * (_lr["composite_score"] / _lcs) if _lcs > 0 else _alloc_long_all / max(len(_cv_longs), 1)
                         _sh = round(_pl / _lr["current_price"], 4) if _lr["current_price"] else 0
-                        _new_cv = {
-                            "ticker": _tk, "direction": "LONG", "status": "open",
-                            "entry_price": _lr["current_price"], "entry_date": str(date.today()),
-                            "shares": _sh, "cost": round(_sh * _lr["current_price"], 2),
-                            "composite_score": float(_lr["composite_score"]),
-                            "score_at_entry": float(_lr["composite_score"]),
-                            "exit_signal": None, "reassess_signal": None,
-                            "earnings_flag": bool(_lr.get("earnings_flag", False)),
-                            "earnings_days_out": _lr.get("earnings_days_out"),
-                        }
-                        _cv_positions.append(_new_cv)
-                        if _cv_real_all:
+                        # ── Paper add (skip if already open in paper) ──────────
+                        if _cv_paper_all and _tk not in _cv_paper_open:
+                            _cv_positions.append({
+                                "ticker": _tk, "direction": "LONG", "status": "open",
+                                "entry_price": _lr["current_price"], "entry_date": str(date.today()),
+                                "shares": _sh, "cost": round(_sh * _lr["current_price"], 2),
+                                "composite_score": float(_lr["composite_score"]),
+                                "score_at_entry": float(_lr["composite_score"]),
+                                "exit_signal": None, "reassess_signal": None,
+                                "earnings_flag": bool(_lr.get("earnings_flag", False)),
+                                "earnings_days_out": _lr.get("earnings_days_out"),
+                            })
+                            _paper_added += 1
+                        # ── Real add (skip if already open in real) ────────────
+                        # Independent of paper state — paper rows stay untouched.
+                        if _cv_real_all and _tk not in _cv_real_open:
                             db.add_stock_real_trade({
                                 "id": str(_uuid.uuid4()), "ticker": _tk, "side": "long",
                                 "entry_price": float(_lr["current_price"]), "entry_date": str(date.today()),
@@ -1459,25 +1470,24 @@ with tab_conviction:
                                 "model_prob": float(_lr["composite_score"]), "status": "open",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
                             }, source="manual")
-                        _added += 1
+                            _real_added += 1
                     for _, _sr in _cv_shorts.iterrows():
                         _tk = _sr["ticker"]
-                        if _tk in _cv_existing_set:
-                            continue
                         _ps = _alloc_short_all * (abs(_sr["composite_score"]) / _scs) if _scs > 0 else _alloc_short_all / max(len(_cv_shorts), 1)
                         _sh = round(_ps / _sr["current_price"], 4) if _sr["current_price"] else 0
-                        _new_cv = {
-                            "ticker": _tk, "direction": "SHORT", "status": "open",
-                            "entry_price": _sr["current_price"], "entry_date": str(date.today()),
-                            "shares": _sh, "cost": round(_sh * _sr["current_price"], 2),
-                            "composite_score": float(_sr["composite_score"]),
-                            "score_at_entry": float(_sr["composite_score"]),
-                            "exit_signal": None, "reassess_signal": None,
-                            "earnings_flag": bool(_sr.get("earnings_flag", False)),
-                            "earnings_days_out": _sr.get("earnings_days_out"),
-                        }
-                        _cv_positions.append(_new_cv)
-                        if _cv_real_all:
+                        if _cv_paper_all and _tk not in _cv_paper_open:
+                            _cv_positions.append({
+                                "ticker": _tk, "direction": "SHORT", "status": "open",
+                                "entry_price": _sr["current_price"], "entry_date": str(date.today()),
+                                "shares": _sh, "cost": round(_sh * _sr["current_price"], 2),
+                                "composite_score": float(_sr["composite_score"]),
+                                "score_at_entry": float(_sr["composite_score"]),
+                                "exit_signal": None, "reassess_signal": None,
+                                "earnings_flag": bool(_sr.get("earnings_flag", False)),
+                                "earnings_days_out": _sr.get("earnings_days_out"),
+                            })
+                            _paper_added += 1
+                        if _cv_real_all and _tk not in _cv_real_open:
                             db.add_stock_real_trade({
                                 "id": str(_uuid.uuid4()), "ticker": _tk, "side": "short",
                                 "entry_price": float(_sr["current_price"]), "entry_date": str(date.today()),
@@ -1485,10 +1495,15 @@ with tab_conviction:
                                 "model_prob": float(_sr["composite_score"]), "status": "open",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
                             }, source="manual")
-                        _added += 1
-                    _cv_mod.save_conviction_positions(_cv_positions)
-                    _label = "💰 Real + Paper" if _cv_real_all else "📈 Paper"
-                    st.success(f"{_label}: added {_added} position(s).")
+                            _real_added += 1
+                    if _paper_added:
+                        _cv_mod.save_conviction_positions(_cv_positions)
+                    _msg_parts = []
+                    if _cv_paper_all:
+                        _msg_parts.append(f"📈 Paper: {_paper_added} added")
+                    if _cv_real_all:
+                        _msg_parts.append(f"💰 Real: {_real_added} added")
+                    st.success(" — ".join(_msg_parts) if _msg_parts else "Nothing to add.")
                     st.rerun()
 
                 # LONG recommendations
@@ -1850,7 +1865,12 @@ with tab_conviction:
         st.header("S&P Benchmark — Real Trade Tracker")
         st.caption("Real money trades for the conviction model. Manual entry/close — no auto-settlement.")
 
-        _cv_real = [t for t in db.load_stock_real_trades() if t.get("source") in ("conviction", "paper_promotion", "scan")]
+        # Source filter accepts every value the stock_real_trades CHECK constraint
+        # currently allows. ("conviction" was never a valid value — schema is
+        # ('scan','paper_promotion','manual') — so the bulk Real-All button
+        # writes 'manual'. Including it here so those trades are visible.)
+        _cv_real = [t for t in db.load_stock_real_trades()
+                    if t.get("source") in ("conviction", "paper_promotion", "scan", "manual")]
         _cv_real_open   = [t for t in _cv_real if t.get("status") == "open"]
         _cv_real_closed = [t for t in _cv_real if t.get("status") == "closed"]
 
