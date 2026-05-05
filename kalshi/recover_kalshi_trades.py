@@ -7,9 +7,12 @@ Fetches all fills since March 1, 2026 and reconstructs closed positions.
 import sys
 from datetime import datetime, timezone
 from collections import defaultdict
+from pathlib import Path
 
-# Ensure we can import local modules
-sys.path.insert(0, '/Users/pcf19/trading-model/trading-model')
+# Ensure kalshi/ (siblings) and repo root (shared/) are importable.
+_KALSHI_DIR = Path(__file__).parent
+sys.path.insert(0, str(_KALSHI_DIR))
+sys.path.insert(0, str(_KALSHI_DIR.parent))
 
 from kalshi_api import KalshiClient
 import db

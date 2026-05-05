@@ -41,3 +41,4 @@ kalshi/monitor.log
 cv_results_*.csv
 walk_forward_cv.png
 ticker_comparison.png
+kalshi-scan-cron.log
