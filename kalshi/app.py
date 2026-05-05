@@ -1542,6 +1542,30 @@ with tab_dash:
     st.divider()
 
 
+# ── Helpers used inside tab_perf (lifted from the original tab_conviction → tab_perf
+#    seam so they're in scope when this app stands alone). ──────────────────────
+_MONTHS = {
+    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4,
+    "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
+    "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+}
+
+
+def _parse_expiry(ticker: str):
+    try:
+        code = ticker.split("-")[1]          # e.g. "26MAR2717"
+        return datetime(2000 + int(code[:2]), _MONTHS[code[2:5]], int(code[5:7]))
+    except Exception:
+        return None
+
+
+def _week_label(dt) -> str:
+    if dt is None:
+        return "Unknown"
+    monday = dt - timedelta(days=dt.weekday())
+    return monday.strftime("%-d %b")         # e.g. "24 Mar"
+
+
 with tab_perf:
     import matplotlib
     matplotlib.use("Agg")

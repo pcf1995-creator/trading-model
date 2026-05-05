@@ -1458,7 +1458,7 @@ with tab_conviction:
                                 "shares": float(_sh), "dollars": round(_sh * _lr["current_price"], 2),
                                 "model_prob": float(_lr["composite_score"]), "status": "open",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
-                            }, source="conviction")
+                            }, source="manual")
                         _added += 1
                     for _, _sr in _cv_shorts.iterrows():
                         _tk = _sr["ticker"]
@@ -1484,7 +1484,7 @@ with tab_conviction:
                                 "shares": float(_sh), "dollars": round(_sh * _sr["current_price"], 2),
                                 "model_prob": float(_sr["composite_score"]), "status": "open",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
-                            }, source="conviction")
+                            }, source="manual")
                         _added += 1
                     _cv_mod.save_conviction_positions(_cv_positions)
                     _label = "💰 Real + Paper" if _cv_real_all else "📈 Paper"
@@ -1566,7 +1566,7 @@ with tab_conviction:
                                             "status"     : "open",
                                             "placed_at"  : datetime.now(timezone.utc).isoformat(),
                                         }
-                                        db.add_stock_real_trade(_rt_row, source="conviction")
+                                        db.add_stock_real_trade(_rt_row, source="manual")
                                         st.success(f"💰 Real + Paper LONG {_tk} @ ${_lr['current_price']}")
                                     else:
                                         st.success(f"📈 Paper LONG {_tk} @ ${_lr['current_price']}")
@@ -1643,7 +1643,7 @@ with tab_conviction:
                                             "status"     : "open",
                                             "placed_at"  : datetime.now(timezone.utc).isoformat(),
                                         }
-                                        db.add_stock_real_trade(_rt_row, source="conviction")
+                                        db.add_stock_real_trade(_rt_row, source="manual")
                                         st.success(f"💰 Real + Paper SHORT {_tk} @ ${_sr['current_price']}")
                                     else:
                                         st.success(f"📉 Paper SHORT {_tk} @ ${_sr['current_price']}")
