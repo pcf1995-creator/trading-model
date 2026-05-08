@@ -1594,12 +1594,12 @@ with tab_perf:
     from collections import defaultdict as _dd_perf
 
     # ── Backfill button ────────────────────────────────────────────────────────
-    if st.button("📥 Backfill Mar 1+", key="perf_backfill_btn"):
+    if st.button("📥 Update Closed Positions", key="perf_backfill_btn"):
         _pbf_client = make_kalshi_client()
         if _pbf_client.dry_run:
-            st.warning("No Kalshi credentials — backfill unavailable in dry-run mode.")
+            st.warning("No Kalshi credentials — update unavailable in dry-run mode.")
         else:
-            with st.spinner("Fetching all historical fills since Mar 1..."):
+            with st.spinner("Fetching closed positions from Kalshi..."):
                 try:
                     _pbf_since_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp() * 1000)
                     # No upper limit — paginate through every fill since the cutoff.
@@ -1775,11 +1775,11 @@ with tab_perf:
                         db.clear_kalshi_trades()
                         _pbf_n = db.upsert_kalshi_trades(_pbf_final)
                         st.write(f"**DEBUG:** upsert_kalshi_trades returned: {_pbf_n}")
-                        st.success(f"Backfilled {_pbf_n} historical positions from Mar 1+.")
+                        st.success(f"Updated {_pbf_n} closed positions.")
                         st.cache_data.clear()
                         st.rerun()
                 except Exception as _pbf_err:
-                    st.error(f"Backfill failed: {_pbf_err}", icon="❌")
+                    st.error(f"Update failed: {_pbf_err}", icon="❌")
 
     # ── Load from Supabase ─────────────────────────────────────────────────────
     _kalshi_trades = db.load_kalshi_trades()
