@@ -197,6 +197,18 @@ with tab_dash:
         """Cache fills for 60s since they rarely change during session."""
         return _client.get_fills(limit=1000) if not _client.dry_run else []
 
+    def _extract_yes_price(f: dict) -> float:
+        """Return yes price in dollars (0–1), trying all known Kalshi field variants."""
+        for key in ("yes_price_dollars", "yes_price_fp", "yes_price"):
+            v = f.get(key)
+            if v is not None:
+                try:
+                    fv = float(v)
+                    return fv / 100 if fv > 1 else fv
+                except (ValueError, TypeError):
+                    pass
+        return 0.0
+
     _fills_index: dict[str, dict] = {}   # ticker -> {yes: cents, no: cents}
     if not _client.dry_run:
         try:
@@ -213,9 +225,10 @@ with tab_dash:
                         continue
                     _cnt = abs(float(_pf.get("count") or _pf.get("count_fp") or 0))
                     _fside = _pf.get("side", "yes")
-                    _yp = float(_pf.get("yes_price_dollars") or _pf.get("yes_price") or 0)
-                    if _yp > 1: _yp /= 100
-                    _np = max(0.0, 1.0 - _yp) if _yp > 0 else 0.0
+                    _yp = _extract_yes_price(_pf)
+                    if _yp == 0:
+                        continue  # skip fills with no usable price rather than corrupting avg
+                    _np = max(0.0, 1.0 - _yp)
                     if _fside == "yes":
                         _yes_cost += _cnt * _yp; _yes_cnt += _cnt
                     else:
@@ -344,9 +357,12 @@ with tab_dash:
                 _local_by_ticker[tkr]["contracts"]   = int(row["Contracts"])
                 _local_by_ticker[tkr]["entry_cents"] = int(row["Entry ¢"])
                 _local_by_ticker[tkr]["stop_cents"]  = int(row["Stop ¢"])
-            db.save_position_overrides(_local_by_ticker)
-            st.cache_data.clear()
-            st.rerun()
+            try:
+                db.save_position_overrides(_local_by_ticker)
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as _save_err:
+                st.error(f"Save failed — {_save_err}. Check Supabase connection / position_overrides schema.")
 
         # Compute metrics from edited table so they reflect current edits before saving
         m1, m2, m3, m4 = st.columns(4)
@@ -1403,7 +1419,12 @@ with tab_dash:
                 st.caption(f"Actual trades: {_actual_count}/{len(_settled_paper)}")
 
         # ── Performance summary ───────────────────────────────────────────────────
-        _resolved = _settled_paper
+        # Paper-only: exclude rows that were either (a) placed real on Kalshi, or
+        # (b) recorded directly as real positions via monitor.py. Real-trade
+        # performance lives on the Performance tab.
+        _resolved = [t for t in _settled_paper
+                     if not t.get("real_trade")
+                        and t.get("placement_status") != "placed"]
 
         def _win_prob(p):
             """Model's predicted probability of the side we BET ON winning."""
