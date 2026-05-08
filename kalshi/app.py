@@ -1602,7 +1602,10 @@ with tab_perf:
             with st.spinner("Fetching all historical fills since Mar 1..."):
                 try:
                     _pbf_since_ts = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp() * 1000)
-                    _pbf_fills = _pbf_client.get_fills(limit=1000, min_ts=_pbf_since_ts)
+                    # No upper limit — paginate through every fill since the cutoff.
+                    # The 1000-fill cap previously here could drop recent closes if
+                    # API ordering put the newest beyond the cutoff.
+                    _pbf_fills = _pbf_client.get_fills(limit=0, min_ts=_pbf_since_ts)
                     st.write(f"**DEBUG:** API returned {len(_pbf_fills)} total fills")
 
                     if not _pbf_fills:
