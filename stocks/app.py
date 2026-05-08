@@ -1392,6 +1392,7 @@ with tab_conviction:
                         "z_technical", "z_fundamental", "z_earnings", "z_macro",
                         "ret_3m", "ret_6m", "roe", "revenue_growth",
                         "beat_rate", "earnings_flag", "current_price",
+                        "pct_from_close",
                     ]
                     _cv_display_cols = [c for c in _cv_display_cols if c in _cv_df.columns]
                     _cv_disp = _cv_df[_cv_display_cols].copy()
@@ -1400,6 +1401,11 @@ with tab_conviction:
                             _cv_disp[_pct_col] = _cv_disp[_pct_col].apply(
                                 lambda x: f"{x*100:+.1f}%" if pd.notna(x) else "—"
                             )
+                    if "pct_from_close" in _cv_disp.columns:
+                        # Already in percent units (not 0–1 fraction).
+                        _cv_disp["pct_from_close"] = _cv_disp["pct_from_close"].apply(
+                            lambda x: f"{x:+.2f}%" if pd.notna(x) else "—"
+                        )
                     for _score_col in ["composite_score", "z_technical", "z_fundamental",
                                        "z_earnings", "z_macro"]:
                         if _score_col in _cv_disp.columns:
@@ -1551,7 +1557,13 @@ with tab_conviction:
                                 f"Macro {_lr.get('z_macro', float('nan')):+.2f}"
                             )
                             _earn_note = f" | 📅 Earnings in {_edays}d" if _eflag and _edays else ""
-                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}  —  {_score_breakdown}{_earn_note}")
+                            # % from prior daily close — flag with ⚠️ when the stock has
+                            # already moved >2% intraday in the unfavorable direction
+                            # (up for a long, down for a short).
+                            _pfc_l = _lr.get("pct_from_close", 0.0) or 0.0
+                            _pfc_l_warn = "  ⚠️" if _pfc_l > 2.0 else ""
+                            _pfc_l_str = f" ({_pfc_l:+.2f}% from close{_pfc_l_warn})" if abs(_pfc_l) >= 0.05 else ""
+                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}{_pfc_l_str}  —  {_score_breakdown}{_earn_note}")
                             st.caption(f"{_shares:.4f} shares · ${_per_long:,.0f} allocation")
                         with _col2:
                             # Paper button: hidden if already held in paper.
@@ -1643,7 +1655,12 @@ with tab_conviction:
                                 f"Macro {_sr.get('z_macro', float('nan')):+.2f}"
                             )
                             _earn_note = f" | 📅 Earnings in {_edays}d" if _eflag and _edays else ""
-                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}  —  {_score_breakdown}{_earn_note}")
+                            # % from prior daily close — for shorts, the unfavorable
+                            # direction is DOWN (price already gave us alpha intraday).
+                            _pfc_s = _sr.get("pct_from_close", 0.0) or 0.0
+                            _pfc_s_warn = "  ⚠️" if _pfc_s < -2.0 else ""
+                            _pfc_s_str = f" ({_pfc_s:+.2f}% from close{_pfc_s_warn})" if abs(_pfc_s) >= 0.05 else ""
+                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}{_pfc_s_str}  —  {_score_breakdown}{_earn_note}")
                             st.caption(f"{_shares:.4f} shares · ${_per_short:,.0f} allocation")
                         with _col2:
                             if _in_paper:

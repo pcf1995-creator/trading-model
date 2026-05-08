@@ -123,6 +123,38 @@ def _get_close(batch: pd.DataFrame, sym: str, multi: bool) -> pd.Series:
         return pd.Series(dtype=float)
 
 
+def _fetch_live_price(ticker_obj) -> float | None:
+    """Best-effort live/intraday price for entry sizing.
+
+    Tries yfinance fast_info first (fastest, intraday quote during market hours).
+    Falls back to a 1-minute bar pull, then None. Used as an overlay for the
+    `current_price` field in ticker scoring — all model FEATURES still derive
+    from prior-daily-close history. The intent is to surface where the stock
+    is trading right now so sizing and "% from close" reflect reality, while
+    leaving the conviction score untouched.
+    """
+    try:
+        fi = ticker_obj.fast_info
+        v = None
+        if hasattr(fi, "last_price"):
+            v = fi.last_price
+        elif isinstance(fi, dict):
+            v = fi.get("last_price") or fi.get("lastPrice")
+        if v is not None and not pd.isna(v) and float(v) > 0:
+            return float(v)
+    except Exception:
+        pass
+    try:
+        bars = ticker_obj.history(period="1d", interval="1m", auto_adjust=True)
+        if not bars.empty:
+            v = float(bars["Close"].dropna().iloc[-1])
+            if v > 0:
+                return v
+    except Exception:
+        pass
+    return None
+
+
 def _compute_adx(high: pd.Series, low: pd.Series, close: pd.Series,
                  period: int = 14) -> float:
     prev_close = close.shift(1)
@@ -324,8 +356,13 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
         "earnings_confidence": 1.0,
         # Macro (sector rel already resolved)
         "sector_rel_3m"     : sector_rel_3m,
-        # Meta
+        # Meta — current_price is a live/intraday overlay; prior_close is the
+        # last fully-settled daily close (what all the technical features are
+        # built against); pct_from_close is the intraday move so the user can
+        # see how far a name has run before they consider entering.
         "current_price"     : None,
+        "prior_close"       : None,
+        "pct_from_close"    : 0.0,
     }
 
     t = yf.Ticker(ticker)
@@ -344,10 +381,18 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
 
             sma50  = float(close.iloc[-50:].mean())
             sma200 = float(close.iloc[-200:].mean())
+            # `cur` is the prior-daily-close — used by ALL technical features
+            # below so the model logic stays exactly as it was.
             cur    = float(close.iloc[-1])
             h52    = float(close.iloc[-252:].max()) if len(close) >= 252 else float(close.max())
 
-            result["current_price"]   = round(cur, 2)
+            # Live/intraday overlay for entry-price purposes only. Score and
+            # features are unchanged.
+            live = _fetch_live_price(t)
+            display_price = float(live) if (live is not None and live > 0) else cur
+            result["current_price"]   = round(display_price, 2)
+            result["prior_close"]     = round(cur, 2)
+            result["pct_from_close"]  = ((display_price - cur) / cur * 100.0) if cur > 0 else 0.0
             result["price_vs_50sma"]  = (cur - sma50)  / sma50
             result["price_vs_200sma"] = (cur - sma200) / sma200
             result["sma50_vs_200"]    = sma50 / sma200 - 1
