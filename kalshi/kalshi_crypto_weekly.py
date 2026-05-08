@@ -157,16 +157,21 @@ def main():
         try:
             import db
             added = 0
+            # Per-bucket Kelly sizing (dollars-first). This file only handles
+            # weekly markets, so BUCKET_BUDGETS["weekly"] is the cap.
+            from kalshi_crypto import _size_contracts
             for rec in recommendations:
                 try:
-                    contracts = max(1, int(bankroll * (rec["kelly_pct"] / 100)))
+                    contracts, bet_dollars = _size_contracts(
+                        rec["kelly_pct"], rec["price"], "weekly"
+                    )
                     db.add_paper_trade({
                         "ticker": rec["ticker"],
                         "side": rec["side"],
                         "status": "open",
                         "price_cents": rec["price"],
                         "contracts": contracts,
-                        "bet_dollars": contracts * rec["price"] / 100,
+                        "bet_dollars": bet_dollars,
                         "ev": rec["ev"],
                         "kelly_pct": rec["kelly_pct"],
                         "cal_prob": rec["calibrated_prob"],

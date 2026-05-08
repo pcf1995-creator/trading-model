@@ -103,6 +103,37 @@ MIN_EV             = 0.05
 MIN_EDGE           = 0.05
 MAX_KELLY          = 0.25
 DEFAULT_BANKROLL   = 500
+
+# Per-bucket capital budgets (dollars). Half-Kelly cap of MAX_KELLY (25%) means
+# the largest single bet in each bucket is BUCKET_BUDGETS[bucket] * MAX_KELLY:
+#   weekly:         $50  (200 * 0.25)
+#   intraday_long:  $50  (200 * 0.25)
+#   intraday_short: $25  (100 * 0.25)
+#   vol:            $25  (100 * 0.25)
+BUCKET_BUDGETS = {
+    "vol":            100.0,
+    "intraday_short": 100.0,
+    "intraday_long":  200.0,
+    "weekly":         200.0,
+}
+
+
+def _size_contracts(kelly_pct: float, price_cents: float, bucket: str) -> tuple[int, float]:
+    """Dollars-first Kelly sizing. Returns (contracts, bet_dollars).
+
+    kelly_pct is the half-Kelly fraction expressed as a percentage (0–25).
+    The bet is `bucket_budget * kelly_pct/100` in dollars; contracts are
+    derived from price so the actual outlay never exceeds the budget cap
+    regardless of contract price.
+    """
+    budget = BUCKET_BUDGETS.get(bucket, 100.0)
+    target_dollars = budget * (kelly_pct / 100.0)
+    price_dollars  = price_cents / 100.0
+    if price_dollars <= 0:
+        return 1, 0.0
+    contracts = max(1, int(target_dollars / price_dollars))
+    bet_dollars = round(contracts * price_dollars, 2)
+    return contracts, bet_dollars
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -1200,8 +1231,17 @@ def main():
     else:
         recommendations.sort(key=lambda x: x["ev"], reverse=True)
         for r in recommendations:
-            contracts = max(1, int(bankroll * (r["kelly_pct"] / 100)))
-            cost_usd  = contracts * r["price"] / 100
+            # Per-bucket Kelly sizing (dollars-first; respects BUCKET_BUDGETS cap).
+            _h_exp = r["hours_to_expiry"]
+            if _h_exp < 1:
+                _bucket = "vol"
+            elif _h_exp < 8:
+                _bucket = "intraday_short"
+            elif _h_exp <= 24:
+                _bucket = "intraday_long"
+            else:
+                _bucket = "weekly"
+            contracts, cost_usd = _size_contracts(r["kelly_pct"], r["price"], _bucket)
             side      = r["side"]
             print(f"\n  {r['ticker']}  [{side}]  [{r['model_type']} model]")
             print(f"    Strike      : ${r['strike']:,.0f}  "
@@ -1241,15 +1281,17 @@ def main():
                 if skip_bucket and bucket == skip_bucket:
                     continue
 
-                # Save to DB
+                # Save to DB — per-bucket Kelly sizing (dollars-first).
                 try:
-                    contracts = max(1, int(bankroll * (rec["kelly_pct"] / 100)))
+                    contracts, bet_dollars = _size_contracts(
+                        rec["kelly_pct"], rec["price"], bucket
+                    )
                     db.add_paper_trade({
                         "ticker"       : rec["ticker"],
                         "side"         : rec["side"].lower(),
                         "price_cents"  : int(rec["price"]),
                         "contracts"    : contracts,
-                        "bet_dollars"  : round(contracts * rec["price"] / 100, 2),
+                        "bet_dollars"  : bet_dollars,
                         "model_prob"   : rec["model_prob"],
                         "cal_prob"     : rec["calibrated_prob"],
                         "ev"           : rec["ev"],
@@ -1492,12 +1534,14 @@ def place_scheduled_orders(kalshi_client: KalshiClient) -> dict:
                             max_corr = max(max_corr, BTC_ETH_CORR)
                 return 1.0 - max_corr
 
-            # Get remaining budget once for all 3 trades
+            # Get remaining budget once for all 3 trades.
+            # Weekly tracks live deployment against the $200 ceiling; other
+            # buckets use BUCKET_BUDGETS without per-cycle subtraction.
             if bucket == "weekly":
                 weekly_deployed_live = get_weekly_deployed_capital(kalshi_client)
-                budget = max(0, 200.0 - weekly_deployed_live)
+                budget = max(0, BUCKET_BUDGETS["weekly"] - weekly_deployed_live)
             else:
-                budget = 500.0  # default for other buckets
+                budget = BUCKET_BUDGETS.get(bucket, 100.0)
 
             # Calculate raw allocations with discounts
             discounts = []
