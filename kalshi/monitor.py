@@ -6,13 +6,15 @@ Usage:
   python3 monitor.py check                  # check all open positions, trigger stops
   python3 monitor.py list                   # show all open positions
 
-Alert logic:
-  If current bid price drops 50% or more below your entry price,
-  the monitor flags it as a manual review alert.
+Stop-loss thresholds (computed dynamically at check time based on hours_left):
+  Weekly   (>24 hr):  stop if price drops 50% from entry  (price ≤ 50% of entry)
+  Intraday (1–24 hr): stop if price drops 70% from entry  (price ≤ 30% of entry)
+  Vol      (<1 hr):   always exempt — contracts settle naturally
 
-Config:
-  STOP_LOSS_PCT = 0.50  → alert if contract loses 50% of entry value
-                           e.g. entered at 58¢, alert if price drops to 29¢
+Exempt windows (skip stop-loss when contract is this close to expiry):
+  Weekly:   last 60 min — prevents exiting on a brief dip before settlement
+  Intraday: last 15 min — stop-loss stays active until very close to expiry
+  Vol:      always exempt (hours_left < 1 < both thresholds above)
 """
 
 import argparse
@@ -30,9 +32,16 @@ from kalshi_api import KalshiClient
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
 
-POSITIONS_FILE           = Path("positions_kalshi.json")
-STOP_LOSS_PCT            = 0.50   # alert if price drops 50% from entry
-STOP_LOSS_EXEMPT_MINUTES = 15     # skip stop-loss for contracts within this many minutes of expiry
+POSITIONS_FILE = Path("positions_kalshi.json")
+
+# Per-bucket stop-loss thresholds (fraction of entry value lost before selling)
+STOP_LOSS_PCT_WEEKLY   = 0.50   # weekly (>24 hr):  sell if price ≤ 50% of entry
+STOP_LOSS_PCT_INTRADAY = 0.70   # intraday (1–24 hr): sell if price ≤ 30% of entry
+
+# Per-bucket exempt windows: skip stop-loss when this close to expiry
+STOP_LOSS_EXEMPT_MINUTES_WEEKLY   = 60   # protect weekly contracts in final hour
+STOP_LOSS_EXEMPT_MINUTES_INTRADAY = 15   # keep stop active until near-end for intraday
+# Vol model (<1 hr) is always exempt — hours_left < 1 < both thresholds above
 
 
 # ── Positions file helpers ─────────────────────────────────────────────────────
@@ -71,7 +80,7 @@ def log_position(ticker: str, contracts: int, entry_cents: int) -> None:
         "ticker"      : ticker,
         "contracts"   : contracts,
         "entry_cents" : entry_cents,
-        "stop_cents"  : round(entry_cents * (1 - STOP_LOSS_PCT)),
+        "stop_cents"  : round(entry_cents * (1 - STOP_LOSS_PCT_WEEKLY)),
         "entered_at"  : datetime.now(timezone.utc).isoformat(),
         "status"      : "open",
     }
@@ -194,12 +203,20 @@ def sync_positions(client: KalshiClient) -> None:
             market = client.get_market(ticker)
 
         close_time = market.get("close_time", "")
+        _sync_hrs = None
+        if close_time:
+            try:
+                _close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+                _sync_hrs = (_close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            except Exception:
+                pass
+        _stop_pct = STOP_LOSS_PCT_WEEKLY if (_sync_hrs is None or _sync_hrs > 24) else STOP_LOSS_PCT_INTRADAY
         position = {
             "ticker"      : ticker,
             "side"        : side,
             "contracts"   : contracts,
             "entry_cents" : entry_cents,
-            "stop_cents"  : round(entry_cents * (1 - STOP_LOSS_PCT)),
+            "stop_cents"  : round(entry_cents * (1 - _stop_pct)),
             "close_time"  : close_time,
             "entered_at"  : datetime.now(timezone.utc).isoformat(),
             "status"      : "open",
@@ -264,7 +281,16 @@ def sync_positions(client: KalshiClient) -> None:
         actual = _avg_entry_from_fills(client, pos["ticker"], pos.get("side", "yes"))
         if actual is not None and actual != pos["entry_cents"]:
             pos["entry_cents"] = actual
-            pos["stop_cents"]  = round(actual * (1 - STOP_LOSS_PCT))
+            _ctime = pos.get("close_time", "")
+            _hrs = None
+            if _ctime:
+                try:
+                    _close_dt = datetime.fromisoformat(_ctime.replace("Z", "+00:00"))
+                    _hrs = (_close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+                except Exception:
+                    pass
+            _spct = STOP_LOSS_PCT_WEEKLY if (_hrs is None or _hrs > 24) else STOP_LOSS_PCT_INTRADAY
+            pos["stop_cents"]  = round(actual * (1 - _spct))
             pos["entry_from_fills"] = True
             updated += 1
             print(f"  Updated entry: {pos['ticker']}  {actual}¢  stop {pos['stop_cents']}¢")
@@ -316,9 +342,23 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
         if threshold is not None and hours_left is not None and hours_left > threshold:
             continue
 
-        # Vol model contracts settle imminently — exiting at a depressed price
-        # captures a bad fill with no meaningful risk reduction.  Let them ride.
-        if hours_left is not None and hours_left * 60 < STOP_LOSS_EXEMPT_MINUTES:
+        # Determine bucket and apply per-bucket exempt window.
+        # Vol (<1 hr) is always exempt since hours_left < 1 < both thresholds.
+        if hours_left is not None:
+            if hours_left < 1:
+                print(f"  EXEMPT  {ticker:<42} — vol model (<1 hr), skipping stop-loss")
+                continue
+            elif hours_left <= 24:
+                exempt_mins = STOP_LOSS_EXEMPT_MINUTES_INTRADAY
+                stop_pct    = STOP_LOSS_PCT_INTRADAY
+            else:
+                exempt_mins = STOP_LOSS_EXEMPT_MINUTES_WEEKLY
+                stop_pct    = STOP_LOSS_PCT_WEEKLY
+        else:
+            exempt_mins = STOP_LOSS_EXEMPT_MINUTES_WEEKLY
+            stop_pct    = STOP_LOSS_PCT_WEEKLY
+
+        if hours_left is not None and hours_left * 60 < exempt_mins:
             mins = hours_left * 60
             print(f"  EXEMPT  {ticker:<42} — {mins:.0f} min to expiry, skipping stop-loss")
             continue
@@ -361,7 +401,7 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
                 continue
 
         entry   = p["entry_cents"]
-        stop    = p["stop_cents"]
+        stop    = round(entry * (1 - stop_pct))   # computed dynamically from current bucket
         pnl_pct = (current_cents - entry) / entry * 100 if entry > 0 else 0.0
 
         status_str = f"{current_cents}¢  (entry {entry}¢  {pnl_pct:+.1f}%)"
