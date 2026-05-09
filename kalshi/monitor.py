@@ -30,8 +30,9 @@ from kalshi_api import KalshiClient
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
 
-POSITIONS_FILE = Path("positions_kalshi.json")
-STOP_LOSS_PCT  = 0.50   # alert if price drops 50% from entry
+POSITIONS_FILE           = Path("positions_kalshi.json")
+STOP_LOSS_PCT            = 0.50   # alert if price drops 50% from entry
+STOP_LOSS_EXEMPT_MINUTES = 15     # skip stop-loss for contracts within this many minutes of expiry
 
 
 # ── Positions file helpers ─────────────────────────────────────────────────────
@@ -299,18 +300,28 @@ def check_positions(client: KalshiClient, dry_run_sell: bool = True,
         if not any(x in series for x in ("KXBTCD", "KXETHD")):
             continue
 
+        # Always compute hours_left — needed for both the threshold filter and the
+        # stop-loss exemption window below.
+        hours_left     = None
+        close_time_str = p.get("close_time", "")
+        if close_time_str:
+            try:
+                close_dt   = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                hours_left = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            except Exception:
+                pass
+
         # Filter by time-to-expiry if requested
         threshold = 1 if imminent_only else (6 if urgent_only else None)
-        if threshold is not None:
-            close_time_str = p.get("close_time", "")
-            if close_time_str:
-                try:
-                    close_dt   = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-                    hours_left = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
-                    if hours_left > threshold:
-                        continue
-                except Exception:
-                    pass
+        if threshold is not None and hours_left is not None and hours_left > threshold:
+            continue
+
+        # Vol model contracts settle imminently — exiting at a depressed price
+        # captures a bad fill with no meaningful risk reduction.  Let them ride.
+        if hours_left is not None and hours_left * 60 < STOP_LOSS_EXEMPT_MINUTES:
+            mins = hours_left * 60
+            print(f"  EXEMPT  {ticker:<42} — {mins:.0f} min to expiry, skipping stop-loss")
+            continue
 
         try:
             market = client.get_market(ticker)

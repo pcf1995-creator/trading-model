@@ -117,6 +117,19 @@ def _run_scan_background():
         except Exception as e:
             logger.error(f"Auto-placement failed: {e}")
 
+        # Stop-loss check — runs every scan cycle so no external cron is needed.
+        # Replaces the old external cron-job.org jobs (10min/3min/1min intervals).
+        # Contracts within STOP_LOSS_EXEMPT_MINUTES of expiry are skipped (see monitor.py).
+        logger.info("Running stop-loss check...")
+        try:
+            from monitor import check_positions
+            from kalshi_api import KalshiClient as _KalshiClient
+            _stop_client = _KalshiClient()
+            check_positions(_stop_client, dry_run_sell=False)
+            logger.info("Stop-loss check complete.")
+        except Exception as e:
+            logger.error(f"Stop-loss check failed: {e}")
+
         logger.info("Background scan completed")
 
     except subprocess.TimeoutExpired:
