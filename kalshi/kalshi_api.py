@@ -31,7 +31,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config ───────────────────────────────────────────────────────────────────────────
 KALSHI_CONFIG = {
     "base_url" : "https://api.elections.kalshi.com/trade-api/v2",
     "demo_url" : "https://demo-api.kalshi.co/trade-api/v2",
@@ -40,7 +40,7 @@ KALSHI_CONFIG = {
     "key_content" : os.environ.get("KALSHI_KEY_CONTENT"), # raw PEM content
     "demo"     : os.environ.get("KALSHI_DEMO", "false").lower() == "true",
 }
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 # Mock markets for dry-run mode (realistic BTC + ETH contracts)
 _MOCK_MARKETS = [
@@ -204,7 +204,7 @@ class KalshiClient:
             "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
         }
 
-    # ── Core HTTP ─────────────────────────────────────────────────────────────
+    # ── Core HTTP ───────────────────────────────────────────────────────────────────
     def _request(self, method: str, path: str, **kwargs) -> dict:
         url     = f"{self.base_url}{path}"
         headers = self._sign_request(method, path) if self._private_key else {}
@@ -229,12 +229,12 @@ class KalshiClient:
                     raise KalshiAPIError(str(e)) from e
         return {}
 
-    # ── Auth ──────────────────────────────────────────────────────────────────
+    # ── Auth ──────────────────────────────────────────────────────────────────────────
     def login(self) -> None:
         """No-op for API key auth — signing is per-request."""
         pass
 
-    # ── Markets ───────────────────────────────────────────────────────────────
+    # ── Markets ───────────────────────────────────────────────────────────────────────
     def get_markets(self, series_ticker: str | None = None,
                     status: str = "open", limit: int = 200) -> list[dict]:
         if self.dry_run:
@@ -282,7 +282,7 @@ class KalshiClient:
             "GET", f"/markets/{ticker}/history", params={"limit": limit}
         ).get("history", [])
 
-    # ── Portfolio ─────────────────────────────────────────────────────────────
+    # ── Portfolio ──────────────────────────────────────────────────────────────────────
     def get_balance(self) -> dict:
         if self.dry_run:
             return {"balance": 100_000}   # $1,000 in cents
@@ -341,6 +341,15 @@ class KalshiClient:
             logger.info(f"DRY RUN — would place order: {payload}")
             return {"status": "dry_run", **payload}
         return self._request("POST", "/portfolio/orders", json=payload)
+
+    def get_open_orders(self, ticker: str | None = None) -> list[dict]:
+        """Return resting (unfilled) orders, optionally filtered by ticker."""
+        if self.dry_run:
+            return []
+        params: dict = {"status": "resting"}
+        if ticker:
+            params["ticker"] = ticker
+        return self._request("GET", "/portfolio/orders", params=params).get("orders", [])
 
     def sell_position(self, ticker: str, side: str, count: int,
                       min_price_cents: int) -> dict:
