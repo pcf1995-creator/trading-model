@@ -1446,6 +1446,9 @@ with tab_conviction:
                     }
                     _paper_added = 0
                     _real_added  = 0
+                    # Running counters for paper cap enforcement across the bulk loop
+                    _pa_bulk_count = len(_cv_open)
+                    _pa_bulk_gross = sum(p.get("cost", 0) for p in _cv_open)
                     # Derive allocations independently (these vars aren't in scope yet)
                     _lcs = _cv_longs["composite_score"].sum() if not _cv_longs.empty else 0
                     _scs = abs(_cv_shorts["composite_score"].sum()) if not _cv_shorts.empty else 0
@@ -1456,19 +1459,24 @@ with tab_conviction:
                         _tk = _lr["ticker"]
                         _pl = _alloc_long_all * (_lr["composite_score"] / _lcs) if _lcs > 0 else _alloc_long_all / max(len(_cv_longs), 1)
                         _sh = round(_pl / _lr["current_price"], 4) if _lr["current_price"] else 0
-                        # ── Paper add (skip if already open in paper) ──────────
+                        # ── Paper add (skip if already open or over caps) ──────
                         if _cv_paper_all and _tk not in _cv_paper_open:
-                            _cv_positions.append({
-                                "ticker": _tk, "direction": "LONG", "status": "open",
-                                "entry_price": _lr["current_price"], "entry_date": str(date.today()),
-                                "shares": _sh, "cost": round(_sh * _lr["current_price"], 2),
-                                "composite_score": float(_lr["composite_score"]),
-                                "score_at_entry": float(_lr["composite_score"]),
-                                "exit_signal": None, "reassess_signal": None,
-                                "earnings_flag": bool(_lr.get("earnings_flag", False)),
-                                "earnings_days_out": _lr.get("earnings_days_out"),
-                            })
-                            _paper_added += 1
+                            _bulk_new_cost = round(_sh * _lr["current_price"], 2)
+                            if (_pa_bulk_count < _cv_mod.PAPER_MAX_POSITIONS
+                                    and _pa_bulk_gross + _bulk_new_cost <= _cv_mod.PAPER_MAX_GROSS):
+                                _cv_positions.append({
+                                    "ticker": _tk, "direction": "LONG", "status": "open",
+                                    "entry_price": _lr["current_price"], "entry_date": str(date.today()),
+                                    "shares": _sh, "cost": _bulk_new_cost,
+                                    "composite_score": float(_lr["composite_score"]),
+                                    "score_at_entry": float(_lr["composite_score"]),
+                                    "exit_signal": None, "reassess_signal": None,
+                                    "earnings_flag": bool(_lr.get("earnings_flag", False)),
+                                    "earnings_days_out": _lr.get("earnings_days_out"),
+                                })
+                                _paper_added += 1
+                                _pa_bulk_count += 1
+                                _pa_bulk_gross += _bulk_new_cost
                         # ── Real add (skip if already open in real) ────────────
                         # Independent of paper state — paper rows stay untouched.
                         if _cv_real_all and _tk not in _cv_real_open:
@@ -1485,17 +1493,22 @@ with tab_conviction:
                         _ps = _alloc_short_all * (abs(_sr["composite_score"]) / _scs) if _scs > 0 else _alloc_short_all / max(len(_cv_shorts), 1)
                         _sh = round(_ps / _sr["current_price"], 4) if _sr["current_price"] else 0
                         if _cv_paper_all and _tk not in _cv_paper_open:
-                            _cv_positions.append({
-                                "ticker": _tk, "direction": "SHORT", "status": "open",
-                                "entry_price": _sr["current_price"], "entry_date": str(date.today()),
-                                "shares": _sh, "cost": round(_sh * _sr["current_price"], 2),
-                                "composite_score": float(_sr["composite_score"]),
-                                "score_at_entry": float(_sr["composite_score"]),
-                                "exit_signal": None, "reassess_signal": None,
-                                "earnings_flag": bool(_sr.get("earnings_flag", False)),
-                                "earnings_days_out": _sr.get("earnings_days_out"),
-                            })
-                            _paper_added += 1
+                            _bulk_new_cost_s = round(_sh * _sr["current_price"], 2)
+                            if (_pa_bulk_count < _cv_mod.PAPER_MAX_POSITIONS
+                                    and _pa_bulk_gross + _bulk_new_cost_s <= _cv_mod.PAPER_MAX_GROSS):
+                                _cv_positions.append({
+                                    "ticker": _tk, "direction": "SHORT", "status": "open",
+                                    "entry_price": _sr["current_price"], "entry_date": str(date.today()),
+                                    "shares": _sh, "cost": _bulk_new_cost_s,
+                                    "composite_score": float(_sr["composite_score"]),
+                                    "score_at_entry": float(_sr["composite_score"]),
+                                    "exit_signal": None, "reassess_signal": None,
+                                    "earnings_flag": bool(_sr.get("earnings_flag", False)),
+                                    "earnings_days_out": _sr.get("earnings_days_out"),
+                                })
+                                _paper_added += 1
+                                _pa_bulk_count += 1
+                                _pa_bulk_gross += _bulk_new_cost_s
                         if _cv_real_all and _tk not in _cv_real_open:
                             db.add_stock_real_trade({
                                 "id": str(_uuid.uuid4()), "ticker": _tk, "side": "short",
@@ -1580,24 +1593,31 @@ with tab_conviction:
                                 _cv_do_real = st.button(f"💰 Real Long {_tk}", key=f"cv_real_long_{_tk}")
 
                             if _cv_do_paper:
-                                _cv_positions.append({
-                                    "ticker"          : _tk,
-                                    "direction"       : "LONG",
-                                    "status"          : "open",
-                                    "entry_price"     : _lr["current_price"],
-                                    "entry_date"      : str(date.today()),
-                                    "shares"          : _shares,
-                                    "cost"            : round(_shares * _lr["current_price"], 2),
-                                    "composite_score" : float(_lr["composite_score"]),
-                                    "score_at_entry"  : float(_lr["composite_score"]),
-                                    "exit_signal"     : None,
-                                    "reassess_signal" : None,
-                                    "earnings_flag"   : bool(_eflag),
-                                    "earnings_days_out": _edays,
-                                })
-                                _cv_mod.save_conviction_positions(_cv_positions)
-                                st.success(f"📈 Paper LONG {_tk} @ ${_lr['current_price']}")
-                                st.rerun()
+                                _cv_paper_gross_l = sum(p.get("cost", 0) for p in _cv_open)
+                                _new_cost_l = round(_shares * _lr["current_price"], 2)
+                                if len(_cv_open) >= _cv_mod.PAPER_MAX_POSITIONS:
+                                    st.warning(f"Paper portfolio at max {_cv_mod.PAPER_MAX_POSITIONS} positions — close one first.")
+                                elif _cv_paper_gross_l + _new_cost_l > _cv_mod.PAPER_MAX_GROSS:
+                                    st.warning(f"Adding {_tk} (${_new_cost_l:,.0f}) would exceed ${_cv_mod.PAPER_MAX_GROSS:,.0f} gross limit (current: ${_cv_paper_gross_l:,.0f}).")
+                                else:
+                                    _cv_positions.append({
+                                        "ticker"          : _tk,
+                                        "direction"       : "LONG",
+                                        "status"          : "open",
+                                        "entry_price"     : _lr["current_price"],
+                                        "entry_date"      : str(date.today()),
+                                        "shares"          : _shares,
+                                        "cost"            : round(_shares * _lr["current_price"], 2),
+                                        "composite_score" : float(_lr["composite_score"]),
+                                        "score_at_entry"  : float(_lr["composite_score"]),
+                                        "exit_signal"     : None,
+                                        "reassess_signal" : None,
+                                        "earnings_flag"   : bool(_eflag),
+                                        "earnings_days_out": _edays,
+                                    })
+                                    _cv_mod.save_conviction_positions(_cv_positions)
+                                    st.success(f"📈 Paper LONG {_tk} @ ${_lr['current_price']}")
+                                    st.rerun()
                             elif _cv_do_real:
                                 import uuid as _uuid
                                 db.add_stock_real_trade({
@@ -1675,24 +1695,31 @@ with tab_conviction:
                                 _cv_do_real_s = st.button(f"💰 Real Short {_tk}", key=f"cv_real_short_{_tk}")
 
                             if _cv_do_paper_s:
-                                _cv_positions.append({
-                                    "ticker"          : _tk,
-                                    "direction"       : "SHORT",
-                                    "status"          : "open",
-                                    "entry_price"     : _sr["current_price"],
-                                    "entry_date"      : str(date.today()),
-                                    "shares"          : _shares,
-                                    "cost"            : round(_shares * _sr["current_price"], 2),
-                                    "composite_score" : float(_sr["composite_score"]),
-                                    "score_at_entry"  : float(_sr["composite_score"]),
-                                    "exit_signal"     : None,
-                                    "reassess_signal" : None,
-                                    "earnings_flag"   : bool(_eflag),
-                                    "earnings_days_out": _edays,
-                                })
-                                _cv_mod.save_conviction_positions(_cv_positions)
-                                st.success(f"📉 Paper SHORT {_tk} @ ${_sr['current_price']}")
-                                st.rerun()
+                                _cv_paper_gross_s = sum(p.get("cost", 0) for p in _cv_open)
+                                _new_cost_s = round(_shares * _sr["current_price"], 2)
+                                if len(_cv_open) >= _cv_mod.PAPER_MAX_POSITIONS:
+                                    st.warning(f"Paper portfolio at max {_cv_mod.PAPER_MAX_POSITIONS} positions — close one first.")
+                                elif _cv_paper_gross_s + _new_cost_s > _cv_mod.PAPER_MAX_GROSS:
+                                    st.warning(f"Adding {_tk} (${_new_cost_s:,.0f}) would exceed ${_cv_mod.PAPER_MAX_GROSS:,.0f} gross limit (current: ${_cv_paper_gross_s:,.0f}).")
+                                else:
+                                    _cv_positions.append({
+                                        "ticker"          : _tk,
+                                        "direction"       : "SHORT",
+                                        "status"          : "open",
+                                        "entry_price"     : _sr["current_price"],
+                                        "entry_date"      : str(date.today()),
+                                        "shares"          : _shares,
+                                        "cost"            : round(_shares * _sr["current_price"], 2),
+                                        "composite_score" : float(_sr["composite_score"]),
+                                        "score_at_entry"  : float(_sr["composite_score"]),
+                                        "exit_signal"     : None,
+                                        "reassess_signal" : None,
+                                        "earnings_flag"   : bool(_eflag),
+                                        "earnings_days_out": _edays,
+                                    })
+                                    _cv_mod.save_conviction_positions(_cv_positions)
+                                    st.success(f"📉 Paper SHORT {_tk} @ ${_sr['current_price']}")
+                                    st.rerun()
                             elif _cv_do_real_s:
                                 import uuid as _uuid
                                 db.add_stock_real_trade({
@@ -1719,6 +1746,164 @@ with tab_conviction:
                 _dc2.metric("Deployed (Long)", f"${_alloc_long:,.0f}")
                 _dc3.metric("Deployed (Short)", f"${_alloc_short:,.0f}")
                 _dc4.metric("Available", f"${_available:,.0f}", delta=f"{_available/_cv_budget_used*100:.1f}%" if _cv_budget_used else None)
+
+                # ── Portfolio Actions ─────────────────────────────────────────
+                # For each open paper position that fell off the scan
+                # recommendations, surface a Replace or Resize action.
+                if _cv_open:
+                    _pa_score_map = (
+                        dict(zip(_cv_df["ticker"], _cv_df["composite_score"]))
+                        if "composite_score" in _cv_df.columns else {}
+                    )
+                    _pa_dir_map = (
+                        dict(zip(_cv_df["ticker"], _cv_df["direction"].fillna("")))
+                        if "direction" in _cv_df.columns else {}
+                    )
+                    _pa_price_map = (
+                        dict(zip(_cv_df["ticker"], _cv_df["current_price"]))
+                        if "current_price" in _cv_df.columns else {}
+                    )
+
+                    _pa_replace = []
+                    _pa_resize  = []
+                    for _p in _cv_open:
+                        _ptk       = _p["ticker"]
+                        _pdir      = _p["direction"]
+                        _psc_entry = float(_p.get("score_at_entry") or _p.get("composite_score") or 0)
+                        _new_score = _pa_score_map.get(_ptk)
+                        _new_dir   = _pa_dir_map.get(_ptk, "")
+
+                        if _new_score is None:
+                            _pa_replace.append({
+                                "pos": _p, "new_score": None,
+                                "reason": "ticker absent from scan universe",
+                            })
+                        elif _pdir == "LONG" and _new_dir != "LONG":
+                            _pa_replace.append({
+                                "pos": _p, "new_score": _new_score,
+                                "reason": f"score {_new_score:+.3f} dropped below LONG threshold",
+                            })
+                        elif _pdir == "SHORT" and _new_dir != "SHORT":
+                            _pa_replace.append({
+                                "pos": _p, "new_score": _new_score,
+                                "reason": f"score {_new_score:+.3f} rose above SHORT threshold",
+                            })
+                        elif _psc_entry != 0 and _new_score is not None and abs(_new_score) < abs(_psc_entry) * 0.70:
+                            _pa_resize.append({
+                                "pos": _p, "new_score": _new_score, "entry_score": _psc_entry,
+                                "reason": (
+                                    f"score {_new_score:+.3f} vs entry {_psc_entry:+.3f} "
+                                    f"(weakened {(1 - abs(_new_score) / abs(_psc_entry)) * 100:.0f}%)"
+                                ),
+                            })
+
+                    if _pa_replace or _pa_resize:
+                        st.divider()
+                        st.subheader("Portfolio Actions")
+                        _held_tickers = {p["ticker"] for p in _cv_open}
+
+                        if _pa_replace:
+                            st.markdown("**Replace** — score dropped below threshold or ticker left scan universe")
+                            _pa_long_pool = (
+                                _cv_df[(_cv_df["direction"].fillna("") == "LONG") & (~_cv_df["ticker"].isin(_held_tickers))].head(5)
+                                if "direction" in _cv_df.columns else pd.DataFrame()
+                            )
+                            _pa_short_pool = (
+                                _cv_df[(_cv_df["direction"].fillna("") == "SHORT") & (~_cv_df["ticker"].isin(_held_tickers))].head(5)
+                                if "direction" in _cv_df.columns else pd.DataFrame()
+                            )
+                            for _pa_item in _pa_replace:
+                                _pp    = _pa_item["pos"]
+                                _ptk   = _pp["ticker"]
+                                _pdir  = _pp["direction"]
+                                _pool  = _pa_long_pool if _pdir == "LONG" else _pa_short_pool
+                                _pool_tickers = _pool["ticker"].tolist() if not _pool.empty else []
+                                _cur_p = float(_pa_price_map.get(_ptk) or _pp.get("entry_price") or 0)
+                                _ep    = float(_pp.get("entry_price") or _cur_p or 1)
+                                _pnl_r = ((_cur_p - _ep) / _ep if _pdir == "LONG" else (_ep - _cur_p) / _ep) if _ep else 0
+                                _pnl_d = round(_pnl_r * float(_pp.get("cost") or 0), 2)
+                                with st.container(border=True):
+                                    _rc1, _rc2 = st.columns([3, 1])
+                                    with _rc1:
+                                        st.markdown(f"**{_ptk}** ({_pdir}) — {_pa_item['reason']}")
+                                        if _pool_tickers:
+                                            _repl_sel = st.selectbox(
+                                                "Replace with", _pool_tickers,
+                                                key=f"pa_repl_sel_{_ptk}",
+                                            )
+                                        else:
+                                            st.caption("No replacement candidates available.")
+                                            _repl_sel = None
+                                    with _rc2:
+                                        _do_replace = bool(_repl_sel) and st.button(f"Replace {_ptk}", key=f"pa_repl_{_ptk}")
+                                        _do_close   = (not _repl_sel) and st.button(f"Close {_ptk}", key=f"pa_close_{_ptk}")
+                                    if _do_replace or _do_close:
+                                        import uuid as _uuid
+                                        for _i2, _ex2 in enumerate(_cv_positions):
+                                            if _ex2.get("ticker") == _ptk and _ex2.get("status") == "open":
+                                                _cv_positions[_i2] = {
+                                                    **_ex2, "status": "closed",
+                                                    "exit_price": _cur_p,
+                                                    "exit_date": str(date.today()),
+                                                    "exit_reason": "reassessment",
+                                                    "pnl_pct": round(_pnl_r * 100, 2),
+                                                    "pnl_dollars": _pnl_d,
+                                                }
+                                                break
+                                        if _do_replace:
+                                            _nr     = _pool[_pool["ticker"] == _repl_sel].iloc[0]
+                                            _cost_r = float(_pp.get("cost") or 0)
+                                            _sh_r   = round(_cost_r / float(_nr["current_price"]), 4) if _nr["current_price"] else 0
+                                            _cv_positions.append({
+                                                "ticker"          : _repl_sel,
+                                                "direction"       : _pdir,
+                                                "status"          : "open",
+                                                "entry_price"     : float(_nr["current_price"]),
+                                                "entry_date"      : str(date.today()),
+                                                "shares"          : _sh_r,
+                                                "cost"            : round(_sh_r * float(_nr["current_price"]), 2),
+                                                "composite_score" : float(_nr["composite_score"]),
+                                                "score_at_entry"  : float(_nr["composite_score"]),
+                                                "exit_signal"     : None,
+                                                "reassess_signal" : None,
+                                                "earnings_flag"   : bool(_nr.get("earnings_flag", False)),
+                                                "earnings_days_out": _nr.get("earnings_days_out"),
+                                            })
+                                        _cv_mod.save_conviction_positions(_cv_positions)
+                                        _msg = f"Replaced {_ptk} → {_repl_sel}" if _do_replace else f"Closed {_ptk}"
+                                        st.success(_msg)
+                                        st.rerun()
+
+                        if _pa_resize:
+                            st.markdown("**Resize** — conviction weakened >30% but still above threshold")
+                            for _pa_item in _pa_resize:
+                                _pp         = _pa_item["pos"]
+                                _ptk        = _pp["ticker"]
+                                _pdir       = _pp["direction"]
+                                _entry_sc   = abs(_pa_item["entry_score"])
+                                _new_sc     = abs(_pa_item["new_score"])
+                                _trim_ratio = max(0.0, min(1.0 - (_new_sc / _entry_sc), 0.90)) if _entry_sc else 0.0
+                                _new_shares = round(float(_pp.get("shares") or 0) * (1 - _trim_ratio), 4)
+                                _new_cost   = round(_new_shares * float(_pp.get("entry_price") or 0), 2)
+                                with st.container(border=True):
+                                    _rz1, _rz2 = st.columns([3, 1])
+                                    with _rz1:
+                                        st.markdown(f"**{_ptk}** ({_pdir}) — {_pa_item['reason']}")
+                                        st.caption(f"Trim ~{_trim_ratio*100:.0f}% → {_new_shares:.4f} shares (${_new_cost:,.0f})")
+                                    with _rz2:
+                                        if st.button(f"Resize {_ptk}", key=f"pa_resize_{_ptk}"):
+                                            for _i3, _ex3 in enumerate(_cv_positions):
+                                                if _ex3.get("ticker") == _ptk and _ex3.get("status") == "open":
+                                                    _cv_positions[_i3] = {
+                                                        **_ex3,
+                                                        "shares"          : _new_shares,
+                                                        "cost"            : _new_cost,
+                                                        "composite_score" : float(_pa_item["new_score"]),
+                                                    }
+                                                    break
+                                            _cv_mod.save_conviction_positions(_cv_positions)
+                                            st.success(f"Resized {_ptk} — trimmed {_trim_ratio*100:.0f}%")
+                                            st.rerun()
 
         # ── Reassess open positions ───────────────────────────────────────────
         if _cv_open and "cv_scan_result" in st.session_state:

@@ -42,13 +42,19 @@ import db as _db
 # ── Config ─────────────────────────────────────────────────────────────────────
 MAX_LONG_BY_REGIME  = {"Expansion": 7, "Caution": 5, "Contraction": 3}
 MAX_SHORT_BY_REGIME = {"Expansion": 3, "Caution": 5, "Contraction": 7}
-HARD_STOP_PCT       = 0.15
+HARD_STOP_PCT       = 0.20
 SMALL_CAP_THRESH   = 5e9
 EXIT_DECILE        = 0.35      # exit long below 35th pct; short above 65th pct
 MIN_LONG_SCORE     = 0.25      # composite must beat this to open a long
 MIN_SHORT_SCORE    = -0.25     # composite must beat this (below) to open a short
 EARNINGS_FLAG_DAYS = 14        # flag if next earnings within this many days
 EARNINGS_CONFIDENCE = 0.70     # multiply earnings z-score by this if flagged
+
+# Paper portfolio limits
+PAPER_MAX_POSITIONS = 15
+PAPER_MAX_GROSS     = 5_000.0
+EARNINGS_TRIM_GAIN  = 0.15     # flag for trim if unrealized gain exceeds this
+EARNINGS_TRIM_DAYS  = 7        # flag if earnings within this many days AND gain > above
 
 SPY_DRAWDOWN_THRESHOLD = 0.10  # 10% off 52w high triggers one regime signal
 
@@ -704,6 +710,16 @@ def assess_open_positions(positions: list[dict],
                     pos["reassess_signal"] = f"Fallen to {pct:.0%} pct — thesis weakened"
                 elif direction == "SHORT" and pct > (1 - EXIT_DECILE):
                     pos["reassess_signal"] = f"Risen to {pct:.0%} pct — thesis weakened"
+
+            # Earnings trim: unrealized gain > threshold + earnings imminent
+            edays = edays_map.get(ticker)
+            if (pos.get("reassess_signal") is None
+                    and pnl_pct >= EARNINGS_TRIM_GAIN
+                    and edays is not None
+                    and edays <= EARNINGS_TRIM_DAYS):
+                pos["reassess_signal"] = (
+                    f"EARNINGS_TRIM — up {pnl_pct*100:.1f}% with earnings in {edays}d"
+                )
 
         updated.append(pos)
     return updated
