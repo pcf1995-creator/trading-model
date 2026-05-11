@@ -42,13 +42,19 @@ import db as _db
 # ── Config ─────────────────────────────────────────────────────────────────────
 MAX_LONG_BY_REGIME  = {"Expansion": 7, "Caution": 5, "Contraction": 3}
 MAX_SHORT_BY_REGIME = {"Expansion": 3, "Caution": 5, "Contraction": 7}
-HARD_STOP_PCT       = 0.15
+HARD_STOP_PCT       = 0.20
 SMALL_CAP_THRESH   = 5e9
 EXIT_DECILE        = 0.35      # exit long below 35th pct; short above 65th pct
 MIN_LONG_SCORE     = 0.25      # composite must beat this to open a long
 MIN_SHORT_SCORE    = -0.25     # composite must beat this (below) to open a short
 EARNINGS_FLAG_DAYS = 14        # flag if next earnings within this many days
 EARNINGS_CONFIDENCE = 0.70     # multiply earnings z-score by this if flagged
+
+# Paper portfolio limits
+PAPER_MAX_POSITIONS = 15
+PAPER_MAX_GROSS     = 5_000.0
+EARNINGS_TRIM_GAIN  = 0.15     # flag for trim if unrealized gain exceeds this
+EARNINGS_TRIM_DAYS  = 7        # flag if earnings within this many days AND gain > above
 
 SPY_DRAWDOWN_THRESHOLD = 0.10  # 10% off 52w high triggers one regime signal
 
@@ -280,49 +286,267 @@ def _fetch_sector_returns(tickers: list[str], spy_3m: float | None) -> dict[str,
 # ── Per-ticker data ────────────────────────────────────────────────────────────
 
 def _fetch_fundamentals_alpha_vantage(ticker: str) -> dict:
-    """Fetch fundamentals from Alpha Vantage (with rate limiting)."""
-    fund_data = {}
+    """Fetch fundamentals via Alpha Vantage REST API.
+
+    Makes up to three endpoint calls per ticker:
+      1. OVERVIEW      — market cap, ROE, margins, growth rates, PE, PB,
+                         gross margin (GrossProfitTTM / RevenueTTM)
+      2. BALANCE_SHEET — debt/equity ratio (totalLiabilities / totalShareholderEquity)
+      3. CASH_FLOW     — free cash flow yield (operatingCashflow − |capitalExpenditures|)
+
+    Only called when yfinance is missing one or more critical fundamental fields.
+    Results are written to the Supabase fundamental_cache by the calling function;
+    this function is purely a data-fetch layer.
+    """
     if not ALPHA_VANTAGE_KEY:
-        return fund_data
+        return {}
 
+    import requests as _requests
+
+    _AV_BASE = "https://www.alphavantage.co/query"
+    fund: dict = {}
+
+    def _av_get(function: str) -> dict:
+        try:
+            time.sleep(0.2)
+            r = _requests.get(
+                _AV_BASE,
+                params={"function": function, "symbol": ticker, "apikey": ALPHA_VANTAGE_KEY},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            # Rate-limit and info messages signal a failed call
+            if "Information" in data or "Note" in data:
+                return {}
+            return data
+        except Exception:
+            return {}
+
+    def _fval(d: dict, key: str) -> float:
+        v = d.get(key)
+        if v in (None, "None", "-", "", "0"):
+            return np.nan
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return np.nan
+
+    # ── 1. OVERVIEW ────────────────────────────────────────────────────────────
+    ov = _av_get("OVERVIEW")
+    if ov:
+        mcap = _fval(ov, "MarketCapitalization")
+        if not np.isnan(mcap):
+            fund["market_cap"] = mcap
+
+        for dest, src in [
+            ("roe",            "ReturnOnEquityTTM"),
+            ("profit_margin",  "ProfitMargin"),
+            ("fwd_pe",         "ForwardPE"),
+            ("pb",             "PriceToBookRatio"),
+            ("eps_qoq_growth", "QuarterlyEarningsGrowthYOY"),
+            ("revenue_growth", "QuarterlyRevenueGrowthYOY"),
+            ("earnings_growth","QuarterlyEarningsGrowthYOY"),
+        ]:
+            v = _fval(ov, src)
+            if not np.isnan(v):
+                fund[dest] = v
+
+        # Gross margin from TTM figures (not available as a single field)
+        gp  = _fval(ov, "GrossProfitTTM")
+        rev = _fval(ov, "RevenueTTM")
+        if not np.isnan(gp) and not np.isnan(rev) and rev > 0:
+            fund["gross_margin"] = gp / rev
+
+    # ── 2. BALANCE_SHEET ───────────────────────────────────────────────────────
+    bs = _av_get("BALANCE_SHEET")
+    annual_bs = (bs.get("annualReports") or [])
+    if annual_bs:
+        latest = annual_bs[0]
+        equity = _fval(latest, "totalShareholderEquity")
+        debt   = _fval(latest, "totalLiabilities")
+        if not np.isnan(equity) and not np.isnan(debt) and equity != 0:
+            fund["debt_equity_neg"] = -debt / equity
+
+    # ── 3. CASH_FLOW ───────────────────────────────────────────────────────────
+    cf = _av_get("CASH_FLOW")
+    annual_cf = (cf.get("annualReports") or [])
+    if annual_cf:
+        latest = annual_cf[0]
+        op_cf  = _fval(latest, "operatingCashflow")
+        capex  = _fval(latest, "capitalExpenditures")
+        if not np.isnan(op_cf) and not np.isnan(capex):
+            fcf  = op_cf - abs(capex)
+            mcap = fund.get("market_cap")
+            if mcap and not np.isnan(mcap) and mcap > 0:
+                fund["fcf_yield"] = fcf / mcap
+
+    return fund
+
+
+_CRITICAL_FUND_FIELDS = {"roe", "gross_margin", "revenue_growth", "profit_margin"}
+
+
+def _fetch_and_cache_fundamentals(ticker: str, t) -> dict:
+    """Return all non-technical per-ticker fields, using Supabase cache when fresh.
+
+    Covers:
+      - Fundamental pillar inputs (roe, margins, PE, PB, growth rates, FCF yield)
+      - Earnings beat history (beat_rate, avg_eps_surprise)
+      - Next earnings date as an ISO string (next_earnings_date)
+
+    Strategy:
+      1. Check Supabase fundamental_cache — return immediately if within TTL.
+      2. Fetch yfinance t.info for all fundamental fields.
+      3. If any critical field (roe, gross_margin, revenue_growth, profit_margin)
+         is still NaN, call Alpha Vantage (OVERVIEW + BALANCE_SHEET + CASH_FLOW)
+         and fill gaps — yfinance values are never overwritten.
+      4. Fetch earnings beat history and next earnings date from yfinance.
+      5. Write the complete result to the Supabase cache.
+      6. Return the result dict.
+
+    Any error in a sub-step is swallowed so the scan keeps running with partial data.
+    """
+    # 1. Cache hit — fast path
+    cached = _db.get_fundamental_cache(ticker)
+    if cached:
+        return {
+            k: v for k, v in cached.items()
+            if k not in ("ticker", "fetch_date", "updated_at", "source")
+        }
+
+    fund: dict = {}
+
+    # 2. yfinance t.info fundamentals
     try:
-        from alpha_vantage.fundamentaldata import FundamentalData
-        fd = FundamentalData(key=ALPHA_VANTAGE_KEY)
-        time.sleep(0.2)  # Rate limiting: 5 calls/min = 12s per call
+        info = t.info or {}
 
-        # Fetch income statement
-        income, _ = fd.get_income_statement_annual(ticker)
-        if isinstance(income, pd.DataFrame) and not income.empty:
-            latest = income.iloc[0]
+        mcap = info.get("marketCap")
+        if mcap is not None:
             try:
-                revenue = float(latest.get("totalRevenue", 0)) or None
-                net_income = float(latest.get("netIncome", 0)) or None
-                if revenue and net_income:
-                    fund_data["profit_margin"] = net_income / revenue
-            except (TypeError, ValueError, ZeroDivisionError):
+                fund["market_cap"] = float(mcap)
+            except (TypeError, ValueError):
                 pass
 
-        # Fetch balance sheet
-        time.sleep(0.2)
-        bs, _ = fd.get_balance_sheet_annual(ticker)
-        if isinstance(bs, pd.DataFrame) and not bs.empty:
-            latest = bs.iloc[0]
+        for dest, src in [
+            ("roe",            "returnOnEquity"),
+            ("gross_margin",   "grossMargins"),
+            ("revenue_growth", "revenueGrowth"),
+            ("earnings_growth","earningsGrowth"),
+            ("profit_margin",  "profitMargins"),
+        ]:
             try:
-                assets = float(latest.get("totalAssets", 0)) or None
-                equity = float(latest.get("totalShareholderEquity", 0)) or None
-                debt = float(latest.get("totalLiabilities", 0)) or None
-                if equity and assets:
-                    fund_data["roe"] = net_income / equity if net_income else np.nan
-                if debt and equity:
-                    fund_data["debt_equity_neg"] = -debt / equity
-            except (TypeError, ValueError, ZeroDivisionError):
+                v = info.get(src)
+                if v is not None:
+                    fv = float(v)
+                    if not np.isnan(fv):
+                        fund[dest] = fv
+            except (TypeError, ValueError):
                 pass
-    except ImportError:
-        pass  # alpha_vantage not installed
+
+        try:
+            fcf   = info.get("freeCashflow")
+            mcap_ = fund.get("market_cap")
+            if fcf is not None and mcap_ and mcap_ > 0:
+                fund["fcf_yield"] = float(fcf) / mcap_
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            de = info.get("debtToEquity")
+            if de is not None:
+                fund["debt_equity_neg"] = -float(de) / 100
+        except (TypeError, ValueError):
+            pass
+
+        for dest, src, positive_only in [
+            ("pb",            "priceToBook",             True),
+            ("fwd_pe",        "forwardPE",               True),
+            ("eps_qoq_growth","earningsQuarterlyGrowth", False),
+        ]:
+            try:
+                v = info.get(src)
+                if v is not None:
+                    fv = float(v)
+                    if not np.isnan(fv) and (not positive_only or fv > 0):
+                        fund[dest] = fv
+            except (TypeError, ValueError):
+                pass
+
     except Exception:
-        pass  # API errors, rate limits, etc.
+        pass
 
-    return fund_data
+    # 3. Alpha Vantage supplement — only where yfinance left critical fields empty
+    critical_missing = any(
+        np.isnan(fund.get(f, np.nan)) for f in _CRITICAL_FUND_FIELDS
+    )
+    source = "yfinance"
+    if critical_missing:
+        av = _fetch_fundamentals_alpha_vantage(ticker)
+        if av:
+            for k, v in av.items():
+                yf_val = fund.get(k)
+                # Only fill in if yfinance returned nothing usable
+                if yf_val is None or (isinstance(yf_val, float) and np.isnan(yf_val)):
+                    fund[k] = v
+            # AV contributed data — classify as mixed regardless of how many
+            # critical fields remain (some tickers genuinely have no public data)
+            source = "mixed"
+
+    # 4. Earnings beat history
+    try:
+        eh = None
+        for attr in ("earnings_history", "earnings_dates"):
+            try:
+                eh = getattr(t, attr, None)
+                if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
+                    break
+                eh = None
+            except Exception:
+                pass
+
+        if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
+            eh.columns = [c.lower().replace(" ", "_") for c in eh.columns]
+            actual_col   = next((c for c in eh.columns if "actual"   in c), None)
+            estimate_col = next((c for c in eh.columns if "estimate" in c), None)
+            if actual_col and estimate_col:
+                valid = eh.dropna(subset=[actual_col, estimate_col])
+                if len(valid) > 0:
+                    beats = (valid[actual_col] > valid[estimate_col]).sum()
+                    fund["beat_rate"] = float(beats / len(valid))
+                    est_abs  = valid[estimate_col].abs().replace(0, np.nan)
+                    surprise = ((valid[actual_col] - valid[estimate_col]) / est_abs).clip(-2, 2)
+                    fund["avg_eps_surprise"] = float(surprise.mean())
+    except Exception:
+        pass
+
+    # 5. Next earnings date — stored as ISO string; earnings_days_out computed at runtime
+    try:
+        cal     = t.calendar
+        next_ed = None
+        if isinstance(cal, dict):
+            ed      = cal.get("Earnings Date")
+            next_ed = ed[0] if isinstance(ed, list) and ed else ed
+        elif isinstance(cal, pd.DataFrame) and not cal.empty:
+            try:
+                next_ed = cal.loc["Earnings Date"].iloc[0]
+            except Exception:
+                pass
+
+        if next_ed is not None:
+            if hasattr(next_ed, "date"):
+                next_ed = next_ed.date()
+            elif isinstance(next_ed, str):
+                next_ed = datetime.strptime(next_ed[:10], "%Y-%m-%d").date()
+            if isinstance(next_ed, date):
+                fund["next_earnings_date"] = next_ed.isoformat()
+    except Exception:
+        pass
+
+    # 6. Write to cache
+    _db.upsert_fundamental_cache(ticker, {**fund, "source": source})
+
+    return fund
 
 
 def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
@@ -409,131 +633,33 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
     except Exception:
         pass
 
-    # ── Fundamentals (isolated — each field individually guarded) ─────────────
-    # Try Alpha Vantage first for better data
-    av_fund = _fetch_fundamentals_alpha_vantage(ticker)
-    for k, v in av_fund.items():
-        if v is not None and not np.isnan(v):
-            result[k] = v
+    # ── Fundamentals + earnings history (cached) ──────────────────────────────
+    # Single call: checks Supabase cache first (7-day TTL), falls back to
+    # yfinance t.info, and supplements with Alpha Vantage REST API for any
+    # ticker where yfinance is missing critical fundamental fields.
+    _cached = _fetch_and_cache_fundamentals(ticker, t)
 
-    try:
-        info = t.info or {}
-        mcap = info.get("marketCap")
-        if mcap is not None:
-            try:
-                result["market_cap"] = float(mcap)
-            except (TypeError, ValueError):
-                pass
+    _SKIP = {"next_earnings_date"}  # handled separately below
+    for _k, _v in _cached.items():
+        if _k in _SKIP or _k not in result:
+            continue
+        if _v is None or (isinstance(_v, float) and np.isnan(_v)):
+            continue
+        result[_k] = _v
 
-        for key, field in [
-            ("roe",             "returnOnEquity"),
-            ("gross_margin",    "grossMargins"),
-            ("revenue_growth",  "revenueGrowth"),
-            ("earnings_growth", "earningsGrowth"),
-            ("profit_margin",   "profitMargins"),
-        ]:
-            try:
-                val = info.get(field)
-                if val is not None:
-                    fval = float(val)
-                    if not np.isnan(fval):
-                        result[key] = fval
-            except (TypeError, ValueError):
-                pass
-
+    # Derive earnings flag from cached absolute date so it stays correct
+    # even when the cache was written on a different day.
+    _ned = _cached.get("next_earnings_date")
+    if _ned:
         try:
-            fcf  = info.get("freeCashflow")
-            mcap_ = result.get("market_cap")
-            if fcf is not None and mcap_ and mcap_ > 0:
-                result["fcf_yield"] = float(fcf) / mcap_
-        except (TypeError, ValueError):
+            _ned_date = date.fromisoformat(str(_ned))
+            _days_out = (_ned_date - date.today()).days
+            result["earnings_days_out"] = _days_out
+            if 0 <= _days_out <= EARNINGS_FLAG_DAYS:
+                result["earnings_flag"]       = True
+                result["earnings_confidence"] = EARNINGS_CONFIDENCE
+        except Exception:
             pass
-
-        try:
-            de = info.get("debtToEquity")
-            if de is not None:
-                result["debt_equity_neg"] = -float(de) / 100
-        except (TypeError, ValueError):
-            pass
-
-        try:
-            pb = info.get("priceToBook")
-            if pb is not None and float(pb) > 0:
-                result["pb"] = float(pb)
-        except (TypeError, ValueError):
-            pass
-
-        try:
-            fpe = info.get("forwardPE")
-            if fpe is not None and float(fpe) > 0:
-                result["fwd_pe"] = float(fpe)
-        except (TypeError, ValueError):
-            pass
-
-        try:
-            eps_qoq = info.get("earningsQuarterlyGrowth")
-            if eps_qoq is not None:
-                result["eps_qoq_growth"] = float(eps_qoq)
-        except (TypeError, ValueError):
-            pass
-
-    except Exception:
-        pass
-
-    # ── Earnings beat history (isolated — tries multiple yfinance APIs) ────────
-    try:
-        eh = None
-        for attr in ("earnings_history", "earnings_dates"):
-            try:
-                eh = getattr(t, attr, None)
-                if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
-                    break
-                eh = None
-            except Exception:
-                pass
-
-        if eh is not None and isinstance(eh, pd.DataFrame) and len(eh) >= 2:
-            # Normalise column names (yfinance versions differ in casing)
-            eh.columns = [c.lower().replace(" ", "_") for c in eh.columns]
-            actual_col   = next((c for c in eh.columns if "actual" in c), None)
-            estimate_col = next((c for c in eh.columns if "estimate" in c), None)
-            if actual_col and estimate_col:
-                valid = eh.dropna(subset=[actual_col, estimate_col])
-                if len(valid) > 0:
-                    beats = (valid[actual_col] > valid[estimate_col]).sum()
-                    result["beat_rate"] = float(beats / len(valid))
-                    est_abs = valid[estimate_col].abs().replace(0, np.nan)
-                    surprise = ((valid[actual_col] - valid[estimate_col]) / est_abs).clip(-2, 2)
-                    result["avg_eps_surprise"] = float(surprise.mean())
-    except Exception:
-        pass
-
-    # ── Next earnings date (isolated) ─────────────────────────────────────────
-    try:
-        cal     = t.calendar
-        next_ed = None
-        if isinstance(cal, dict):
-            ed = cal.get("Earnings Date")
-            next_ed = ed[0] if isinstance(ed, list) and ed else ed
-        elif isinstance(cal, pd.DataFrame) and not cal.empty:
-            try:
-                next_ed = cal.loc["Earnings Date"].iloc[0]
-            except Exception:
-                pass
-
-        if next_ed is not None:
-            if hasattr(next_ed, "date"):
-                next_ed = next_ed.date()
-            elif isinstance(next_ed, str):
-                next_ed = datetime.strptime(next_ed[:10], "%Y-%m-%d").date()
-            if isinstance(next_ed, date):
-                days_out = (next_ed - date.today()).days
-                result["earnings_days_out"] = days_out
-                if 0 <= days_out <= EARNINGS_FLAG_DAYS:
-                    result["earnings_flag"]       = True
-                    result["earnings_confidence"] = EARNINGS_CONFIDENCE
-    except Exception:
-        pass
 
     if result["current_price"] is None:
         return None
@@ -704,6 +830,16 @@ def assess_open_positions(positions: list[dict],
                     pos["reassess_signal"] = f"Fallen to {pct:.0%} pct — thesis weakened"
                 elif direction == "SHORT" and pct > (1 - EXIT_DECILE):
                     pos["reassess_signal"] = f"Risen to {pct:.0%} pct — thesis weakened"
+
+            # Earnings trim: unrealized gain > threshold + earnings imminent
+            edays = edays_map.get(ticker)
+            if (pos.get("reassess_signal") is None
+                    and pnl_pct >= EARNINGS_TRIM_GAIN
+                    and edays is not None
+                    and edays <= EARNINGS_TRIM_DAYS):
+                pos["reassess_signal"] = (
+                    f"EARNINGS_TRIM — up {pnl_pct*100:.1f}% with earnings in {edays}d"
+                )
 
         updated.append(pos)
     return updated
