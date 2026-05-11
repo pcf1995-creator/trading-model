@@ -1181,18 +1181,19 @@ with tab_conviction:
                 _pos_size_entry = round(_shares_held * _ep, 2)
                 _pos_size_current = round(_shares_held * _cur, 2)
                 _cv_rows.append({
-                    "Ticker"    : _cp["ticker"],
-                    "Entry Date": _cp["entry_date"],
-                    "Dir"       : _dir,
-                    "Shares"    : f"{_shares_held:.4f}" if _shares_held else "—",
+                    "Ticker"      : _cp["ticker"],
+                    "Entry Date"  : _cp["entry_date"],
+                    "Dir"         : _dir,
+                    "Shares"      : f"{_shares_held:.4f}" if _shares_held else "—",
                     "Position Size": f"${_pos_size_entry:,.0f}",
-                    "Entry $"   : f"${_ep:.2f}",
-                    "Current $" : f"${_cur:.2f}",
-                    "P&L %"     : f"{_pnl:+.2f}%",
-                    "P&L $"     : f"${_pnl_d:+.2f}",
-                    "Days"      : (date.today() - date.fromisoformat(_cp["entry_date"])).days,
-                    "Score"     : f"{_score:.3f}" if _score is not None else "—",
-                    "Status"    : _flag,
+                    "Entry $"     : f"${_ep:.2f}",
+                    "Current $"   : f"${_cur:.2f}",
+                    "P&L %"       : f"{_pnl:+.2f}%",
+                    "P&L $"       : f"${_pnl_d:+.2f}",
+                    "Days"        : (date.today() - date.fromisoformat(_cp["entry_date"])).days,
+                    "Entry Score" : f"{_cp.get('score_at_entry'):+.3f}" if _cp.get("score_at_entry") is not None else "—",
+                    "Score"       : f"{_cp.get('current_score'):+.3f}" if _cp.get("current_score") is not None else "—",
+                    "Status"      : _flag,
                 })
                 _cv_pnl_dollars.append(_pnl_d)
                 _cv_costs.append(_cost)
@@ -1298,24 +1299,32 @@ with tab_conviction:
             for i, _cp in enumerate(_cv_open):
                 _cur_price = _cv_live_price(_cp["ticker"]) or _cp["entry_price"]
                 _current_size = round(_cp.get("shares", 0) * _cur_price, 0)
+                _entry_score   = _cp.get("score_at_entry")
                 _current_score = _cp.get("current_score")
-                if _current_score is None:
-                    _current_score = _cp.get("score_at_entry")
                 _pnl_val = _cv_pnl_dollars[i] if i < len(_cv_pnl_dollars) else 0
-                # Score weakness depends on direction: LONG wants positive scores, SHORT wants negative scores
-                _is_weak = False
+                # Status uses actual conviction thresholds so below-threshold
+                # positions are immediately visible without running a scan.
+                _score_status = "—"
                 if _current_score is not None:
-                    if _cp["direction"] == "LONG":
-                        _is_weak = _current_score < 0.05  # LONG weak if score near 0 or negative
-                    elif _cp["direction"] == "SHORT":
-                        _is_weak = _current_score > -0.05  # SHORT weak if score near 0 or positive
-                _score_status = ("⚠️ Weak" if _is_weak else "✓ OK") if _current_score is not None else "—"
+                    _dir = _cp["direction"]
+                    if _dir == "LONG" and _current_score < _cv_mod.MIN_LONG_SCORE:
+                        _score_status = "🚨 Below Threshold"
+                    elif _dir == "SHORT" and _current_score > _cv_mod.MIN_SHORT_SCORE:
+                        _score_status = "🚨 Below Threshold"
+                    elif _dir == "LONG" and _current_score < 0.35:
+                        _score_status = "⚠️ Weak"
+                    elif _dir == "SHORT" and _current_score > -0.35:
+                        _score_status = "⚠️ Weak"
+                    else:
+                        _score_status = "✓ OK"
                 _cv_score_review.append({
-                    "Ticker": _cp["ticker"],
-                    "Size": f"${_current_size:,.0f}",
-                    "Score": f"{_current_score:+.3f}" if _current_score is not None else "—",
-                    "P&L": f"${_pnl_val:+.0f}",
-                    "Status": _score_status,
+                    "Ticker"      : _cp["ticker"],
+                    "Dir"         : _cp["direction"],
+                    "Size"        : f"${_current_size:,.0f}",
+                    "Entry Score" : f"{_entry_score:+.3f}" if _entry_score is not None else "—",
+                    "Score"       : f"{_current_score:+.3f}" if _current_score is not None else "—",
+                    "P&L"         : f"${_pnl_val:+.0f}",
+                    "Status"      : _score_status,
                 })
 
             _cv_score_review = sorted(_cv_score_review, key=lambda x: float(x["Score"].replace("—", "999")) if x["Score"] != "—" else 999.0)
