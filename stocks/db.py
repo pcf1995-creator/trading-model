@@ -347,3 +347,100 @@ def upload_stock_file(filename: str, local_path: Path) -> bool:
     except Exception as e:
         logger.error(f"Upload failed for {filename}: {e}")
         return False
+
+
+# ── Fundamental cache ──────────────────────────────────────────────────────────
+#
+# Supabase table DDL (run once in the Supabase SQL editor):
+#
+#   CREATE TABLE fundamental_cache (
+#       ticker           TEXT PRIMARY KEY,
+#       fetch_date       DATE NOT NULL,
+#       source           TEXT,
+#       market_cap       FLOAT,
+#       roe              FLOAT,
+#       gross_margin     FLOAT,
+#       revenue_growth   FLOAT,
+#       earnings_growth  FLOAT,
+#       profit_margin    FLOAT,
+#       fcf_yield        FLOAT,
+#       debt_equity_neg  FLOAT,
+#       pb               FLOAT,
+#       fwd_pe           FLOAT,
+#       eps_qoq_growth   FLOAT,
+#       beat_rate        FLOAT,
+#       avg_eps_surprise FLOAT,
+#       next_earnings_date DATE,
+#       updated_at       TIMESTAMPTZ DEFAULT now()
+#   );
+#
+FUNDAMENTAL_CACHE_TTL_DAYS = 7
+
+_FUND_CACHE_COLS = {
+    "market_cap", "roe", "gross_margin", "revenue_growth", "earnings_growth",
+    "profit_margin", "fcf_yield", "debt_equity_neg", "pb", "fwd_pe",
+    "eps_qoq_growth", "beat_rate", "avg_eps_surprise", "next_earnings_date",
+    "source",
+}
+
+
+def get_fundamental_cache(ticker: str) -> dict | None:
+    """Return cached fundamentals for ticker if within TTL, else None.
+
+    Returns None on any error so callers always fall back to live fetch.
+    """
+    from datetime import date as _date
+    import math
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        resp = (
+            client.table("fundamental_cache")
+            .select("*")
+            .eq("ticker", ticker)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        fetch_date_str = row.get("fetch_date")
+        if not fetch_date_str:
+            return None
+        fetch_date = _date.fromisoformat(str(fetch_date_str))
+        if (_date.today() - fetch_date).days > FUNDAMENTAL_CACHE_TTL_DAYS:
+            return None
+        return row
+    except Exception as e:
+        logger.warning(f"get_fundamental_cache({ticker}) failed: {e}")
+        return None
+
+
+def upsert_fundamental_cache(ticker: str, data: dict) -> None:
+    """Write or overwrite the fundamental cache row for ticker.
+
+    Silently skips NaN/inf/None values so the column stays NULL rather than
+    storing a sentinel that would look like real data.
+    """
+    import math
+    client = _get_client()
+    if not client:
+        return
+    try:
+        row: dict = {
+            "ticker":     ticker,
+            "fetch_date": datetime.now(timezone.utc).date().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        for k, v in data.items():
+            if k not in _FUND_CACHE_COLS:
+                continue
+            if v is None:
+                continue
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                continue
+            row[k] = v
+        client.table("fundamental_cache").upsert(row, on_conflict="ticker").execute()
+    except Exception as e:
+        logger.warning(f"upsert_fundamental_cache({ticker}) failed: {e}")
