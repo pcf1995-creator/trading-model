@@ -112,6 +112,50 @@ def add_stock_real_trade(trade: dict, source: str = "scan",
     _save_json(_STOCK_REAL_TRADES_JSON, trades)
 
 
+
+
+def update_stock_real_trade(trade_id: str, updates: dict) -> None:
+    """Update editable fields of an open real trade (entry_price, entry_date, shares, side).
+
+    Automatically recomputes `dollars` when entry_price or shares change.
+    """
+    allowed = {"ticker", "side", "entry_price", "entry_date", "shares"}
+    payload = {k: v for k, v in updates.items() if k in allowed}
+    if not payload:
+        return
+
+    # Recompute invested dollars if price or shares changed
+    client = _get_client()
+    rows = []
+    if client:
+        try:
+            resp = client.table("stock_real_trades").select("*").eq("id", trade_id).execute()
+            rows = resp.data or []
+        except Exception as e:
+            logger.warning(f"update_stock_real_trade fetch failed: {e}")
+    if not rows:
+        rows = [t for t in _load_json(_STOCK_REAL_TRADES_JSON) if t.get("id") == trade_id]
+    if rows:
+        r = rows[0]
+        ep = float(payload.get("entry_price", r.get("entry_price") or 0))
+        sh = float(payload.get("shares",      r.get("shares")      or 0))
+        payload["dollars"] = round(ep * sh, 2)
+
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    if client:
+        try:
+            client.table("stock_real_trades").update(payload).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"update_stock_real_trade failed: {e}")
+    trades = _load_json(_STOCK_REAL_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(payload)
+    _save_json(_STOCK_REAL_TRADES_JSON, trades)
+
+
 def close_stock_real_trade(trade_id: str, exit_price: float, exit_date: str,
                             exit_reason: str, notes: str | None = None) -> None:
     """Manually close a real trade. Computes P&L from the row's entry_price/shares/side."""

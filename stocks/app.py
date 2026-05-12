@@ -2105,12 +2105,43 @@ with tab_conviction:
         st.header("S&P Benchmark — Real Trade Tracker")
         st.caption("Real money trades for the conviction model. Manual entry/close — no auto-settlement.")
 
+        # ── Add a real trade manually ─────────────────────────────────────────
+        with st.expander("➕ Add Real Trade"):
+            with st.form("cvr_add_trade"):
+                _add_c1, _add_c2 = st.columns(2)
+                _add_ticker = _add_c1.text_input("Ticker").upper().strip()
+                _add_side   = _add_c2.selectbox("Direction", ["Long", "Short"])
+                _add_c3, _add_c4, _add_c5 = st.columns(3)
+                _add_ep     = _add_c3.number_input("Entry price ($)", min_value=0.01, value=100.0, step=0.01)
+                _add_shares = _add_c4.number_input("Shares", min_value=0.0001, value=1.0, step=0.0001, format="%.4f")
+                _add_date   = _add_c5.date_input("Entry date", value=date.today())
+                _add_notes  = st.text_input("Notes (optional)")
+                if st.form_submit_button("Add Trade"):
+                    if not _add_ticker:
+                        st.error("Ticker is required.")
+                    else:
+                        import uuid as _uuid
+                        db.add_stock_real_trade({
+                            "id"         : str(_uuid.uuid4()),
+                            "ticker"     : _add_ticker,
+                            "side"       : _add_side.lower(),
+                            "entry_price": float(_add_ep),
+                            "entry_date" : _add_date.isoformat(),
+                            "shares"     : float(_add_shares),
+                            "dollars"    : round(float(_add_ep) * float(_add_shares), 2),
+                            "model_prob" : None,
+                            "status"     : "open",
+                            "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                        }, source="manual")
+                        st.success(f"Added {_add_side} {_add_ticker} @ ${_add_ep:.2f}")
+                        st.rerun()
+
         # Conviction-model trades only — fresh adds (source='conviction') and
         # promotions from this tab's paper book (source='paper_promotion').
         # Per-ticker probability-model trades have source='scan' and live on
         # the Stocks Dashboard tab tracker.
         _cv_real = [t for t in db.load_stock_real_trades()
-                    if t.get("source") in ("conviction", "paper_promotion")]
+                    if t.get("source") in ("conviction", "paper_promotion", "manual")]
         _cv_real_open   = [t for t in _cv_real if t.get("status") == "open"]
         _cv_real_closed = [t for t in _cv_real if t.get("status") == "closed"]
 
@@ -2214,10 +2245,13 @@ with tab_conviction:
                 _cre2.metric("Net Exposure (Current)", f"{_cvr_net_curr:+.1f}%")
 
                 st.divider()
-                st.caption("✅ Close a real trade with the actual fill price:")
+                st.caption("Manage open real trades:")
                 for _rt in _cv_real_open:
                     _dir_lbl = "SHORT" if _rt.get("side") == "short" else "LONG"
-                    with st.expander(f"Close {_rt['ticker']} ({_dir_lbl}) — entered ${float(_rt['entry_price']):.2f}"):
+                    _trade_label = f"{_rt['ticker']} ({_dir_lbl}) — entered ${float(_rt['entry_price']):.2f}"
+                    _ecol1, _ecol2 = st.columns(2)
+
+                    with _ecol1.expander(f"✅ Close {_trade_label}"):
                         with st.form(f"close_cvr_{_rt['id']}"):
                             _cvr_exit_px = st.number_input(
                                 "Exit price ($)", min_value=0.0, step=0.01,
@@ -2239,6 +2273,40 @@ with tab_conviction:
                                     st.rerun()
                                 except Exception as _ce:
                                     st.error(f"Close failed: {_ce}")
+
+                    with _ecol2.expander(f"✏️ Edit {_trade_label}"):
+                        with st.form(f"edit_cvr_{_rt['id']}"):
+                            _edit_c1, _edit_c2 = st.columns(2)
+                            _edit_side = _edit_c1.selectbox(
+                                "Direction",
+                                ["long", "short"],
+                                index=0 if _rt.get("side") != "short" else 1,
+                            )
+                            _edit_ep = _edit_c2.number_input(
+                                "Entry price ($)", min_value=0.01, step=0.01,
+                                value=float(_rt["entry_price"]),
+                            )
+                            _edit_c3, _edit_c4 = st.columns(2)
+                            _edit_shares = _edit_c3.number_input(
+                                "Shares", min_value=0.0001, step=0.0001, format="%.4f",
+                                value=float(_rt.get("shares") or 0),
+                            )
+                            _edit_date = _edit_c4.date_input(
+                                "Entry date",
+                                value=date.fromisoformat(_rt["entry_date"]) if _rt.get("entry_date") else date.today(),
+                            )
+                            if st.form_submit_button("Save changes"):
+                                try:
+                                    db.update_stock_real_trade(_rt["id"], {
+                                        "side"       : _edit_side,
+                                        "entry_price": float(_edit_ep),
+                                        "shares"     : float(_edit_shares),
+                                        "entry_date" : _edit_date.isoformat(),
+                                    })
+                                    st.success(f"Updated {_rt['ticker']}")
+                                    st.rerun()
+                                except Exception as _ue:
+                                    st.error(f"Edit failed: {_ue}")
 
             if _cv_real_closed:
                 with st.expander(f"Closed ({len(_cv_real_closed)})"):
