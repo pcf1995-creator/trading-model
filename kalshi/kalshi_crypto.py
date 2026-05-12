@@ -54,7 +54,7 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
 
-# ── Configuration ────────────────────────────────────────────────────────────────────────
+# ── Configuration ────────────────────────────────────────────────────────────────────────────────────────
 CRYPTO_ASSETS      = ["BTC-USD", "ETH-USD"]
 KALSHI_SERIES      = {"BTC-USD": "KXBTCD", "ETH-USD": "KXETHD"}
 STRIKE_OFFSETS     = [-0.15, -0.10, -0.05, -0.02, 0.02, 0.05, 0.10, 0.15]
@@ -137,7 +137,7 @@ def _size_contracts(kelly_pct: float, price_cents: float, bucket: str) -> tuple[
 # ────────────────────────────────────────────────────────────────────────────
 
 
-# ── Data ──────────────────────────────────────────────────────────────────────────────────
+# ── Data ────────────────────────────────────────────────────────────────────────────────────────
 def download_crypto(symbol: str, period: str = HISTORY_PERIOD) -> pd.DataFrame:
     df = yf.download(symbol, period=period, auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
@@ -197,7 +197,7 @@ def hist_vol(close: pd.Series, window: int = HIST_VOL_WINDOW) -> pd.Series:
     return close.pct_change().apply(np.log1p).rolling(window).std() * math.sqrt(252)
 
 
-# ── Hourly feature engineering ────────────────────────────────────────────────────────────────────
+# ── Hourly feature engineering ──────────────────────────────────────────────────────────────────────────────────────────────────────
 def compute_features_hourly(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute features from hourly OHLC data.
@@ -247,7 +247,7 @@ def compute_features_hourly(df: pd.DataFrame) -> pd.DataFrame:
     return feats
 
 
-# ── Training data generation ──────────────────────────────────────────────────────────────────────
+# ── Training data generation ──────────────────────────────────────────────────────────────────────────────────────────────────
 def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """
     Daily training samples. For each date t, strike offset, and horizon:
@@ -355,7 +355,7 @@ def generate_training_samples_hourly(df: pd.DataFrame, symbol: str,
     return result
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────────────────────────
+# ── Model ───────────────────────────────────────────────────────────────────────────────────────────────────────
 def _time_decay_weights(dates: pd.Series, half_life: int = 180) -> np.ndarray:
     """Exponential decay weights so recent data has more influence."""
     today_ts = pd.Timestamp(datetime.now(timezone.utc).date())
@@ -563,7 +563,7 @@ def load_crypto_models() -> dict:
     return models
 
 
-# ── Paper-trade calibration (Platt scaling) ────────────────────────────────────────────────────────
+# ── Paper-trade calibration (Platt scaling) ─────────────────────────────────────────────────────────────────────────────────────
 def load_calibration() -> dict | None:
     """Load Platt scaling params saved by recalibrate_from_paper_trades()."""
     if not Path(CALIBRATION_PATH).exists():
@@ -711,8 +711,8 @@ def _apply_platt(model_prob: float, coef: float, intercept: float,
     return float(np.clip(calibrated, model_prob - max_shift, model_prob + max_shift))
 
 
-# ── Base rate ─────────────────────────────────────────────────────────────────────────────────────
-def compute_base_rate(close: pd.Series, strike_distance: float,
+# ── Base rate ─────────────────────────────────────────────────────────────────────────────────────────────────
+ndef compute_base_rate(close: pd.Series, strike_distance: float,
                       horizon: int) -> float:
     """
     Fraction of historical days where close[t+horizon] > close[t]*(1+strike_distance).
@@ -735,7 +735,7 @@ def compute_base_rate(close: pd.Series, strike_distance: float,
     return float(np.clip(rate, 0.01, 0.99))
 
 
-# ── Bayesian calibration ──────────────────────────────────────────────────────────────────────────────────────
+# ── Bayesian calibration ────────────────────────────────────────────────────────────────────────────────────────────────────────
 def calibrate_probability(model_prob: float, training_base_rate: float,
                            actual_base_rate: float) -> float:
     """
@@ -755,7 +755,7 @@ def calibrate_probability(model_prob: float, training_base_rate: float,
     return float(1 / (1 + math.exp(-calibrated_lo)))
 
 
-# ── Ticker parsing ────────────────────────────────────────────────────────────────────────────────────────
+# ── Ticker parsing ────────────────────────────────────────────────────────────────────────────────────────────────
 def parse_kalshi_ticker(ticker: str) -> dict | None:
     """
     Parse Kalshi crypto tickers into expiry date + strike.
@@ -807,7 +807,7 @@ def parse_kalshi_ticker(ticker: str) -> dict | None:
         return None
 
 
-# ── Contract features (daily model) ─────────────────────────────────────────────────────────────────────────────────
+# ── Contract features (daily model) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 def contract_features(current_price: float, strike: float,
                        expiry: date, vol: float,
                        as_of: date | None = None) -> dict:
@@ -823,7 +823,7 @@ def contract_features(current_price: float, strike: float,
     }
 
 
-# ── EV and Kelly ────────────────────────────────────────────────────────────────────────────────────
+# ── EV and Kelly ────────────────────────────────────────────────────────────────────────────────────────────
 def compute_ev(calibrated_prob: float, market_price_cents: int) -> float:
     mp = market_price_cents / 100
     return calibrated_prob * (1 - mp) - (1 - calibrated_prob) * mp
@@ -854,8 +854,8 @@ def compute_kelly_no(calibrated_prob: float, no_price_cents: int) -> float:
     return float(np.clip(f / 2, 0.0, MAX_KELLY))
 
 
-# ── Score a single contract ────────────────────────────────────────────────────────────────────────────────────────
-ndef score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
+# ── Score a single contract ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
     """
     Score both YES and NO sides of a contract using the appropriate time-bucket model.
 
@@ -900,7 +900,7 @@ ndef score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
 
     hours_left = hours_to_close if hours_to_close is not None else max(1, (expiry - date.today()).days) * 24
 
-    # ── Vol model path for contracts < 1 hour to expiry ─────────────────────────────────────────
+    # ── Vol model path for contracts < 1 hour to expiry ───────────────────────────────────────────────────────────────────────────────────
     if hours_left < VOL_MODEL_HOURS:
         minute_closes = asset_dfs.get("minute", [])
         if len(minute_closes) < 10:
@@ -1126,7 +1126,7 @@ ndef score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
     return results
 
 
-# ── Main ────────────────────────────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train",        action="store_true",
@@ -1315,7 +1315,7 @@ def main():
     print()
 
 
-# ── Auto-Placement & Risk Management ───────────────────────────────────────────────────────────────────────────────
+# ── Auto-Placement & Risk Management ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 def get_daily_vol_pnl(bucket: str = "vol") -> float:
     """Get today's cumulative P&L for vol trades. Returns negative if losing."""
     try:
