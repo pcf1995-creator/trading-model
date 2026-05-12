@@ -624,7 +624,9 @@ with tab_dash:
         # Open real trades
         if _open_rt:
             st.subheader(f"Open ({len(_open_rt)})")
-            _rt_open_rows = []
+            st.caption("Click any cell in the white columns to edit. Greyed columns are read-only.")
+            _rt_trade_ids  = []
+            _rt_edit_rows  = []
             for _rt in _open_rt:
                 _ep = float(_rt["entry_price"])
                 _sh = float(_rt.get("shares") or 0)
@@ -638,25 +640,72 @@ with tab_dash:
                 try:
                     _entry_d = date.fromisoformat(_rt.get("entry_date", ""))
                     _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
+                    _entry_date_val = _entry_d
                 except Exception:
                     _days = 0
-                _rt_open_rows.append({
-                    "Side"      : "SHORT" if _is_short else "LONG",
-                    "Ticker"    : _rt["ticker"],
-                    "Source"    : _rt.get("source", "scan"),
-                    "Entry $"   : f"${_ep:.2f}",
-                    "Shares"    : f"{_sh:.2f}",
-                    "Invested"  : f"${_ep * _sh:.2f}",
-                    "Cur Price" : f"${_cur:.2f}" if _cur else "—",
-                    "Days Held" : _days,
-                    "P&L %"     : f"{_pnl_pct:+.1f}%",
-                    "P&L $"     : f"${_pnl_d:+.2f}",
-                    "Entry Date": _rt.get("entry_date", ""),
+                    _entry_date_val = date.today()
+                _rt_trade_ids.append(_rt["id"])
+                _rt_edit_rows.append({
+                    "Side"       : "SHORT" if _is_short else "LONG",
+                    "Ticker"     : _rt["ticker"],
+                    "Entry $"    : _ep,
+                    "Shares"     : _sh,
+                    "Entry Date" : _entry_date_val,
+                    "Source"     : _rt.get("source", "scan"),
+                    "Cur $"      : _cur,
+                    "Days"       : _days,
+                    "P&L %"      : round(_pnl_pct, 1),
+                    "P&L $"      : round(_pnl_d, 2),
+                    "Invested $" : round(_ep * _sh, 2),
                 })
-            st.dataframe(
-                pd.DataFrame(_rt_open_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                hide_index=True, use_container_width=True,
+            st.data_editor(
+                pd.DataFrame(_rt_edit_rows),
+                column_config={
+                    "Side"       : st.column_config.SelectboxColumn("Side",        options=["LONG", "SHORT"]),
+                    "Ticker"     : st.column_config.TextColumn("Ticker"),
+                    "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,   min_value=0.01),
+                    "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001, min_value=0.0001),
+                    "Entry Date" : st.column_config.DateColumn("Entry Date"),
+                    "Source"     : st.column_config.TextColumn("Source",      disabled=True),
+                    "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
+                    "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
+                    "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.1f%%", disabled=True),
+                    "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
+                    "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="rt_open_editor",
             )
+            # Persist any inline edits immediately
+            _rt_edits = st.session_state.get("rt_open_editor", {}).get("edited_rows", {})
+            if _rt_edits:
+                _rt_any_saved = False
+                for _row_key, _cell_changes in _rt_edits.items():
+                    _row_idx = int(_row_key)
+                    if _row_idx >= len(_rt_trade_ids):
+                        continue
+                    _trade_id = _rt_trade_ids[_row_idx]
+                    _updates = {}
+                    for _col, _val in _cell_changes.items():
+                        if _col == "Side":
+                            _updates["side"] = "short" if _val == "SHORT" else "long"
+                        elif _col == "Ticker":
+                            _updates["ticker"] = str(_val).strip().upper()
+                        elif _col == "Entry $":
+                            _updates["entry_price"] = float(_val)
+                        elif _col == "Shares":
+                            _updates["shares"] = float(_val)
+                        elif _col == "Entry Date":
+                            _updates["entry_date"] = str(_val)
+                    if _updates:
+                        try:
+                            db.update_stock_real_trade(_trade_id, _updates)
+                            _rt_any_saved = True
+                        except Exception as _ue:
+                            st.error(f"Save failed: {_ue}")
+                if _rt_any_saved:
+                    st.rerun()
 
             # Per-row close form
             st.caption("✅ Close a real trade with the actual fill price:")
@@ -2196,8 +2245,9 @@ with tab_conviction:
 
             if _cv_real_open:
                 st.subheader(f"Open ({len(_cv_real_open)})")
-                _cvr_rows = []
-                # Aggregates for the stocks-style P&L summary below the table.
+                st.caption("Click any cell in the white columns to edit. Greyed columns are read-only.")
+                _cvr_trade_ids   = []
+                _cvr_edit_rows   = []
                 _cvr_pnl_dollars = []
                 _cvr_costs       = []
                 _cvr_long_pnl    = 0.0
@@ -2219,20 +2269,23 @@ with tab_conviction:
                     try:
                         _ed  = date.fromisoformat(_rt.get("entry_date", ""))
                         _days = sum(1 for _d in pd.bdate_range(_ed, date.today()) if _d.date() > _ed)
+                        _entry_date_val = _ed
                     except Exception:
                         _days = 0
-                    _cvr_rows.append({
-                        "Dir"       : "SHORT" if _is_short else "LONG",
-                        "Ticker"    : _rt["ticker"],
-                        "Source"    : _rt.get("source", "—"),
-                        "Entry $"   : f"${_ep:.2f}",
-                        "Shares"    : f"{_sh:.4f}",
-                        "Invested"  : f"${_ep * _sh:,.2f}",
-                        "Cur Price" : f"${_cur:.2f}" if _cur else "—",
-                        "Days Held" : _days,
-                        "P&L %"     : f"{_pnl_pct:+.2f}%",
-                        "P&L $"     : f"${_pnl_d:+.2f}",
-                        "Entry Date": _rt.get("entry_date", ""),
+                        _entry_date_val = date.today()
+                    _cvr_trade_ids.append(_rt["id"])
+                    _cvr_edit_rows.append({
+                        "Dir"        : "SHORT" if _is_short else "LONG",
+                        "Ticker"     : _rt["ticker"],
+                        "Entry $"    : _ep,
+                        "Shares"     : _sh,
+                        "Entry Date" : _entry_date_val,
+                        "Source"     : _rt.get("source", "—"),
+                        "Cur $"      : _cur,
+                        "Days"       : _days,
+                        "P&L %"      : round(_pnl_pct, 2),
+                        "P&L $"      : round(_pnl_d, 2),
+                        "Invested $" : round(_ep * _sh, 2),
                     })
                     # Aggregates
                     _cost = _ep * _sh
@@ -2247,10 +2300,55 @@ with tab_conviction:
                         _cvr_long_pnl    += _pnl_d
                         _cvr_long_entry  += _cost
                         _cvr_long_curr   += _curv
-                st.dataframe(
-                    pd.DataFrame(_cvr_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                    hide_index=True, use_container_width=True,
+
+                st.data_editor(
+                    pd.DataFrame(_cvr_edit_rows),
+                    column_config={
+                        "Dir"        : st.column_config.SelectboxColumn("Dir",        options=["LONG", "SHORT"]),
+                        "Ticker"     : st.column_config.TextColumn("Ticker"),
+                        "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,    min_value=0.01),
+                        "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001,  min_value=0.0001),
+                        "Entry Date" : st.column_config.DateColumn("Entry Date"),
+                        "Source"     : st.column_config.TextColumn("Source",      disabled=True),
+                        "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
+                        "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
+                        "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.2f%%", disabled=True),
+                        "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
+                        "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="cvr_open_editor",
                 )
+                # Persist any inline edits immediately
+                _cvr_edits = st.session_state.get("cvr_open_editor", {}).get("edited_rows", {})
+                if _cvr_edits:
+                    _cvr_any_saved = False
+                    for _row_key, _cell_changes in _cvr_edits.items():
+                        _row_idx = int(_row_key)
+                        if _row_idx >= len(_cvr_trade_ids):
+                            continue
+                        _trade_id = _cvr_trade_ids[_row_idx]
+                        _updates = {}
+                        for _col, _val in _cell_changes.items():
+                            if _col == "Dir":
+                                _updates["side"] = "short" if _val == "SHORT" else "long"
+                            elif _col == "Ticker":
+                                _updates["ticker"] = str(_val).strip().upper()
+                            elif _col == "Entry $":
+                                _updates["entry_price"] = float(_val)
+                            elif _col == "Shares":
+                                _updates["shares"] = float(_val)
+                            elif _col == "Entry Date":
+                                _updates["entry_date"] = str(_val)
+                        if _updates:
+                            try:
+                                db.update_stock_real_trade(_trade_id, _updates)
+                                _cvr_any_saved = True
+                            except Exception as _ue:
+                                st.error(f"Save failed: {_ue}")
+                    if _cvr_any_saved:
+                        st.rerun()
 
                 # ── Stocks-style P&L summary (mirrors the paper-portfolio block) ──
                 _cvr_total_pnl  = sum(_cvr_pnl_dollars)
@@ -2271,13 +2369,11 @@ with tab_conviction:
                 _cre2.metric("Net Exposure (Current)", f"{_cvr_net_curr:+.1f}%")
 
                 st.divider()
-                st.caption("Manage open real trades:")
+                st.caption("Close a real trade with the actual fill price:")
                 for _rt in _cv_real_open:
                     _dir_lbl = "SHORT" if _rt.get("side") == "short" else "LONG"
                     _trade_label = f"{_rt['ticker']} ({_dir_lbl}) — entered ${float(_rt['entry_price']):.2f}"
-                    _ecol1, _ecol2 = st.columns(2)
-
-                    with _ecol1.expander(f"✅ Close {_trade_label}"):
+                    with st.expander(f"✅ Close {_trade_label}"):
                         with st.form(f"close_cvr_{_rt['id']}"):
                             _cvr_exit_px = st.number_input(
                                 "Exit price ($)", min_value=0.0, step=0.01,
@@ -2299,40 +2395,6 @@ with tab_conviction:
                                     st.rerun()
                                 except Exception as _ce:
                                     st.error(f"Close failed: {_ce}")
-
-                    with _ecol2.expander(f"✏️ Edit {_trade_label}"):
-                        with st.form(f"edit_cvr_{_rt['id']}"):
-                            _edit_c1, _edit_c2 = st.columns(2)
-                            _edit_side = _edit_c1.selectbox(
-                                "Direction",
-                                ["long", "short"],
-                                index=0 if _rt.get("side") != "short" else 1,
-                            )
-                            _edit_ep = _edit_c2.number_input(
-                                "Entry price ($)", min_value=0.01, step=0.01,
-                                value=float(_rt["entry_price"]),
-                            )
-                            _edit_c3, _edit_c4 = st.columns(2)
-                            _edit_shares = _edit_c3.number_input(
-                                "Shares", min_value=0.0001, step=0.0001, format="%.4f",
-                                value=float(_rt.get("shares") or 0),
-                            )
-                            _edit_date = _edit_c4.date_input(
-                                "Entry date",
-                                value=date.fromisoformat(_rt["entry_date"]) if _rt.get("entry_date") else date.today(),
-                            )
-                            if st.form_submit_button("Save changes"):
-                                try:
-                                    db.update_stock_real_trade(_rt["id"], {
-                                        "side"       : _edit_side,
-                                        "entry_price": float(_edit_ep),
-                                        "shares"     : float(_edit_shares),
-                                        "entry_date" : _edit_date.isoformat(),
-                                    })
-                                    st.success(f"Updated {_rt['ticker']}")
-                                    st.rerun()
-                                except Exception as _ue:
-                                    st.error(f"Edit failed: {_ue}")
 
             if _cv_real_closed:
                 with st.expander(f"Closed ({len(_cv_real_closed)})"):
