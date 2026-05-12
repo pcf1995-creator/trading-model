@@ -1258,9 +1258,15 @@ with tab_conviction:
                 if _promoted:
                     st.success(f"Promoted {_promoted} position(s) to Real Trades.")
                     st.rerun()
+            _cv_promoted_tickers = {
+                r["ticker"] for r in db.load_stock_real_trades()
+                if r.get("status") == "open"
+            }
             for _cp in _cv_open:
                 _cp_dir = "SHORT" if _cp.get("direction") == "SHORT" else "LONG"
-                if st.button(
+                if _cp["ticker"] in _cv_promoted_tickers:
+                    st.caption(f"✅ {_cp['ticker']} already in Real Trades")
+                elif st.button(
                     f"🚀 Promote {_cp['ticker']} ({_cp_dir}) to Real",
                     key=f"cv_promote_{_cp['ticker']}",
                 ):
