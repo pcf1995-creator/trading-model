@@ -39,7 +39,7 @@ from kalshi_crypto import (
     compute_kelly,
     score_contract,
     load_calibration,
-    load_crypto_models,
+    load_crypto_model,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
@@ -103,13 +103,13 @@ def main():
     print(f"  Bankroll: ${bankroll:,.2f}")
     print(f"{'='*65}")
 
-    # ── Load models (daily only) ──
-    models = load_crypto_models()
-    if models.get("daily") is None:
+    # ── Load daily model only (intraday never loaded for weekly scan) ──
+    rf, feature_names, tbr = load_crypto_model()
+    if rf is None:
         logger.error("No daily model found. Skipping scan.")
         return
-
-    logger.info("Model loaded — daily only (intraday skipped)")
+    models = {"daily": (rf, feature_names, tbr), "intraday": None, "calibration": load_calibration()}
+    logger.info("Daily model loaded — intraday skipped")
 
     # ── Asset data (minimal: daily only) ──
     asset_dfs_by_symbol = {}
