@@ -712,7 +712,7 @@ def _apply_platt(model_prob: float, coef: float, intercept: float,
 
 
 # ── Base rate ─────────────────────────────────────────────────────────────────────────────────────────────────
-ndef compute_base_rate(close: pd.Series, strike_distance: float,
+def compute_base_rate(close: pd.Series, strike_distance: float,
                       horizon: int) -> float:
     """
     Fraction of historical days where close[t+horizon] > close[t]*(1+strike_distance).
