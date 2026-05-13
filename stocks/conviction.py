@@ -824,6 +824,10 @@ def assess_open_positions(positions: list[dict],
         pos["reassess_signal"]         = None
         pos["earnings_flag"]           = eflag_map.get(ticker, False)
         pos["earnings_days_out"]       = edays_map.get(ticker)
+        # Backfill score_at_entry for positions opened before score tracking was added.
+        # Uses current score as a one-time proxy; preserved on all future saves.
+        if pos.get("score_at_entry") is None and score_map.get(ticker) is not None:
+            pos["score_at_entry"] = score_map.get(ticker)
         # Current pillar sub-scores (snapshot at each reassessment — enables drift analysis)
         pos["z_technical_current"]     = z_tech_map.get(ticker)
         pos["z_fundamental_current"]   = z_fund_map.get(ticker)
