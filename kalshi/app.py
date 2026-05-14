@@ -210,6 +210,7 @@ with tab_dash:
         return 0.0
 
     _fills_index: dict[str, dict] = {}   # ticker -> {yes: cents, no: cents}
+    _fill_placed_at: dict[str, str] = {}  # ticker -> earliest buy fill timestamp
     if not _client.dry_run:
         try:
             _prefetch_fills = _fetch_fills_cached()
@@ -237,6 +238,15 @@ with tab_dash:
                     "yes": round(_yes_cost / _yes_cnt * 100) if _yes_cnt else None,
                     "no":  round(_no_cost  / _no_cnt  * 100) if _no_cnt  else None,
                 }
+                # Earliest buy fill timestamp as placed_at fallback
+                _ts_list = [
+                    _pf.get("created_time") or _pf.get("timestamp", "")
+                    for _pf in _pf_list
+                    if _pf.get("action", "buy") == "buy"
+                ]
+                _ts_list = [t for t in _ts_list if t]
+                if _ts_list:
+                    _fill_placed_at[_pt] = min(_ts_list)[:16]
         except Exception:
             pass
 
@@ -318,7 +328,9 @@ with tab_dash:
             bet_dollars  = entry * contracts / 100
             stop_dollars = stop * contracts / 100
             entry_proxy  = p.get("_entry_proxy", False)
-            placed_at    = _local_by_ticker.get(ticker, {}).get("placed_at", "")[:16] if _local_by_ticker.get(ticker, {}).get("placed_at") else "—"
+            _override_ts = _local_by_ticker.get(ticker, {}).get("placed_at", "")
+            placed_at    = (_override_ts[:16] if _override_ts
+                            else _fill_placed_at.get(ticker, "—"))
             rows.append({
                 "Ticker"   : ticker,
                 "Placed At" : placed_at,
@@ -339,13 +351,13 @@ with tab_dash:
         df_open = pd.DataFrame(rows).reset_index(drop=True)
 
         edited = st.data_editor(
-            df_open.drop(columns=["Ticker", "Bet $", "Stop $"]),
+            df_open.drop(columns=["Ticker", "Stop $"]),
             column_config={
                 "Contracts": st.column_config.NumberColumn("Contracts", min_value=1, step=1),
                 "Entry ¢"  : st.column_config.NumberColumn("Entry ¢", min_value=0, max_value=99, step=1),
                 "Stop ¢"   : st.column_config.NumberColumn("Stop ¢",  min_value=0, max_value=99, step=1),
             },
-            disabled=["Asset", "Strike", "Hrs Left", "Live Bid", "P&L", "Placed At"],
+            disabled=["Asset", "Strike", "Hrs Left", "Live Bid", "P&L", "Placed At", "Bet $"],
             hide_index=True,
             use_container_width=True,
         )

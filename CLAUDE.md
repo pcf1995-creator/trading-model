@@ -21,29 +21,49 @@ If you commit without pushing, Render won't see the changes and the user won't s
 
 ## Kalshi Scan & Stop-Loss Architecture
 
+### Two Separate Cron Jobs (IMPORTANT — do not merge back into one)
+
+The scan and stop-loss check are intentionally split into two endpoints with different cadences:
+
+| Job | Endpoint | Interval | What it does |
+|---|---|---|---|
+| Weekly scan | `GET /scan` | Every 60 min | Heavy: runs `kalshi_crypto_weekly.py`, places orders, runs one stop-loss pass |
+| Stop-loss only | `GET /check-stops` | Every 15 min | Lightweight: only `check_positions()`, no subprocess, trivial memory |
+
+**Why split?** The weekly scorer (`kalshi_crypto_weekly.py`) fetches all Kalshi markets and runs Black-Scholes — enough memory to cause 503s on Render's free tier at high frequency. The stop-loss check only fetches prices for 2-5 held positions and is safe to run every 15 min. **Never merge them back into one job.**
+
 ### Scan Cron (scan_cron.py)
 - Deployed as a **Render Web Service** (main branch, `Procfile: web: python kalshi/scan_cron.py`)
-- Triggered by **cron-job.org** hitting the `/scan` endpoint
-- **Run interval: 30–60 minutes** (NOT every 5 minutes — caused memory/503 errors on Render free tier)
+- Triggered by **cron-job.org** hitting the endpoints above
 - Runs **weekly-only scan** (`kalshi_crypto_weekly.py --auto-save-db`) — only scores >24h contracts
 - After scan: runs `place_scheduled_orders()` for auto-placement of weekly trades only
-- After placement: runs `check_positions()` from monitor.py for stop-loss enforcement
+- After placement: runs one `check_positions()` pass for stop-loss enforcement
 
-### Stop-Loss Monitor (monitor.py)
-- `STOP_LOSS_PCT = 0.50` — triggers when price drops 50% from entry
-- `STOP_LOSS_EXEMPT_MINUTES = 15` — vol model contracts within 15 min of expiry are skipped
-- **No longer runs from local Mac crontab** — those were removed. Runs exclusively via scan_cron.py on Render
-- The old local Mac cron jobs (3min/10min/30min) have been permanently deleted
+### Stop-Loss Rules (monitor.py) — Per-Bucket, Computed Dynamically
+
+Stop thresholds and exempt windows are determined at **check time** from `hours_left`, not stored at entry time.
+
+| Bucket | Trigger | Exempt window | Rationale |
+|---|---|---|---|
+| Weekly (>24 hr) | Price drops 50% from entry | Last 60 min | Short dips before weekly settlement are common |
+| Intraday (1–24 hr) | Price drops 70% from entry (price ≤ 30% of entry) | Last 15 min | Intraday is more volatile; keep stop active longer |
+| Vol model (<1 hr) | Never — always exempt | Entire duration | Contracts settle naturally; bad fill risk exceeds protection |
+
+**DO NOT** collapse these into a single `STOP_LOSS_EXEMPT_MINUTES` constant. A universal 60-min window would also exempt intraday contracts with 45 min left when they're collapsing — exactly the scenario the stop-loss is designed to catch.
+
+**Auto-placement feature flags** are in Supabase (`feature_flags` table). If nothing is being placed after a scan, check that `auto_place_weekly` is `True` in the Streamlit dashboard → Auto-Placement section. Default is `False`.
 
 ### Vol Model (contracts < 1 hour to expiry)
 - Uses Black-Scholes log-normal formula with Binance 1m realized vol
-- Stop-loss is SKIPPED for vol model contracts within 15 minutes of expiry (they settle naturally)
+- Stop-loss is always skipped — vol contracts are <1 hr and settle naturally
 - Vol bucket budget: $100, max single bet $25 (25% Kelly cap)
 
 ### What NOT to do
 - Do NOT add local Mac cron jobs for any trading automation — use Render + scan_cron.py
-- Do NOT run the scan every 5 minutes — memory constraints on Render free tier require 30–60 min intervals
+- Do NOT run the weekly scan every 5–15 minutes — memory constraints on Render free tier require 60 min intervals
 - Do NOT score intraday (<24h) contracts in the automated scan — weekly only to stay within memory limits
+- Do NOT merge `/scan` and `/check-stops` back into one job — they have different memory profiles
+- Do NOT use a single exempt window constant for all buckets — weekly and intraday need different values
 
 ## Architecture: Cloud-First, Not Local
 
