@@ -837,12 +837,28 @@ def assess_open_positions(positions: list[dict],
         if pnl_pct <= -HARD_STOP_PCT:
             pos["exit_signal"] = "HARD_STOP"
         else:
-            pct = pct_map.get(ticker)
-            if pct is not None:
-                if direction == "LONG" and pct < EXIT_DECILE:
-                    pos["reassess_signal"] = f"Fallen to {pct:.0%} pct — thesis weakened"
-                elif direction == "SHORT" and pct > (1 - EXIT_DECILE):
-                    pos["reassess_signal"] = f"Risen to {pct:.0%} pct — thesis weakened"
+            current_score = score_map.get(ticker)
+            # Primary exit gate: score dropped back below the threshold that
+            # qualified it for entry. This fires before the percentile check
+            # so a name like SLB (LONG, score -0.35) gets flagged immediately.
+            if current_score is not None:
+                if direction == "LONG" and current_score < MIN_LONG_SCORE:
+                    pos["reassess_signal"] = (
+                        f"Score {current_score:+.3f} below LONG threshold ({MIN_LONG_SCORE:+.2f})"
+                    )
+                elif direction == "SHORT" and current_score > MIN_SHORT_SCORE:
+                    pos["reassess_signal"] = (
+                        f"Score {current_score:+.3f} above SHORT threshold ({MIN_SHORT_SCORE:+.2f})"
+                    )
+
+            # Secondary exit gate: percentile rank deterioration
+            if pos.get("reassess_signal") is None:
+                pct = pct_map.get(ticker)
+                if pct is not None:
+                    if direction == "LONG" and pct < EXIT_DECILE:
+                        pos["reassess_signal"] = f"Fallen to {pct:.0%} pct — thesis weakened"
+                    elif direction == "SHORT" and pct > (1 - EXIT_DECILE):
+                        pos["reassess_signal"] = f"Risen to {pct:.0%} pct — thesis weakened"
 
             # Earnings trim: unrealized gain > threshold + earnings imminent
             edays = edays_map.get(ticker)
