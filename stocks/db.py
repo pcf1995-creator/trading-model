@@ -326,7 +326,11 @@ def save_conviction_positions(positions: list[dict]) -> None:
                 pos_id = raw_id if raw_id.startswith("cv_") else f"cv_{raw_id}"
                 known  = {k: pos.get(k) for k in _CV_KNOWN_COLS if k in pos}
                 known["id"]             = pos_id
-                known["score_at_entry"] = pos.get("composite_score")
+                known["score_at_entry"] = (
+                    pos.get("score_at_entry")
+                    if pos.get("score_at_entry") is not None
+                    else pos.get("composite_score")
+                )
                 known["updated_at"]     = now
                 extra = {k: v for k, v in pos.items()
                          if k not in _CV_KNOWN_COLS and k != "composite_score"}

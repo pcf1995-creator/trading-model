@@ -784,10 +784,14 @@ def assess_open_positions(positions: list[dict],
     if not positions:
         return positions
 
-    score_map = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df["composite_score"]))
-    pct_map   = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df["percentile"]))
-    eflag_map = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("earnings_flag", pd.Series(False, index=scored_df.index))))
-    edays_map = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("earnings_days_out", pd.Series(None, index=scored_df.index))))
+    score_map  = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df["composite_score"]))
+    pct_map    = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df["percentile"]))
+    eflag_map  = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("earnings_flag", pd.Series(False, index=scored_df.index))))
+    edays_map  = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("earnings_days_out", pd.Series(None, index=scored_df.index))))
+    z_tech_map = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("z_technical",   pd.Series(dtype=float))))
+    z_fund_map = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("z_fundamental", pd.Series(dtype=float))))
+    z_earn_map = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("z_earnings",    pd.Series(dtype=float))))
+    z_mac_map  = {} if scored_df.empty else dict(zip(scored_df["ticker"], scored_df.get("z_macro",       pd.Series(dtype=float))))
 
     updated = []
     for pos in positions:
@@ -812,24 +816,49 @@ def assess_open_positions(positions: list[dict],
             else (entry_price - current_price) / entry_price
         )
 
-        pos["current_price"]     = current_price
-        pos["pnl_pct"]           = round(pnl_pct * 100, 2)
-        pos["days_held"]         = (date.today() - date.fromisoformat(pos["entry_date"])).days
-        pos["current_score"]     = score_map.get(ticker)
-        pos["exit_signal"]       = None
-        pos["reassess_signal"]   = None
-        pos["earnings_flag"]     = eflag_map.get(ticker, False)
-        pos["earnings_days_out"] = edays_map.get(ticker)
+        pos["current_price"]           = current_price
+        pos["pnl_pct"]                 = round(pnl_pct * 100, 2)
+        pos["days_held"]               = (date.today() - date.fromisoformat(pos["entry_date"])).days
+        pos["current_score"]           = score_map.get(ticker)
+        pos["exit_signal"]             = None
+        pos["reassess_signal"]         = None
+        pos["earnings_flag"]           = eflag_map.get(ticker, False)
+        pos["earnings_days_out"]       = edays_map.get(ticker)
+        # Backfill score_at_entry for positions opened before score tracking was added.
+        # Uses current score as a one-time proxy; preserved on all future saves.
+        if pos.get("score_at_entry") is None and score_map.get(ticker) is not None:
+            pos["score_at_entry"] = score_map.get(ticker)
+        # Current pillar sub-scores (snapshot at each reassessment — enables drift analysis)
+        pos["z_technical_current"]     = z_tech_map.get(ticker)
+        pos["z_fundamental_current"]   = z_fund_map.get(ticker)
+        pos["z_earnings_current"]      = z_earn_map.get(ticker)
+        pos["z_macro_current"]         = z_mac_map.get(ticker)
 
         if pnl_pct <= -HARD_STOP_PCT:
             pos["exit_signal"] = "HARD_STOP"
         else:
-            pct = pct_map.get(ticker)
-            if pct is not None:
-                if direction == "LONG" and pct < EXIT_DECILE:
-                    pos["reassess_signal"] = f"Fallen to {pct:.0%} pct — thesis weakened"
-                elif direction == "SHORT" and pct > (1 - EXIT_DECILE):
-                    pos["reassess_signal"] = f"Risen to {pct:.0%} pct — thesis weakened"
+            current_score = score_map.get(ticker)
+            # Primary exit gate: score dropped back below the threshold that
+            # qualified it for entry. This fires before the percentile check
+            # so a name like SLB (LONG, score -0.35) gets flagged immediately.
+            if current_score is not None:
+                if direction == "LONG" and current_score < MIN_LONG_SCORE:
+                    pos["reassess_signal"] = (
+                        f"Score {current_score:+.3f} below LONG threshold ({MIN_LONG_SCORE:+.2f})"
+                    )
+                elif direction == "SHORT" and current_score > MIN_SHORT_SCORE:
+                    pos["reassess_signal"] = (
+                        f"Score {current_score:+.3f} above SHORT threshold ({MIN_SHORT_SCORE:+.2f})"
+                    )
+
+            # Secondary exit gate: percentile rank deterioration
+            if pos.get("reassess_signal") is None:
+                pct = pct_map.get(ticker)
+                if pct is not None:
+                    if direction == "LONG" and pct < EXIT_DECILE:
+                        pos["reassess_signal"] = f"Fallen to {pct:.0%} pct — thesis weakened"
+                    elif direction == "SHORT" and pct > (1 - EXIT_DECILE):
+                        pos["reassess_signal"] = f"Risen to {pct:.0%} pct — thesis weakened"
 
             # Earnings trim: unrealized gain > threshold + earnings imminent
             edays = edays_map.get(ticker)

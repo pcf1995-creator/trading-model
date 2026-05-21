@@ -624,7 +624,9 @@ with tab_dash:
         # Open real trades
         if _open_rt:
             st.subheader(f"Open ({len(_open_rt)})")
-            _rt_open_rows = []
+            st.caption("Click any cell in the white columns to edit. Greyed columns are read-only.")
+            _rt_trade_ids  = []
+            _rt_edit_rows  = []
             for _rt in _open_rt:
                 _ep = float(_rt["entry_price"])
                 _sh = float(_rt.get("shares") or 0)
@@ -638,25 +640,72 @@ with tab_dash:
                 try:
                     _entry_d = date.fromisoformat(_rt.get("entry_date", ""))
                     _days = sum(1 for _d in pd.bdate_range(_entry_d, date.today()) if _d.date() > _entry_d)
+                    _entry_date_val = _entry_d
                 except Exception:
                     _days = 0
-                _rt_open_rows.append({
-                    "Side"      : "SHORT" if _is_short else "LONG",
-                    "Ticker"    : _rt["ticker"],
-                    "Source"    : _rt.get("source", "scan"),
-                    "Entry $"   : f"${_ep:.2f}",
-                    "Shares"    : f"{_sh:.2f}",
-                    "Invested"  : f"${_ep * _sh:.2f}",
-                    "Cur Price" : f"${_cur:.2f}" if _cur else "—",
-                    "Days Held" : _days,
-                    "P&L %"     : f"{_pnl_pct:+.1f}%",
-                    "P&L $"     : f"${_pnl_d:+.2f}",
-                    "Entry Date": _rt.get("entry_date", ""),
+                    _entry_date_val = date.today()
+                _rt_trade_ids.append(_rt["id"])
+                _rt_edit_rows.append({
+                    "Side"       : "SHORT" if _is_short else "LONG",
+                    "Ticker"     : _rt["ticker"],
+                    "Entry $"    : _ep,
+                    "Shares"     : _sh,
+                    "Entry Date" : _entry_date_val,
+                    "Source"     : _rt.get("source", "scan"),
+                    "Cur $"      : _cur,
+                    "Days"       : _days,
+                    "P&L %"      : round(_pnl_pct, 1),
+                    "P&L $"      : round(_pnl_d, 2),
+                    "Invested $" : round(_ep * _sh, 2),
                 })
-            st.dataframe(
-                pd.DataFrame(_rt_open_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                hide_index=True, use_container_width=True,
+            st.data_editor(
+                pd.DataFrame(_rt_edit_rows),
+                column_config={
+                    "Side"       : st.column_config.SelectboxColumn("Side",        options=["LONG", "SHORT"]),
+                    "Ticker"     : st.column_config.TextColumn("Ticker"),
+                    "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,   min_value=0.01),
+                    "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001, min_value=0.0001),
+                    "Entry Date" : st.column_config.DateColumn("Entry Date"),
+                    "Source"     : st.column_config.TextColumn("Source",      disabled=True),
+                    "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
+                    "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
+                    "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.1f%%", disabled=True),
+                    "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
+                    "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="rt_open_editor",
             )
+            # Persist any inline edits immediately
+            _rt_edits = st.session_state.get("rt_open_editor", {}).get("edited_rows", {})
+            if _rt_edits:
+                _rt_any_saved = False
+                for _row_key, _cell_changes in _rt_edits.items():
+                    _row_idx = int(_row_key)
+                    if _row_idx >= len(_rt_trade_ids):
+                        continue
+                    _trade_id = _rt_trade_ids[_row_idx]
+                    _updates = {}
+                    for _col, _val in _cell_changes.items():
+                        if _col == "Side":
+                            _updates["side"] = "short" if _val == "SHORT" else "long"
+                        elif _col == "Ticker":
+                            _updates["ticker"] = str(_val).strip().upper()
+                        elif _col == "Entry $":
+                            _updates["entry_price"] = float(_val)
+                        elif _col == "Shares":
+                            _updates["shares"] = float(_val)
+                        elif _col == "Entry Date":
+                            _updates["entry_date"] = str(_val)
+                    if _updates:
+                        try:
+                            db.update_stock_real_trade(_trade_id, _updates)
+                            _rt_any_saved = True
+                        except Exception as _ue:
+                            st.error(f"Save failed: {_ue}")
+                if _rt_any_saved:
+                    st.rerun()
 
             # Per-row close form
             st.caption("✅ Close a real trade with the actual fill price:")
@@ -1115,6 +1164,11 @@ with tab_conviction:
         _cv_open      = [p for p in _cv_positions if p.get("status") == "open"]
         _cv_closed    = [p for p in _cv_positions if p.get("status") == "closed"]
 
+        # Show auto-replace summary when the scan just fired one
+        if "cv_auto_replace_msg" in st.session_state:
+            st.success(f"🔄 {st.session_state.pop('cv_auto_replace_msg')}")
+
+
         if _cv_open:
             import yfinance as _yf2
             _cv_tks = [p["ticker"] for p in _cv_open]
@@ -1258,9 +1312,15 @@ with tab_conviction:
                 if _promoted:
                     st.success(f"Promoted {_promoted} position(s) to Real Trades.")
                     st.rerun()
+            _cv_promoted_tickers = {
+                r["ticker"] for r in db.load_stock_real_trades()
+                if r.get("status") == "open"
+            }
             for _cp in _cv_open:
                 _cp_dir = "SHORT" if _cp.get("direction") == "SHORT" else "LONG"
-                if st.button(
+                if _cp["ticker"] in _cv_promoted_tickers:
+                    st.caption(f"✅ {_cp['ticker']} already in Real Trades")
+                elif st.button(
                     f"🚀 Promote {_cp['ticker']} ({_cp_dir}) to Real",
                     key=f"cv_promote_{_cp['ticker']}",
                 ):
@@ -1363,6 +1423,104 @@ with tab_conviction:
             value=5_000, step=500, key="cv_budget",
         )
 
+        def _cv_do_auto_replace(positions_all, open_positions, scored_df):
+            """Assess open positions, auto-close any that fell below entry threshold,
+            and paper-add the best available same-direction replacement.
+            Returns (new_positions_all, summary_string)."""
+            import uuid as _uuid2
+            assessed    = _cv_mod.assess_open_positions(open_positions, scored_df)
+            open_tix    = {p["ticker"] for p in assessed if p.get("status") == "open"}
+            closed_list = []
+            replaced_list = []
+
+            for _p in assessed:
+                if _p.get("status") != "open":
+                    continue
+                _sig = _p.get("reassess_signal", "") or ""
+                if "threshold" not in _sig:
+                    continue  # not a score-threshold exit — leave for manual review
+
+                # ── Auto-close ──
+                _cpx = _p.get("current_price") or float(_p["entry_price"])
+                _ep  = float(_p["entry_price"])
+                _sh  = float(_p.get("shares") or 0)
+                _dir = _p["direction"]
+                _pnl_pct = ((_cpx - _ep) / _ep * 100) if _dir == "LONG" else ((_ep - _cpx) / _ep * 100)
+                _pnl_d   = ((_cpx - _ep) if _dir == "LONG" else (_ep - _cpx)) * _sh
+                _p.update({
+                    "status"      : "closed",
+                    "exit_price"  : _cpx,
+                    "exit_date"   : str(date.today()),
+                    "exit_reason" : "score_below_threshold",
+                    "pnl_pct"     : round(_pnl_pct, 2),
+                    "pnl_dollars" : round(_pnl_d, 2),
+                })
+                closed_list.append(_p["ticker"])
+                open_tix.discard(_p["ticker"])
+
+                # ── Find best replacement (same direction, not already held) ──
+                _freed = _p.get("cost") or round(_ep * _sh, 2)
+                _open_now = sum(1 for _q in assessed if _q.get("status") == "open")
+                if _open_now >= _cv_mod.PAPER_MAX_POSITIONS:
+                    continue  # still full after this close (shouldn't happen)
+                _gross_now = sum(_q.get("cost", 0) for _q in assessed if _q.get("status") == "open")
+                if _gross_now + _freed > _cv_mod.PAPER_MAX_GROSS:
+                    continue  # would breach gross cap
+
+                if _dir == "LONG":
+                    _cands = scored_df[
+                        (scored_df["direction"] == "LONG") &
+                        (~scored_df["ticker"].isin(open_tix))
+                    ].sort_values("composite_score", ascending=False)
+                else:
+                    _cands = scored_df[
+                        (scored_df["direction"] == "SHORT") &
+                        (~scored_df["ticker"].isin(open_tix))
+                    ].sort_values("composite_score", ascending=True)
+
+                if _cands.empty:
+                    continue  # no qualifying candidate available
+
+                _best   = _cands.iloc[0]
+                _rep_tk = _best["ticker"]
+                _rep_px = float(_best["current_price"])
+                _rep_sh = round(_freed / _rep_px, 4) if _rep_px else 0
+                assessed.append({
+                    "id"                     : f"cv_{_rep_tk}_{str(_uuid2.uuid4())[:8]}",
+                    "ticker"                 : _rep_tk,
+                    "direction"              : _dir,
+                    "status"                 : "open",
+                    "entry_price"            : _rep_px,
+                    "entry_date"             : str(date.today()),
+                    "shares"                 : _rep_sh,
+                    "cost"                   : round(_rep_sh * _rep_px, 2),
+                    "composite_score"        : float(_best["composite_score"]),
+                    "score_at_entry"         : float(_best["composite_score"]),
+                    "z_technical_at_entry"   : float(_best["z_technical"])   if pd.notna(_best.get("z_technical"))   else None,
+                    "z_fundamental_at_entry" : float(_best["z_fundamental"]) if pd.notna(_best.get("z_fundamental")) else None,
+                    "z_earnings_at_entry"    : float(_best["z_earnings"])    if pd.notna(_best.get("z_earnings"))    else None,
+                    "z_macro_at_entry"       : float(_best["z_macro"])       if pd.notna(_best.get("z_macro"))       else None,
+                    "regime_at_entry"        : str(_best.get("regime", "")),
+                    "exit_signal"            : None,
+                    "reassess_signal"        : None,
+                    "earnings_flag"          : bool(_best.get("earnings_flag", False)),
+                    "earnings_days_out"      : _best.get("earnings_days_out"),
+                })
+                open_tix.add(_rep_tk)
+                replaced_list.append(f"{_rep_tk} ({_dir})")
+
+            # For positions with non-threshold signals, still persist the reassess flag
+            # (they remain open, just flagged in the UI for manual review)
+            closed_hist = [p for p in positions_all if p.get("status") != "open"]
+            new_all     = closed_hist + assessed
+
+            parts = []
+            if closed_list:
+                parts.append(f"Auto-closed: {', '.join(closed_list)}")
+            if replaced_list:
+                parts.append(f"Replaced with: {', '.join(replaced_list)}")
+            return new_all, " | ".join(parts)
+
         if st.button("Run Conviction Scan", type="primary", key="cv_scan"):
             _summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
             if _summary_path is None and (ROOT / "ticker_summary.csv").exists():
@@ -1384,6 +1542,15 @@ with tab_conviction:
                     _cv_progress.empty()
                     st.session_state["cv_scan_result"] = _cv_df
                     st.session_state["cv_scan_budget"] = _cv_budget
+                    # Auto-close below-threshold + replace immediately after scan
+                    if _cv_open:
+                        _cv_positions, _ar_msg = _cv_do_auto_replace(
+                            _cv_positions, _cv_open, _cv_df
+                        )
+                        _cv_mod.save_conviction_positions(_cv_positions)
+                        if _ar_msg:
+                            st.session_state["cv_auto_replace_msg"] = _ar_msg
+                    st.rerun()
                 except Exception as _cv_scan_err:
                     _cv_progress.empty()
                     st.error(f"Conviction scan error: {_cv_scan_err}")
@@ -1479,6 +1646,11 @@ with tab_conviction:
                                     "shares": _sh, "cost": _bulk_new_cost,
                                     "composite_score": float(_lr["composite_score"]),
                                     "score_at_entry": float(_lr["composite_score"]),
+                                    "z_technical_at_entry"   : float(_lr["z_technical"])   if pd.notna(_lr.get("z_technical"))   else None,
+                                    "z_fundamental_at_entry" : float(_lr["z_fundamental"]) if pd.notna(_lr.get("z_fundamental")) else None,
+                                    "z_earnings_at_entry"    : float(_lr["z_earnings"])    if pd.notna(_lr.get("z_earnings"))    else None,
+                                    "z_macro_at_entry"       : float(_lr["z_macro"])       if pd.notna(_lr.get("z_macro"))       else None,
+                                    "regime_at_entry"        : str(_lr.get("regime", "")),
                                     "exit_signal": None, "reassess_signal": None,
                                     "earnings_flag": bool(_lr.get("earnings_flag", False)),
                                     "earnings_days_out": _lr.get("earnings_days_out"),
@@ -1511,6 +1683,11 @@ with tab_conviction:
                                     "shares": _sh, "cost": _bulk_new_cost_s,
                                     "composite_score": float(_sr["composite_score"]),
                                     "score_at_entry": float(_sr["composite_score"]),
+                                    "z_technical_at_entry"   : float(_sr["z_technical"])   if pd.notna(_sr.get("z_technical"))   else None,
+                                    "z_fundamental_at_entry" : float(_sr["z_fundamental"]) if pd.notna(_sr.get("z_fundamental")) else None,
+                                    "z_earnings_at_entry"    : float(_sr["z_earnings"])    if pd.notna(_sr.get("z_earnings"))    else None,
+                                    "z_macro_at_entry"       : float(_sr["z_macro"])       if pd.notna(_sr.get("z_macro"))       else None,
+                                    "regime_at_entry"        : str(_sr.get("regime", "")),
                                     "exit_signal": None, "reassess_signal": None,
                                     "earnings_flag": bool(_sr.get("earnings_flag", False)),
                                     "earnings_days_out": _sr.get("earnings_days_out"),
@@ -1610,19 +1787,24 @@ with tab_conviction:
                                     st.warning(f"Adding {_tk} (${_new_cost_l:,.0f}) would exceed ${_cv_mod.PAPER_MAX_GROSS:,.0f} gross limit (current: ${_cv_paper_gross_l:,.0f}).")
                                 else:
                                     _cv_positions.append({
-                                        "ticker"          : _tk,
-                                        "direction"       : "LONG",
-                                        "status"          : "open",
-                                        "entry_price"     : _lr["current_price"],
-                                        "entry_date"      : str(date.today()),
-                                        "shares"          : _shares,
-                                        "cost"            : round(_shares * _lr["current_price"], 2),
-                                        "composite_score" : float(_lr["composite_score"]),
-                                        "score_at_entry"  : float(_lr["composite_score"]),
-                                        "exit_signal"     : None,
-                                        "reassess_signal" : None,
-                                        "earnings_flag"   : bool(_eflag),
-                                        "earnings_days_out": _edays,
+                                        "ticker"                 : _tk,
+                                        "direction"              : "LONG",
+                                        "status"                 : "open",
+                                        "entry_price"            : _lr["current_price"],
+                                        "entry_date"             : str(date.today()),
+                                        "shares"                 : _shares,
+                                        "cost"                   : round(_shares * _lr["current_price"], 2),
+                                        "composite_score"        : float(_lr["composite_score"]),
+                                        "score_at_entry"         : float(_lr["composite_score"]),
+                                        "z_technical_at_entry"   : float(_lr["z_technical"])   if pd.notna(_lr.get("z_technical"))   else None,
+                                        "z_fundamental_at_entry" : float(_lr["z_fundamental"]) if pd.notna(_lr.get("z_fundamental")) else None,
+                                        "z_earnings_at_entry"    : float(_lr["z_earnings"])    if pd.notna(_lr.get("z_earnings"))    else None,
+                                        "z_macro_at_entry"       : float(_lr["z_macro"])       if pd.notna(_lr.get("z_macro"))       else None,
+                                        "regime_at_entry"        : str(_lr.get("regime", "")),
+                                        "exit_signal"            : None,
+                                        "reassess_signal"        : None,
+                                        "earnings_flag"          : bool(_eflag),
+                                        "earnings_days_out"      : _edays,
                                     })
                                     _cv_mod.save_conviction_positions(_cv_positions)
                                     st.success(f"📈 Paper LONG {_tk} @ ${_lr['current_price']}")
@@ -1712,19 +1894,24 @@ with tab_conviction:
                                     st.warning(f"Adding {_tk} (${_new_cost_s:,.0f}) would exceed ${_cv_mod.PAPER_MAX_GROSS:,.0f} gross limit (current: ${_cv_paper_gross_s:,.0f}).")
                                 else:
                                     _cv_positions.append({
-                                        "ticker"          : _tk,
-                                        "direction"       : "SHORT",
-                                        "status"          : "open",
-                                        "entry_price"     : _sr["current_price"],
-                                        "entry_date"      : str(date.today()),
-                                        "shares"          : _shares,
-                                        "cost"            : round(_shares * _sr["current_price"], 2),
-                                        "composite_score" : float(_sr["composite_score"]),
-                                        "score_at_entry"  : float(_sr["composite_score"]),
-                                        "exit_signal"     : None,
-                                        "reassess_signal" : None,
-                                        "earnings_flag"   : bool(_eflag),
-                                        "earnings_days_out": _edays,
+                                        "ticker"                 : _tk,
+                                        "direction"              : "SHORT",
+                                        "status"                 : "open",
+                                        "entry_price"            : _sr["current_price"],
+                                        "entry_date"             : str(date.today()),
+                                        "shares"                 : _shares,
+                                        "cost"                   : round(_shares * _sr["current_price"], 2),
+                                        "composite_score"        : float(_sr["composite_score"]),
+                                        "score_at_entry"         : float(_sr["composite_score"]),
+                                        "z_technical_at_entry"   : float(_sr["z_technical"])   if pd.notna(_sr.get("z_technical"))   else None,
+                                        "z_fundamental_at_entry" : float(_sr["z_fundamental"]) if pd.notna(_sr.get("z_fundamental")) else None,
+                                        "z_earnings_at_entry"    : float(_sr["z_earnings"])    if pd.notna(_sr.get("z_earnings"))    else None,
+                                        "z_macro_at_entry"       : float(_sr["z_macro"])       if pd.notna(_sr.get("z_macro"))       else None,
+                                        "regime_at_entry"        : str(_sr.get("regime", "")),
+                                        "exit_signal"            : None,
+                                        "reassess_signal"        : None,
+                                        "earnings_flag"          : bool(_eflag),
+                                        "earnings_days_out"      : _edays,
                                     })
                                     _cv_mod.save_conviction_positions(_cv_positions)
                                     st.success(f"📉 Paper SHORT {_tk} @ ${_sr['current_price']}")
@@ -1917,16 +2104,14 @@ with tab_conviction:
         # ── Reassess open positions ───────────────────────────────────────────
         if _cv_open and "cv_scan_result" in st.session_state:
             if st.button("Reassess Open Positions", key="cv_reassess"):
-                _cv_updated = _cv_mod.assess_open_positions(
-                    _cv_open, st.session_state["cv_scan_result"]
+                _cv_positions, _ar_msg = _cv_do_auto_replace(
+                    _cv_positions, _cv_open, st.session_state["cv_scan_result"]
                 )
-                _cv_by_ticker = {p["ticker"]: p for p in _cv_updated}
-                _cv_positions = [
-                    _cv_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
-                    for p in _cv_positions
-                ]
                 _cv_mod.save_conviction_positions(_cv_positions)
-                st.success("Positions reassessed.")
+                if _ar_msg:
+                    st.success(_ar_msg)
+                else:
+                    st.success("Positions reassessed — all scores within thresholds.")
                 st.rerun()
 
         # ── Close a position manually ─────────────────────────────────────────
@@ -2170,8 +2355,9 @@ with tab_conviction:
 
             if _cv_real_open:
                 st.subheader(f"Open ({len(_cv_real_open)})")
-                _cvr_rows = []
-                # Aggregates for the stocks-style P&L summary below the table.
+                st.caption("Click any cell in the white columns to edit. Greyed columns are read-only.")
+                _cvr_trade_ids   = []
+                _cvr_edit_rows   = []
                 _cvr_pnl_dollars = []
                 _cvr_costs       = []
                 _cvr_long_pnl    = 0.0
@@ -2193,20 +2379,23 @@ with tab_conviction:
                     try:
                         _ed  = date.fromisoformat(_rt.get("entry_date", ""))
                         _days = sum(1 for _d in pd.bdate_range(_ed, date.today()) if _d.date() > _ed)
+                        _entry_date_val = _ed
                     except Exception:
                         _days = 0
-                    _cvr_rows.append({
-                        "Dir"       : "SHORT" if _is_short else "LONG",
-                        "Ticker"    : _rt["ticker"],
-                        "Source"    : _rt.get("source", "—"),
-                        "Entry $"   : f"${_ep:.2f}",
-                        "Shares"    : f"{_sh:.4f}",
-                        "Invested"  : f"${_ep * _sh:,.2f}",
-                        "Cur Price" : f"${_cur:.2f}" if _cur else "—",
-                        "Days Held" : _days,
-                        "P&L %"     : f"{_pnl_pct:+.2f}%",
-                        "P&L $"     : f"${_pnl_d:+.2f}",
-                        "Entry Date": _rt.get("entry_date", ""),
+                        _entry_date_val = date.today()
+                    _cvr_trade_ids.append(_rt["id"])
+                    _cvr_edit_rows.append({
+                        "Dir"        : "SHORT" if _is_short else "LONG",
+                        "Ticker"     : _rt["ticker"],
+                        "Entry $"    : _ep,
+                        "Shares"     : _sh,
+                        "Entry Date" : _entry_date_val,
+                        "Source"     : _rt.get("source", "—"),
+                        "Cur $"      : _cur,
+                        "Days"       : _days,
+                        "P&L %"      : round(_pnl_pct, 2),
+                        "P&L $"      : round(_pnl_d, 2),
+                        "Invested $" : round(_ep * _sh, 2),
                     })
                     # Aggregates
                     _cost = _ep * _sh
@@ -2221,10 +2410,55 @@ with tab_conviction:
                         _cvr_long_pnl    += _pnl_d
                         _cvr_long_entry  += _cost
                         _cvr_long_curr   += _curv
-                st.dataframe(
-                    pd.DataFrame(_cvr_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                    hide_index=True, use_container_width=True,
+
+                st.data_editor(
+                    pd.DataFrame(_cvr_edit_rows),
+                    column_config={
+                        "Dir"        : st.column_config.SelectboxColumn("Dir",        options=["LONG", "SHORT"]),
+                        "Ticker"     : st.column_config.TextColumn("Ticker"),
+                        "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,    min_value=0.01),
+                        "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001,  min_value=0.0001),
+                        "Entry Date" : st.column_config.DateColumn("Entry Date"),
+                        "Source"     : st.column_config.TextColumn("Source",      disabled=True),
+                        "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
+                        "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
+                        "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.2f%%", disabled=True),
+                        "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
+                        "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="cvr_open_editor",
                 )
+                # Persist any inline edits immediately
+                _cvr_edits = st.session_state.get("cvr_open_editor", {}).get("edited_rows", {})
+                if _cvr_edits:
+                    _cvr_any_saved = False
+                    for _row_key, _cell_changes in _cvr_edits.items():
+                        _row_idx = int(_row_key)
+                        if _row_idx >= len(_cvr_trade_ids):
+                            continue
+                        _trade_id = _cvr_trade_ids[_row_idx]
+                        _updates = {}
+                        for _col, _val in _cell_changes.items():
+                            if _col == "Dir":
+                                _updates["side"] = "short" if _val == "SHORT" else "long"
+                            elif _col == "Ticker":
+                                _updates["ticker"] = str(_val).strip().upper()
+                            elif _col == "Entry $":
+                                _updates["entry_price"] = float(_val)
+                            elif _col == "Shares":
+                                _updates["shares"] = float(_val)
+                            elif _col == "Entry Date":
+                                _updates["entry_date"] = str(_val)
+                        if _updates:
+                            try:
+                                db.update_stock_real_trade(_trade_id, _updates)
+                                _cvr_any_saved = True
+                            except Exception as _ue:
+                                st.error(f"Save failed: {_ue}")
+                    if _cvr_any_saved:
+                        st.rerun()
 
                 # ── Stocks-style P&L summary (mirrors the paper-portfolio block) ──
                 _cvr_total_pnl  = sum(_cvr_pnl_dollars)
@@ -2245,13 +2479,11 @@ with tab_conviction:
                 _cre2.metric("Net Exposure (Current)", f"{_cvr_net_curr:+.1f}%")
 
                 st.divider()
-                st.caption("Manage open real trades:")
+                st.caption("Close a real trade with the actual fill price:")
                 for _rt in _cv_real_open:
                     _dir_lbl = "SHORT" if _rt.get("side") == "short" else "LONG"
                     _trade_label = f"{_rt['ticker']} ({_dir_lbl}) — entered ${float(_rt['entry_price']):.2f}"
-                    _ecol1, _ecol2 = st.columns(2)
-
-                    with _ecol1.expander(f"✅ Close {_trade_label}"):
+                    with st.expander(f"✅ Close {_trade_label}"):
                         with st.form(f"close_cvr_{_rt['id']}"):
                             _cvr_exit_px = st.number_input(
                                 "Exit price ($)", min_value=0.0, step=0.01,
@@ -2273,40 +2505,6 @@ with tab_conviction:
                                     st.rerun()
                                 except Exception as _ce:
                                     st.error(f"Close failed: {_ce}")
-
-                    with _ecol2.expander(f"✏️ Edit {_trade_label}"):
-                        with st.form(f"edit_cvr_{_rt['id']}"):
-                            _edit_c1, _edit_c2 = st.columns(2)
-                            _edit_side = _edit_c1.selectbox(
-                                "Direction",
-                                ["long", "short"],
-                                index=0 if _rt.get("side") != "short" else 1,
-                            )
-                            _edit_ep = _edit_c2.number_input(
-                                "Entry price ($)", min_value=0.01, step=0.01,
-                                value=float(_rt["entry_price"]),
-                            )
-                            _edit_c3, _edit_c4 = st.columns(2)
-                            _edit_shares = _edit_c3.number_input(
-                                "Shares", min_value=0.0001, step=0.0001, format="%.4f",
-                                value=float(_rt.get("shares") or 0),
-                            )
-                            _edit_date = _edit_c4.date_input(
-                                "Entry date",
-                                value=date.fromisoformat(_rt["entry_date"]) if _rt.get("entry_date") else date.today(),
-                            )
-                            if st.form_submit_button("Save changes"):
-                                try:
-                                    db.update_stock_real_trade(_rt["id"], {
-                                        "side"       : _edit_side,
-                                        "entry_price": float(_edit_ep),
-                                        "shares"     : float(_edit_shares),
-                                        "entry_date" : _edit_date.isoformat(),
-                                    })
-                                    st.success(f"Updated {_rt['ticker']}")
-                                    st.rerun()
-                                except Exception as _ue:
-                                    st.error(f"Edit failed: {_ue}")
 
             if _cv_real_closed:
                 with st.expander(f"Closed ({len(_cv_real_closed)})"):
