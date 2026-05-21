@@ -1164,6 +1164,11 @@ with tab_conviction:
         _cv_open      = [p for p in _cv_positions if p.get("status") == "open"]
         _cv_closed    = [p for p in _cv_positions if p.get("status") == "closed"]
 
+        # Show auto-replace summary when the scan just fired one
+        if "cv_auto_replace_msg" in st.session_state:
+            st.success(f"🔄 {st.session_state.pop('cv_auto_replace_msg')}")
+
+
         if _cv_open:
             import yfinance as _yf2
             _cv_tks = [p["ticker"] for p in _cv_open]
@@ -1418,6 +1423,104 @@ with tab_conviction:
             value=5_000, step=500, key="cv_budget",
         )
 
+        def _cv_do_auto_replace(positions_all, open_positions, scored_df):
+            """Assess open positions, auto-close any that fell below entry threshold,
+            and paper-add the best available same-direction replacement.
+            Returns (new_positions_all, summary_string)."""
+            import uuid as _uuid2
+            assessed    = _cv_mod.assess_open_positions(open_positions, scored_df)
+            open_tix    = {p["ticker"] for p in assessed if p.get("status") == "open"}
+            closed_list = []
+            replaced_list = []
+
+            for _p in assessed:
+                if _p.get("status") != "open":
+                    continue
+                _sig = _p.get("reassess_signal", "") or ""
+                if "threshold" not in _sig:
+                    continue  # not a score-threshold exit — leave for manual review
+
+                # ── Auto-close ──
+                _cpx = _p.get("current_price") or float(_p["entry_price"])
+                _ep  = float(_p["entry_price"])
+                _sh  = float(_p.get("shares") or 0)
+                _dir = _p["direction"]
+                _pnl_pct = ((_cpx - _ep) / _ep * 100) if _dir == "LONG" else ((_ep - _cpx) / _ep * 100)
+                _pnl_d   = ((_cpx - _ep) if _dir == "LONG" else (_ep - _cpx)) * _sh
+                _p.update({
+                    "status"      : "closed",
+                    "exit_price"  : _cpx,
+                    "exit_date"   : str(date.today()),
+                    "exit_reason" : "score_below_threshold",
+                    "pnl_pct"     : round(_pnl_pct, 2),
+                    "pnl_dollars" : round(_pnl_d, 2),
+                })
+                closed_list.append(_p["ticker"])
+                open_tix.discard(_p["ticker"])
+
+                # ── Find best replacement (same direction, not already held) ──
+                _freed = _p.get("cost") or round(_ep * _sh, 2)
+                _open_now = sum(1 for _q in assessed if _q.get("status") == "open")
+                if _open_now >= _cv_mod.PAPER_MAX_POSITIONS:
+                    continue  # still full after this close (shouldn't happen)
+                _gross_now = sum(_q.get("cost", 0) for _q in assessed if _q.get("status") == "open")
+                if _gross_now + _freed > _cv_mod.PAPER_MAX_GROSS:
+                    continue  # would breach gross cap
+
+                if _dir == "LONG":
+                    _cands = scored_df[
+                        (scored_df["direction"] == "LONG") &
+                        (~scored_df["ticker"].isin(open_tix))
+                    ].sort_values("composite_score", ascending=False)
+                else:
+                    _cands = scored_df[
+                        (scored_df["direction"] == "SHORT") &
+                        (~scored_df["ticker"].isin(open_tix))
+                    ].sort_values("composite_score", ascending=True)
+
+                if _cands.empty:
+                    continue  # no qualifying candidate available
+
+                _best   = _cands.iloc[0]
+                _rep_tk = _best["ticker"]
+                _rep_px = float(_best["current_price"])
+                _rep_sh = round(_freed / _rep_px, 4) if _rep_px else 0
+                assessed.append({
+                    "id"                     : f"cv_{_rep_tk}_{str(_uuid2.uuid4())[:8]}",
+                    "ticker"                 : _rep_tk,
+                    "direction"              : _dir,
+                    "status"                 : "open",
+                    "entry_price"            : _rep_px,
+                    "entry_date"             : str(date.today()),
+                    "shares"                 : _rep_sh,
+                    "cost"                   : round(_rep_sh * _rep_px, 2),
+                    "composite_score"        : float(_best["composite_score"]),
+                    "score_at_entry"         : float(_best["composite_score"]),
+                    "z_technical_at_entry"   : float(_best["z_technical"])   if pd.notna(_best.get("z_technical"))   else None,
+                    "z_fundamental_at_entry" : float(_best["z_fundamental"]) if pd.notna(_best.get("z_fundamental")) else None,
+                    "z_earnings_at_entry"    : float(_best["z_earnings"])    if pd.notna(_best.get("z_earnings"))    else None,
+                    "z_macro_at_entry"       : float(_best["z_macro"])       if pd.notna(_best.get("z_macro"))       else None,
+                    "regime_at_entry"        : str(_best.get("regime", "")),
+                    "exit_signal"            : None,
+                    "reassess_signal"        : None,
+                    "earnings_flag"          : bool(_best.get("earnings_flag", False)),
+                    "earnings_days_out"      : _best.get("earnings_days_out"),
+                })
+                open_tix.add(_rep_tk)
+                replaced_list.append(f"{_rep_tk} ({_dir})")
+
+            # For positions with non-threshold signals, still persist the reassess flag
+            # (they remain open, just flagged in the UI for manual review)
+            closed_hist = [p for p in positions_all if p.get("status") != "open"]
+            new_all     = closed_hist + assessed
+
+            parts = []
+            if closed_list:
+                parts.append(f"Auto-closed: {', '.join(closed_list)}")
+            if replaced_list:
+                parts.append(f"Replaced with: {', '.join(replaced_list)}")
+            return new_all, " | ".join(parts)
+
         if st.button("Run Conviction Scan", type="primary", key="cv_scan"):
             _summary_path = db.get_stock_file("ticker_summary.csv", ROOT)
             if _summary_path is None and (ROOT / "ticker_summary.csv").exists():
@@ -1439,6 +1542,15 @@ with tab_conviction:
                     _cv_progress.empty()
                     st.session_state["cv_scan_result"] = _cv_df
                     st.session_state["cv_scan_budget"] = _cv_budget
+                    # Auto-close below-threshold + replace immediately after scan
+                    if _cv_open:
+                        _cv_positions, _ar_msg = _cv_do_auto_replace(
+                            _cv_positions, _cv_open, _cv_df
+                        )
+                        _cv_mod.save_conviction_positions(_cv_positions)
+                        if _ar_msg:
+                            st.session_state["cv_auto_replace_msg"] = _ar_msg
+                    st.rerun()
                 except Exception as _cv_scan_err:
                     _cv_progress.empty()
                     st.error(f"Conviction scan error: {_cv_scan_err}")
@@ -1992,16 +2104,14 @@ with tab_conviction:
         # ── Reassess open positions ───────────────────────────────────────────
         if _cv_open and "cv_scan_result" in st.session_state:
             if st.button("Reassess Open Positions", key="cv_reassess"):
-                _cv_updated = _cv_mod.assess_open_positions(
-                    _cv_open, st.session_state["cv_scan_result"]
+                _cv_positions, _ar_msg = _cv_do_auto_replace(
+                    _cv_positions, _cv_open, st.session_state["cv_scan_result"]
                 )
-                _cv_by_ticker = {p["ticker"]: p for p in _cv_updated}
-                _cv_positions = [
-                    _cv_by_ticker.get(p["ticker"], p) if p.get("status") == "open" else p
-                    for p in _cv_positions
-                ]
                 _cv_mod.save_conviction_positions(_cv_positions)
-                st.success("Positions reassessed.")
+                if _ar_msg:
+                    st.success(_ar_msg)
+                else:
+                    st.success("Positions reassessed — all scores within thresholds.")
                 st.rerun()
 
         # ── Close a position manually ─────────────────────────────────────────
