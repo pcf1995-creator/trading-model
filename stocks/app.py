@@ -678,30 +678,33 @@ with tab_dash:
                 use_container_width=True,
                 key="rt_open_editor",
             )
-            # Detect changes by comparing return value to original row data
-            _rt_any_saved = False
-            for _ri, _orig in enumerate(_rt_edit_rows):
-                _ed = _rt_result.iloc[_ri]
-                _upd = {}
-                if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
-                    _upd["entry_price"] = float(_ed["Entry $"])
-                if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
-                    _upd["shares"] = float(_ed["Shares"])
-                if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
-                    _upd["entry_date"] = str(_ed["Entry Date"])
-                if str(_ed["Side"]) != str(_orig["Side"]):
-                    _upd["side"] = "short" if _ed["Side"] == "SHORT" else "long"
-                if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
-                    _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
-                if _upd:
-                    try:
-                        db.update_stock_real_trade(_rt_trade_ids[_ri], _upd)
-                        _rt_any_saved = True
-                    except Exception as _ue:
-                        st.error(f"Save failed: {_ue}")
-            if _rt_any_saved:
-                st.session_state.pop("rt_open_editor", None)
-                st.rerun()
+            if st.button("💾 Save Changes", key="rt_save_edits"):
+                _rt_any_saved = False
+                for _ri, _orig in enumerate(_rt_edit_rows):
+                    _ed = _rt_result.iloc[_ri]
+                    _upd = {}
+                    if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
+                        _upd["entry_price"] = float(_ed["Entry $"])
+                    if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
+                        _upd["shares"] = float(_ed["Shares"])
+                    if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
+                        _upd["entry_date"] = str(_ed["Entry Date"])
+                    if str(_ed["Side"]) != str(_orig["Side"]):
+                        _upd["side"] = "short" if _ed["Side"] == "SHORT" else "long"
+                    if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
+                        _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
+                    if _upd:
+                        try:
+                            db.update_stock_real_trade(_rt_trade_ids[_ri], _upd)
+                            _rt_any_saved = True
+                        except Exception as _ue:
+                            st.error(f"Save failed: {_ue}")
+                if _rt_any_saved:
+                    st.session_state.pop("rt_open_editor", None)
+                    st.success("Changes saved.")
+                    st.rerun()
+                else:
+                    st.info("No changes to save.")
 
             # Per-row close form
             st.caption("✅ Close a real trade with the actual fill price:")
@@ -2427,30 +2430,33 @@ with tab_conviction:
                     use_container_width=True,
                     key="cvr_open_editor",
                 )
-                # Detect changes by comparing return value to original row data
-                _cvr_any_saved = False
-                for _ri, _orig in enumerate(_cvr_edit_rows):
-                    _ed = _cvr_result.iloc[_ri]
-                    _upd = {}
-                    if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
-                        _upd["entry_price"] = float(_ed["Entry $"])
-                    if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
-                        _upd["shares"] = float(_ed["Shares"])
-                    if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
-                        _upd["entry_date"] = str(_ed["Entry Date"])
-                    if str(_ed["Dir"]) != str(_orig["Dir"]):
-                        _upd["side"] = "short" if _ed["Dir"] == "SHORT" else "long"
-                    if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
-                        _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
-                    if _upd:
-                        try:
-                            db.update_stock_real_trade(_cvr_trade_ids[_ri], _upd)
-                            _cvr_any_saved = True
-                        except Exception as _ue:
-                            st.error(f"Save failed: {_ue}")
-                if _cvr_any_saved:
-                    st.session_state.pop("cvr_open_editor", None)
-                    st.rerun()
+                if st.button("💾 Save Changes", key="cvr_save_edits"):
+                    _cvr_any_saved = False
+                    for _ri, _orig in enumerate(_cvr_edit_rows):
+                        _ed = _cvr_result.iloc[_ri]
+                        _upd = {}
+                        if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
+                            _upd["entry_price"] = float(_ed["Entry $"])
+                        if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
+                            _upd["shares"] = float(_ed["Shares"])
+                        if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
+                            _upd["entry_date"] = str(_ed["Entry Date"])
+                        if str(_ed["Dir"]) != str(_orig["Dir"]):
+                            _upd["side"] = "short" if _ed["Dir"] == "SHORT" else "long"
+                        if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
+                            _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
+                        if _upd:
+                            try:
+                                db.update_stock_real_trade(_cvr_trade_ids[_ri], _upd)
+                                _cvr_any_saved = True
+                            except Exception as _ue:
+                                st.error(f"Save failed: {_ue}")
+                    if _cvr_any_saved:
+                        st.session_state.pop("cvr_open_editor", None)
+                        st.success("Changes saved.")
+                        st.rerun()
+                    else:
+                        st.info("No changes to save.")
 
                 # ── Stocks-style P&L summary (mirrors the paper-portfolio block) ──
                 _cvr_total_pnl  = sum(_cvr_pnl_dollars)
