@@ -658,8 +658,9 @@ with tab_dash:
                     "P&L $"      : round(_pnl_d, 2),
                     "Invested $" : round(_ep * _sh, 2),
                 })
-            st.data_editor(
-                pd.DataFrame(_rt_edit_rows),
+            _rt_orig_df = pd.DataFrame(_rt_edit_rows)
+            _rt_result  = st.data_editor(
+                _rt_orig_df,
                 column_config={
                     "Side"       : st.column_config.SelectboxColumn("Side",        options=["LONG", "SHORT"]),
                     "Ticker"     : st.column_config.TextColumn("Ticker"),
@@ -677,35 +678,30 @@ with tab_dash:
                 use_container_width=True,
                 key="rt_open_editor",
             )
-            # Persist any inline edits immediately
-            _rt_edits = st.session_state.get("rt_open_editor", {}).get("edited_rows", {})
-            if _rt_edits:
-                _rt_any_saved = False
-                for _row_key, _cell_changes in _rt_edits.items():
-                    _row_idx = int(_row_key)
-                    if _row_idx >= len(_rt_trade_ids):
-                        continue
-                    _trade_id = _rt_trade_ids[_row_idx]
-                    _updates = {}
-                    for _col, _val in _cell_changes.items():
-                        if _col == "Side":
-                            _updates["side"] = "short" if _val == "SHORT" else "long"
-                        elif _col == "Ticker":
-                            _updates["ticker"] = str(_val).strip().upper()
-                        elif _col == "Entry $":
-                            _updates["entry_price"] = float(_val)
-                        elif _col == "Shares":
-                            _updates["shares"] = float(_val)
-                        elif _col == "Entry Date":
-                            _updates["entry_date"] = str(_val)
-                    if _updates:
-                        try:
-                            db.update_stock_real_trade(_trade_id, _updates)
-                            _rt_any_saved = True
-                        except Exception as _ue:
-                            st.error(f"Save failed: {_ue}")
-                if _rt_any_saved:
-                    st.rerun()
+            # Detect changes by comparing return value to original row data
+            _rt_any_saved = False
+            for _ri, _orig in enumerate(_rt_edit_rows):
+                _ed = _rt_result.iloc[_ri]
+                _upd = {}
+                if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
+                    _upd["entry_price"] = float(_ed["Entry $"])
+                if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
+                    _upd["shares"] = float(_ed["Shares"])
+                if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
+                    _upd["entry_date"] = str(_ed["Entry Date"])
+                if str(_ed["Side"]) != str(_orig["Side"]):
+                    _upd["side"] = "short" if _ed["Side"] == "SHORT" else "long"
+                if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
+                    _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
+                if _upd:
+                    try:
+                        db.update_stock_real_trade(_rt_trade_ids[_ri], _upd)
+                        _rt_any_saved = True
+                    except Exception as _ue:
+                        st.error(f"Save failed: {_ue}")
+            if _rt_any_saved:
+                st.session_state.pop("rt_open_editor", None)
+                st.rerun()
 
             # Per-row close form
             st.caption("✅ Close a real trade with the actual fill price:")
@@ -2411,8 +2407,9 @@ with tab_conviction:
                         _cvr_long_entry  += _cost
                         _cvr_long_curr   += _curv
 
-                st.data_editor(
-                    pd.DataFrame(_cvr_edit_rows),
+                _cvr_orig_df = pd.DataFrame(_cvr_edit_rows)
+                _cvr_result  = st.data_editor(
+                    _cvr_orig_df,
                     column_config={
                         "Dir"        : st.column_config.SelectboxColumn("Dir",        options=["LONG", "SHORT"]),
                         "Ticker"     : st.column_config.TextColumn("Ticker"),
@@ -2430,35 +2427,30 @@ with tab_conviction:
                     use_container_width=True,
                     key="cvr_open_editor",
                 )
-                # Persist any inline edits immediately
-                _cvr_edits = st.session_state.get("cvr_open_editor", {}).get("edited_rows", {})
-                if _cvr_edits:
-                    _cvr_any_saved = False
-                    for _row_key, _cell_changes in _cvr_edits.items():
-                        _row_idx = int(_row_key)
-                        if _row_idx >= len(_cvr_trade_ids):
-                            continue
-                        _trade_id = _cvr_trade_ids[_row_idx]
-                        _updates = {}
-                        for _col, _val in _cell_changes.items():
-                            if _col == "Dir":
-                                _updates["side"] = "short" if _val == "SHORT" else "long"
-                            elif _col == "Ticker":
-                                _updates["ticker"] = str(_val).strip().upper()
-                            elif _col == "Entry $":
-                                _updates["entry_price"] = float(_val)
-                            elif _col == "Shares":
-                                _updates["shares"] = float(_val)
-                            elif _col == "Entry Date":
-                                _updates["entry_date"] = str(_val)
-                        if _updates:
-                            try:
-                                db.update_stock_real_trade(_trade_id, _updates)
-                                _cvr_any_saved = True
-                            except Exception as _ue:
-                                st.error(f"Save failed: {_ue}")
-                    if _cvr_any_saved:
-                        st.rerun()
+                # Detect changes by comparing return value to original row data
+                _cvr_any_saved = False
+                for _ri, _orig in enumerate(_cvr_edit_rows):
+                    _ed = _cvr_result.iloc[_ri]
+                    _upd = {}
+                    if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
+                        _upd["entry_price"] = float(_ed["Entry $"])
+                    if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
+                        _upd["shares"] = float(_ed["Shares"])
+                    if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
+                        _upd["entry_date"] = str(_ed["Entry Date"])
+                    if str(_ed["Dir"]) != str(_orig["Dir"]):
+                        _upd["side"] = "short" if _ed["Dir"] == "SHORT" else "long"
+                    if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
+                        _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
+                    if _upd:
+                        try:
+                            db.update_stock_real_trade(_cvr_trade_ids[_ri], _upd)
+                            _cvr_any_saved = True
+                        except Exception as _ue:
+                            st.error(f"Save failed: {_ue}")
+                if _cvr_any_saved:
+                    st.session_state.pop("cvr_open_editor", None)
+                    st.rerun()
 
                 # ── Stocks-style P&L summary (mirrors the paper-portfolio block) ──
                 _cvr_total_pnl  = sum(_cvr_pnl_dollars)
