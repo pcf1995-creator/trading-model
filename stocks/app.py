@@ -50,6 +50,59 @@ def color_pnl(val: str) -> str:
 st.set_page_config(page_title="Stocks Dashboard", layout="wide")
 st.title("Stocks Dashboard")
 
+
+@st.fragment
+def _real_trade_editor(edit_rows, trade_ids, side_col, editor_key, save_key):
+    """Inline editor for real trades. Fragment isolates reruns to this widget only."""
+    orig_df = pd.DataFrame(edit_rows)
+    result = st.data_editor(
+        orig_df,
+        column_config={
+            side_col     : st.column_config.SelectboxColumn(side_col,   options=["LONG", "SHORT"]),
+            "Ticker"     : st.column_config.TextColumn("Ticker"),
+            "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01),
+            "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001),
+            "Entry Date" : st.column_config.DateColumn("Entry Date"),
+            "Source"     : st.column_config.TextColumn("Source",      disabled=True),
+            "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
+            "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
+            "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.2f%%", disabled=True),
+            "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
+            "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=editor_key,
+    )
+    if st.button("💾 Save Changes", key=save_key):
+        any_saved = False
+        for ri, orig in enumerate(edit_rows):
+            ed = result.iloc[ri]
+            upd = {}
+            if abs(float(ed["Entry $"] or 0) - float(orig["Entry $"] or 0)) > 0.001:
+                upd["entry_price"] = float(ed["Entry $"])
+            if abs(float(ed["Shares"] or 0) - float(orig["Shares"] or 0)) > 0.00001:
+                upd["shares"] = float(ed["Shares"])
+            if str(ed["Entry Date"]) != str(orig["Entry Date"]):
+                upd["entry_date"] = str(ed["Entry Date"])
+            if str(ed[side_col]) != str(orig[side_col]):
+                upd["side"] = "short" if ed[side_col] == "SHORT" else "long"
+            if str(ed["Ticker"]).upper().strip() != str(orig["Ticker"]).upper().strip():
+                upd["ticker"] = str(ed["Ticker"]).upper().strip()
+            if upd:
+                try:
+                    db.update_stock_real_trade(trade_ids[ri], upd)
+                    any_saved = True
+                except Exception as ue:
+                    st.error(f"Save failed: {ue}")
+        if any_saved:
+            st.session_state.pop(editor_key, None)
+            st.success("Changes saved.")
+            st.rerun(scope="app")
+        else:
+            st.info("No changes to save.")
+
+
 tab_dash, tab_lt, tab_conviction = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
@@ -658,53 +711,7 @@ with tab_dash:
                     "P&L $"      : round(_pnl_d, 2),
                     "Invested $" : round(_ep * _sh, 2),
                 })
-            _rt_orig_df = pd.DataFrame(_rt_edit_rows)
-            _rt_result  = st.data_editor(
-                _rt_orig_df,
-                column_config={
-                    "Side"       : st.column_config.SelectboxColumn("Side",        options=["LONG", "SHORT"]),
-                    "Ticker"     : st.column_config.TextColumn("Ticker"),
-                    "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,   min_value=0.01),
-                    "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001, min_value=0.0001),
-                    "Entry Date" : st.column_config.DateColumn("Entry Date"),
-                    "Source"     : st.column_config.TextColumn("Source",      disabled=True),
-                    "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
-                    "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
-                    "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.1f%%", disabled=True),
-                    "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
-                    "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
-                },
-                hide_index=True,
-                use_container_width=True,
-                key="rt_open_editor",
-            )
-            if st.button("💾 Save Changes", key="rt_save_edits"):
-                _rt_any_saved = False
-                for _ri, _orig in enumerate(_rt_edit_rows):
-                    _ed = _rt_result.iloc[_ri]
-                    _upd = {}
-                    if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
-                        _upd["entry_price"] = float(_ed["Entry $"])
-                    if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
-                        _upd["shares"] = float(_ed["Shares"])
-                    if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
-                        _upd["entry_date"] = str(_ed["Entry Date"])
-                    if str(_ed["Side"]) != str(_orig["Side"]):
-                        _upd["side"] = "short" if _ed["Side"] == "SHORT" else "long"
-                    if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
-                        _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
-                    if _upd:
-                        try:
-                            db.update_stock_real_trade(_rt_trade_ids[_ri], _upd)
-                            _rt_any_saved = True
-                        except Exception as _ue:
-                            st.error(f"Save failed: {_ue}")
-                if _rt_any_saved:
-                    st.session_state.pop("rt_open_editor", None)
-                    st.success("Changes saved.")
-                    st.rerun()
-                else:
-                    st.info("No changes to save.")
+            _real_trade_editor(_rt_edit_rows, _rt_trade_ids, "Side", "rt_open_editor", "rt_save_edits")
 
             # Per-row close form
             st.caption("✅ Close a real trade with the actual fill price:")
@@ -2410,53 +2417,7 @@ with tab_conviction:
                         _cvr_long_entry  += _cost
                         _cvr_long_curr   += _curv
 
-                _cvr_orig_df = pd.DataFrame(_cvr_edit_rows)
-                _cvr_result  = st.data_editor(
-                    _cvr_orig_df,
-                    column_config={
-                        "Dir"        : st.column_config.SelectboxColumn("Dir",        options=["LONG", "SHORT"]),
-                        "Ticker"     : st.column_config.TextColumn("Ticker"),
-                        "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,    min_value=0.01),
-                        "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001,  min_value=0.0001),
-                        "Entry Date" : st.column_config.DateColumn("Entry Date"),
-                        "Source"     : st.column_config.TextColumn("Source",      disabled=True),
-                        "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
-                        "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
-                        "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.2f%%", disabled=True),
-                        "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
-                        "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                    key="cvr_open_editor",
-                )
-                if st.button("💾 Save Changes", key="cvr_save_edits"):
-                    _cvr_any_saved = False
-                    for _ri, _orig in enumerate(_cvr_edit_rows):
-                        _ed = _cvr_result.iloc[_ri]
-                        _upd = {}
-                        if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
-                            _upd["entry_price"] = float(_ed["Entry $"])
-                        if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
-                            _upd["shares"] = float(_ed["Shares"])
-                        if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
-                            _upd["entry_date"] = str(_ed["Entry Date"])
-                        if str(_ed["Dir"]) != str(_orig["Dir"]):
-                            _upd["side"] = "short" if _ed["Dir"] == "SHORT" else "long"
-                        if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
-                            _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
-                        if _upd:
-                            try:
-                                db.update_stock_real_trade(_cvr_trade_ids[_ri], _upd)
-                                _cvr_any_saved = True
-                            except Exception as _ue:
-                                st.error(f"Save failed: {_ue}")
-                    if _cvr_any_saved:
-                        st.session_state.pop("cvr_open_editor", None)
-                        st.success("Changes saved.")
-                        st.rerun()
-                    else:
-                        st.info("No changes to save.")
+                _real_trade_editor(_cvr_edit_rows, _cvr_trade_ids, "Dir", "cvr_open_editor", "cvr_save_edits")
 
                 # ── Stocks-style P&L summary (mirrors the paper-portfolio block) ──
                 _cvr_total_pnl  = sum(_cvr_pnl_dollars)
