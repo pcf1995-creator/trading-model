@@ -298,7 +298,7 @@ def _is_after_330_et() -> bool:
 
 
 def get_latest_signal(ticker: str, model, feature_names: list[str],
-                      threshold: float) -> dict | None:
+                      threshold: float, side: str = "long") -> dict | None:
     """Download recent data, compute features, return signal dict or None."""
     df = yf.download(ticker, period=f"{HISTORY_DAYS}d",
                      auto_adjust=True, progress=False)
@@ -340,6 +340,7 @@ def get_latest_signal(ticker: str, model, feature_names: list[str],
         "threshold"     : threshold,
         "signal"        : prob >= threshold,
         "intraday"      : intraday,
+        "side"          : side,
     }
 
 
