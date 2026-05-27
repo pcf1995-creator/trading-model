@@ -1729,7 +1729,6 @@ with tab_conviction:
                     _cv_existing_real = {
                         r["ticker"] for r in db.load_stock_real_trades()
                         if r.get("status") == "open"
-                           and r.get("source") in ("conviction", "paper_promotion")
                     }
                     # Backwards compat for code below that still references _cv_existing.
                     _cv_existing = _cv_existing_paper
@@ -1852,7 +1851,6 @@ with tab_conviction:
                             _cv_existing_real = {
                                 r["ticker"] for r in db.load_stock_real_trades()
                                 if r.get("status") == "open"
-                                   and r.get("source") in ("conviction", "paper_promotion")
                             }
                         _in_paper = _tk in _cv_existing_paper
                         _in_real  = _tk in _cv_existing_real
