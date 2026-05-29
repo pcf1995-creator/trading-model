@@ -1764,10 +1764,12 @@ with tab_conviction:
                             # % from prior daily close — flag with ⚠️ when the stock has
                             # already moved >2% intraday in the unfavorable direction
                             # (up for a long, down for a short).
-                            _pfc_l = _lr.get("pct_from_close", 0.0) or 0.0
+                            _pfc_l      = _lr.get("pct_from_close", 0.0) or 0.0
+                            _prior_cl_l = _lr.get("prior_close") or _lr.get("current_price")
                             _pfc_l_warn = "  ⚠️" if _pfc_l > 2.0 else ""
-                            _pfc_l_str = f" ({_pfc_l:+.2f}% from close{_pfc_l_warn})" if abs(_pfc_l) >= 0.05 else ""
-                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}{_pfc_l_str}  —  {_score_breakdown}{_earn_note}")
+                            _pfc_l_str  = f" ({_pfc_l:+.2f}%{_pfc_l_warn})" if abs(_pfc_l) >= 0.05 else ""
+                            _close_str_l = f" | close ${_prior_cl_l}" if _prior_cl_l else ""
+                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}{_pfc_l_str}{_close_str_l}  —  {_score_breakdown}{_earn_note}")
                             st.caption(f"{_shares:.4f} shares · ${_per_long:,.0f} allocation")
                         with _col2:
                             # Paper button: hidden if already held in paper.
@@ -1872,10 +1874,12 @@ with tab_conviction:
                             _earn_note = f" | 📅 Earnings in {_edays}d" if _eflag and _edays else ""
                             # % from prior daily close — for shorts, the unfavorable
                             # direction is DOWN (price already gave us alpha intraday).
-                            _pfc_s = _sr.get("pct_from_close", 0.0) or 0.0
+                            _pfc_s      = _sr.get("pct_from_close", 0.0) or 0.0
+                            _prior_cl_s = _sr.get("prior_close") or _sr.get("current_price")
                             _pfc_s_warn = "  ⚠️" if _pfc_s < -2.0 else ""
-                            _pfc_s_str = f" ({_pfc_s:+.2f}% from close{_pfc_s_warn})" if abs(_pfc_s) >= 0.05 else ""
-                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}{_pfc_s_str}  —  {_score_breakdown}{_earn_note}")
+                            _pfc_s_str  = f" ({_pfc_s:+.2f}%{_pfc_s_warn})" if abs(_pfc_s) >= 0.05 else ""
+                            _close_str_s = f" | close ${_prior_cl_s}" if _prior_cl_s else ""
+                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}{_pfc_s_str}{_close_str_s}  —  {_score_breakdown}{_earn_note}")
                             st.caption(f"{_shares:.4f} shares · ${_per_short:,.0f} allocation")
                         with _col2:
                             if _in_paper:
