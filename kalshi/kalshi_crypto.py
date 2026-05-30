@@ -104,6 +104,13 @@ MIN_EDGE           = 0.05
 MAX_KELLY          = 0.25
 DEFAULT_BANKROLL   = 500
 
+# High-confidence band: higher-probability plays surfaced for comparison.
+# These are NOT auto-placed; they appear in a separate output section so
+# we can track whether near-ATM plays outperform the long-shot recommendations.
+HIGH_CONF_MIN_EDGE = 0.03   # 3pp edge (vs 5pp for main recs)
+HIGH_CONF_PRICE_LO = 35     # cents — lower bound
+HIGH_CONF_PRICE_HI = 80     # cents — upper bound
+
 # Per-bucket capital budgets (dollars). Half-Kelly cap of MAX_KELLY (25%) means
 # the largest single bet in each bucket is BUCKET_BUDGETS[bucket] * MAX_KELLY:
 #   weekly:         $50  (200 * 0.25)
@@ -1194,8 +1201,9 @@ def main():
         asset_dfs_by_symbol[symbol] = {"daily": daily_df, "hourly": hourly_df, "minute": minute_closes}
 
     # ── Score contracts ──
-    recommendations = []
-    all_results     = []
+    recommendations  = []
+    high_conf_recs   = []   # 35-80¢ band, edge ≥ 3pp — informational only
+    all_results      = []
 
     for symbol, series in KALSHI_SERIES.items():
         markets = client.get_markets(series_ticker=series, status="open")
@@ -1207,6 +1215,9 @@ def main():
                 all_results.append(result)
                 if result["ev"] >= args.min_ev and result["edge"] >= args.min_edge:
                     recommendations.append(result)
+                if (HIGH_CONF_PRICE_LO <= result["price"] <= HIGH_CONF_PRICE_HI
+                        and result["edge"] >= HIGH_CONF_MIN_EDGE):
+                    high_conf_recs.append(result)
 
     # ── All contracts scanned ──
     print(f"\n[ALL CONTRACTS SCANNED]")
@@ -1258,6 +1269,28 @@ def main():
             print(f"    Half-Kelly  : {r['kelly_pct']:.1f}% of bankroll")
             print(f"    Order       : BUY {contracts} {side} contract(s) "
                   f"@ {r['price']}¢  (cost ~${cost_usd:.2f})")
+
+    # ── High-Confidence Band (informational, not auto-placed) ──
+    print(f"\n[HIGH-CONFIDENCE PLAYS]  "
+          f"({HIGH_CONF_PRICE_LO}-{HIGH_CONF_PRICE_HI}¢ range, edge ≥ {HIGH_CONF_MIN_EDGE*100:.0f}pp)")
+    print("  Higher-probability / lower-payout plays — informational only, not auto-placed")
+    if not high_conf_recs:
+        print("  None found.")
+    else:
+        high_conf_recs.sort(key=lambda x: x["ev"], reverse=True)
+        already = {r["ticker"] + r["side"] for r in recommendations}
+        print(f"\n  {'Ticker':<35} {'Side':>4} {'Price':>6} {'Cal%':>6} "
+              f"{'Edge':>6} {'EV':>6} {'Kelly':>6}  {'Win odds':>10}")
+        print(f"  {'-'*95}")
+        for r in high_conf_recs:
+            flag = " *" if (r["ticker"] + r["side"] in already) else "  "
+            # Implied win probability from market price
+            market_pct = r["price"]
+            win_label  = f"mkt {market_pct}¢ → mdl {r['calibrated_prob']*100:.0f}%"
+            print(f"{flag} {r['ticker']:<35} {r['side']:>4}  {r['price']:>4}¢  "
+                  f"{r['calibrated_prob']*100:>5.1f}%  {r['edge']*100:>+5.1f}%  "
+                  f"{r['ev']:>+.3f}  {r['kelly_pct']:>5.1f}%  {win_label}")
+        print(f"\n  (* = also in main recommendations above)")
 
     # ── Auto-save to DB if requested ──
     if args.auto_save_db and recommendations:
