@@ -338,6 +338,14 @@ def save_conviction_positions(positions: list[dict]) -> None:
                     known["data"] = extra
                 rows.append(known)
             if rows:
+                import math as _math
+                # Strip NaN/Inf floats before upsert — JSON serialization rejects them
+                # and the Supabase client will raise, silently falling back to local file.
+                def _clean(v):
+                    if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)):
+                        return None
+                    return v
+                rows = [{k: _clean(v) for k, v in r.items()} for r in rows]
                 client.table("lt_positions").upsert(rows).execute()
             return
         except Exception as e:
