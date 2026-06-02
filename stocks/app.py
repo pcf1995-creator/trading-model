@@ -2022,9 +2022,15 @@ with tab_conviction:
                                 _pdir  = _pp["direction"]
                                 _pool  = _pa_long_pool if _pdir == "LONG" else _pa_short_pool
                                 _pool_tickers = _pool["ticker"].tolist() if not _pool.empty else []
-                                _cur_p = float(_pa_price_map.get(_ptk) or _pp.get("entry_price") or 0)
+                                # Resolve current price: scan map → live fetch → entry price fallback.
+                                # Must guard NaN: float(NaN) is truthy in Python so plain `or` won't fall through.
+                                _raw_p = _pa_price_map.get(_ptk)
+                                if _raw_p is None or (isinstance(_raw_p, float) and (pd.isna(_raw_p) or _raw_p <= 0)):
+                                    _raw_p = _cv_live_price(_ptk) or _pp.get("entry_price") or 0
+                                _cur_p = float(_raw_p) if _raw_p else float(_pp.get("entry_price") or 0)
                                 _ep    = float(_pp.get("entry_price") or _cur_p or 1)
-                                _pnl_r = ((_cur_p - _ep) / _ep if _pdir == "LONG" else (_ep - _cur_p) / _ep) if _ep else 0
+                                _pnl_r_raw = ((_cur_p - _ep) / _ep if _pdir == "LONG" else (_ep - _cur_p) / _ep) if _ep else 0
+                                _pnl_r = 0.0 if (pd.isna(_pnl_r_raw) if isinstance(_pnl_r_raw, float) else False) else _pnl_r_raw
                                 _pnl_d = round(_pnl_r * float(_pp.get("cost") or 0), 2)
                                 with st.container(border=True):
                                     _rc1, _rc2 = st.columns([3, 1])
