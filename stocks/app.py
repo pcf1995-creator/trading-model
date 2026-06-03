@@ -2060,6 +2060,18 @@ with tab_conviction:
                                                     "pnl_dollars": _pnl_d,
                                                 }
                                                 break
+                                        # Also close any open real trade for this ticker
+                                        _real_closed = []
+                                        for _rt in db.load_stock_real_trades():
+                                            if _rt.get("ticker") == _ptk and _rt.get("status") == "open":
+                                                try:
+                                                    db.close_stock_real_trade(
+                                                        _rt["id"], _cur_p,
+                                                        str(date.today()), "reassessment",
+                                                    )
+                                                    _real_closed.append(_ptk)
+                                                except Exception as _rce:
+                                                    st.warning(f"Could not auto-close real {_ptk}: {_rce}")
                                         if _do_replace:
                                             _nr     = _pool[_pool["ticker"] == _repl_sel].iloc[0]
                                             _cost_r = float(_pp.get("cost") or 0)
@@ -2081,6 +2093,8 @@ with tab_conviction:
                                             })
                                         _cv_mod.save_conviction_positions(_cv_positions)
                                         _msg = f"Replaced {_ptk} → {_repl_sel}" if _do_replace else f"Closed {_ptk}"
+                                        if _real_closed:
+                                            _msg += f" (real trade also closed @ ${_cur_p:.2f})"
                                         st.success(_msg)
                                         st.rerun()
 
