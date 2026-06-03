@@ -103,6 +103,65 @@ def _real_trade_editor(edit_rows, trade_ids, side_col, editor_key, save_key):
             st.info("No changes to save.")
 
 
+@st.fragment
+def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
+    """Editable table for closed real trades — lets user fix exit price/date/reason."""
+    import math as _math
+    orig_df = pd.DataFrame(closed_rows)
+    result = st.data_editor(
+        orig_df,
+        column_config={
+            "Dir"        : st.column_config.TextColumn("Dir",        disabled=True),
+            "Ticker"     : st.column_config.TextColumn("Ticker",     disabled=True),
+            "Source"     : st.column_config.TextColumn("Source",     disabled=True),
+            "Entry $"    : st.column_config.NumberColumn("Entry $",  format="$%.2f", disabled=True),
+            "Exit $"     : st.column_config.NumberColumn("Exit $",   format="$%.2f", step=0.01),
+            "Shares"     : st.column_config.NumberColumn("Shares",   format="%.4f",  disabled=True),
+            "Reason"     : st.column_config.TextColumn("Reason"),
+            "P&L %"      : st.column_config.NumberColumn("P&L %",   format="%.2f%%", disabled=True),
+            "P&L $"      : st.column_config.NumberColumn("P&L $",   format="$%.2f",  disabled=True),
+            "Entry Date" : st.column_config.DateColumn("Entry Date", disabled=True),
+            "Exit Date"  : st.column_config.DateColumn("Exit Date"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=editor_key,
+    )
+    if st.button("💾 Save Changes", key=save_key):
+        any_saved = False
+        for ri, orig in enumerate(closed_rows):
+            ed = result.iloc[ri]
+            upd = {}
+            orig_exit = orig.get("Exit $") or 0
+            new_exit  = float(ed["Exit $"] or 0)
+            if abs(new_exit - float(orig_exit)) > 0.001 and new_exit > 0:
+                upd["exit_price"] = new_exit
+                # Recompute P&L with new exit price
+                ep    = float(orig.get("Entry $") or 0)
+                sh    = float(orig.get("Shares") or 0)
+                side  = "short" if orig.get("Dir") == "SHORT" else "long"
+                if ep > 0:
+                    pct = ((ep - new_exit) / ep if side == "short" else (new_exit - ep) / ep)
+                    upd["pnl_pct"]    = round(pct * 100, 2)
+                    upd["pnl_dollars"] = round((ep - new_exit if side == "short" else new_exit - ep) * sh, 2)
+            if str(ed["Exit Date"]) != str(orig.get("Exit Date", "")):
+                upd["exit_date"] = str(ed["Exit Date"])
+            if str(ed["Reason"]).strip() != str(orig.get("Reason", "")).strip():
+                upd["exit_reason"] = str(ed["Reason"]).strip()
+            if upd:
+                try:
+                    db.update_stock_real_trade(trade_ids[ri], upd)
+                    any_saved = True
+                except Exception as ue:
+                    st.error(f"Save failed for {orig.get('Ticker')}: {ue}")
+        if any_saved:
+            st.session_state.pop(editor_key, None)
+            st.success("Changes saved.")
+            st.rerun(scope="app")
+        else:
+            st.info("No changes to save.")
+
+
 tab_dash, tab_lt, tab_conviction = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
@@ -2489,26 +2548,35 @@ with tab_conviction:
 
             if _cv_real_closed:
                 with st.expander(f"Closed ({len(_cv_real_closed)})"):
+                    st.caption("Click any white cell to edit. Exit $, Exit Date, and Reason are editable.")
                     _cvrc_rows = []
+                    _cvrc_ids  = []
                     for _rt in sorted(_cv_real_closed, key=lambda x: x.get("exit_date", ""), reverse=True):
-                        _pnl = _rt.get("pnl_dollars")
+                        _pnl   = _rt.get("pnl_dollars")
+                        _pnlp  = _rt.get("pnl_pct", 0) or 0
+                        _ep_v  = float(_rt["entry_price"]) if _rt.get("entry_price") else 0.0
+                        _ex_v  = float(_rt["exit_price"])  if _rt.get("exit_price")  else 0.0
+                        try:
+                            _ex_date_v = date.fromisoformat(_rt.get("exit_date", "")) if _rt.get("exit_date") else date.today()
+                            _en_date_v = date.fromisoformat(_rt.get("entry_date", "")) if _rt.get("entry_date") else date.today()
+                        except Exception:
+                            _ex_date_v = date.today()
+                            _en_date_v = date.today()
+                        _cvrc_ids.append(_rt["id"])
                         _cvrc_rows.append({
-                            "Dir"       : "SHORT" if _rt.get("side") == "short" else "LONG",
-                            "Ticker"    : _rt["ticker"],
-                            "Source"    : _rt.get("source", "—"),
-                            "Entry $"   : f"${float(_rt['entry_price']):.2f}",
-                            "Exit $"    : f"${float(_rt['exit_price']):.2f}" if _rt.get("exit_price") else "—",
-                            "Shares"    : _rt.get("shares", 0),
-                            "Reason"    : _rt.get("exit_reason", "—"),
-                            "P&L %"     : f"{_rt.get('pnl_pct', 0):+.2f}%",
-                            "P&L $"     : f"${_pnl:+.2f}" if _pnl is not None else "—",
-                            "Entry Date": _rt.get("entry_date", ""),
-                            "Exit Date" : _rt.get("exit_date", ""),
+                            "Dir"        : "SHORT" if _rt.get("side") == "short" else "LONG",
+                            "Ticker"     : _rt["ticker"],
+                            "Source"     : _rt.get("source", "—"),
+                            "Entry $"    : _ep_v,
+                            "Exit $"     : _ex_v,
+                            "Shares"     : float(_rt.get("shares") or 0),
+                            "Reason"     : _rt.get("exit_reason", ""),
+                            "P&L %"      : round(_pnlp, 2),
+                            "P&L $"      : round(_pnl, 2) if _pnl is not None else 0.0,
+                            "Entry Date" : _en_date_v,
+                            "Exit Date"  : _ex_date_v,
                         })
-                    st.dataframe(
-                        pd.DataFrame(_cvrc_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                        hide_index=True, use_container_width=True,
-                    )
+                    _closed_trade_editor(_cvrc_rows, _cvrc_ids, "cvrc_closed_editor", "cvrc_closed_save")
 
                 # Realized P&L from closed real trades (stocks-style, no win rate).
                 _cvr_realized = [t for t in _cv_real_closed if t.get("pnl_dollars") is not None]
