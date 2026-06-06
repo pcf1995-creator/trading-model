@@ -162,10 +162,11 @@ def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
             st.info("No changes to save.")
 
 
-tab_dash, tab_lt, tab_conviction = st.tabs([
+tab_dash, tab_lt, tab_conviction, tab_overnight = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
     "🎯 S&P Benchmark L/S",
+    "🌙 Overnight Drift",
 ])
 
 with tab_dash:
@@ -2590,6 +2591,201 @@ with tab_conviction:
                     _crc1.metric("Realized Total P&L $", f"${_cvr_realized_total:+.2f}")
                     _crc2.metric("Realized Long P&L $",  f"${_cvr_realized_long:+.2f}")
                     _crc3.metric("Realized Short P&L $", f"${_cvr_realized_short:+.2f}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OVERNIGHT DRIFT TAB
+# ══════════════════════════════════════════════════════════════════════════════
+import overnight as _on_mod  # noqa: E402
+
+with tab_overnight:
+    st.header("🌙 Overnight Drift Scanner")
+    st.markdown(
+        "Stocks often earn positive returns **close → open** while losing intraday "
+        "(**open → close**). This scanner quantifies that edge per ticker so you can "
+        "find names where the drift is statistically significant and survives transaction costs."
+    )
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    _on_c1, _on_c2, _on_c3 = st.columns(3)
+    with _on_c1:
+        _on_period = st.selectbox("Lookback period", list(_on_mod.PERIOD_DAYS.keys()), index=3)
+    with _on_c2:
+        _on_cost = st.slider("Round-trip cost (bps)", min_value=0, max_value=20, value=6,
+                             help="Total bps for one buy + one sell (e.g. spread + commission). "
+                                  "6 bps ≈ $0.006/share on a $100 stock.")
+    with _on_c3:
+        _on_cost_side = _on_cost / 2
+        st.metric("Cost per side", f"{_on_cost_side:.1f} bps")
+
+    # Ticker universe — default to the same tickers used in the conviction scan
+    _on_summary = ROOT / "ticker_summary.csv"
+    _on_universe = (
+        pd.read_csv(_on_summary)["Ticker"].tolist()
+        if _on_summary.exists()
+        else _on_mod.DEFAULT_TICKERS
+    )
+    _on_tickers_input = st.text_area(
+        "Tickers to scan (one per line or comma-separated)",
+        value="\n".join(_on_universe),
+        height=120,
+    )
+    _on_tickers = [
+        t.strip().upper() for t in _on_tickers_input.replace(",", "\n").splitlines()
+        if t.strip()
+    ]
+
+    _on_period_days = _on_mod.PERIOD_DAYS[_on_period]
+
+    if st.button("🔍 Run Overnight Scan", key="on_run_scan", type="primary"):
+        _on_prog = st.progress(0, text="Starting…")
+
+        def _on_cb(tk, i, n):
+            _on_prog.progress((i + 1) / n, text=f"Scanning {tk} ({i+1}/{n})")
+
+        with st.spinner("Fetching data…"):
+            _on_result = _on_mod.scan_tickers(
+                _on_tickers, _on_period_days, _on_cost / 2, _on_cb
+            )
+        _on_prog.empty()
+        if not _on_result.empty:
+            st.session_state["on_scan_result"] = _on_result
+            st.session_state["on_scan_cost"]   = _on_cost
+            st.session_state["on_scan_period"] = _on_period
+            st.rerun()
+        else:
+            st.error("No results returned — check ticker list.")
+
+    # ── Scanner results ────────────────────────────────────────────────────────
+    if "on_scan_result" in st.session_state:
+        _on_df     = st.session_state["on_scan_result"]
+        _on_c_used = st.session_state.get("on_scan_cost", _on_cost)
+        _on_p_used = st.session_state.get("on_scan_period", _on_period)
+
+        st.divider()
+        st.subheader(f"Results — {_on_p_used} lookback · {_on_c_used} bps round-trip cost")
+        st.caption(
+            "**Net Sharpe**: overnight-only strategy Sharpe after costs  |  "
+            "**Edge (bps/day)**: overnight mean minus intraday mean  |  "
+            "**Win Rate**: % of days with positive overnight return  |  "
+            "**Breakeven**: max cost/side where strategy still earns > 0"
+        )
+
+        # Display columns
+        _on_show_cols = [
+            "rank", "ticker", "cur_price",
+            "overnight_mean_bps", "intraday_mean_bps", "edge_bps",
+            "net_sharpe", "win_rate", "t_stat", "p_val",
+            "breakeven_bps", "gross_cum_pct", "net_cum_pct",
+        ]
+        _on_show_cols = [c for c in _on_show_cols if c in _on_df.columns]
+        _on_display   = _on_df[_on_show_cols].copy()
+        _on_display.columns = [
+            c.replace("_", " ").replace("bps", "(bps)").replace("cum pct", "cum %").title()
+            for c in _on_show_cols
+        ]
+
+        st.dataframe(
+            _on_display,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Net Sharpe"       : st.column_config.NumberColumn(format="%.3f"),
+                "Edge (Bps)"       : st.column_config.NumberColumn("Edge (bps/day)", format="%.2f"),
+                "Overnight Mean (Bps)": st.column_config.NumberColumn("O/N mean (bps)", format="%.2f"),
+                "Intraday Mean (Bps)" : st.column_config.NumberColumn("Intraday mean (bps)", format="%.2f"),
+                "Win Rate"         : st.column_config.NumberColumn("Win Rate %", format="%.1f%%"),
+                "Gross Cum %"      : st.column_config.NumberColumn("Gross cum %", format="%.1f%%"),
+                "Net Cum %"        : st.column_config.NumberColumn("Net cum %", format="%.1f%%"),
+                "Breakeven (Bps)"  : st.column_config.NumberColumn("Breakeven (bps/side)", format="%.1f"),
+                "Cur Price"        : st.column_config.NumberColumn("Price", format="$%.2f"),
+            },
+        )
+
+        # ── Deep-dive ─────────────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Deep Dive")
+        _on_detail_tk = st.selectbox(
+            "Select ticker for detailed analysis",
+            _on_df["ticker"].tolist(),
+            key="on_detail_tk",
+        )
+
+        if _on_detail_tk:
+            with st.spinner(f"Loading {_on_detail_tk} detail…"):
+                _on_detail = _on_mod.compute_overnight_stats(
+                    _on_detail_tk, _on_period_days, _on_c_used / 2
+                )
+
+            if _on_detail:
+                # Stats row
+                _od1, _od2, _od3, _od4, _od5, _od6 = st.columns(6)
+                _od1.metric("O/N mean",    f"{_on_detail['overnight_mean_bps']:+.2f} bps/day")
+                _od2.metric("Intraday mean", f"{_on_detail['intraday_mean_bps']:+.2f} bps/day")
+                _od3.metric("Edge",        f"{_on_detail['edge_bps']:+.2f} bps/day")
+                _od4.metric("Net Sharpe",  f"{_on_detail['net_sharpe']:+.3f}")
+                _od5.metric("Win rate",    f"{_on_detail['win_rate']:.1f}%")
+                _od6.metric("Breakeven",   f"{_on_detail['breakeven_bps']:.1f} bps/side")
+
+                _od7, _od8, _od9 = st.columns(3)
+                _od7.metric("t-stat (O/N > 0)", f"{_on_detail['t_stat']:.2f}",
+                            help="Values > 2.0 suggest the overnight edge is statistically significant (p < 0.05)")
+                _od8.metric("p-value", f"{_on_detail['p_val']:.4f}" if _on_detail["p_val"] else "—")
+                _od9.metric("Days in sample", f"{_on_detail['n_days']:,}")
+
+                # Cumulative return chart
+                st.markdown("**Cumulative return — strategy comparison**")
+                _chart_df = pd.DataFrame({
+                    "O/N gross"   : _on_detail["_on_cum"] - 1,
+                    f"O/N net ({_on_c_used} bps RT)": _on_detail["_on_net_cum"] - 1,
+                    "Intraday"    : _on_detail["_id_cum"] - 1,
+                    "Buy & Hold"  : _on_detail["_bah_cum"] - 1,
+                }, index=_on_detail["_dates"])
+                st.line_chart(_chart_df, use_container_width=True)
+
+                # Monthly overnight returns heatmap
+                st.markdown("**Monthly overnight returns (%)**")
+                _monthly = _on_detail["_monthly"]
+                if not _monthly.empty:
+                    try:
+                        _mo_df = _monthly.unstack(level=1)
+                        _mo_df.index.name   = "Year"
+                        _mo_df.columns      = [
+                            ["Jan","Feb","Mar","Apr","May","Jun",
+                             "Jul","Aug","Sep","Oct","Nov","Dec"][m-1]
+                            for m in _mo_df.columns
+                        ]
+                        st.dataframe(
+                            _mo_df.style.background_gradient(cmap="RdYlGn", axis=None)
+                                        .format("{:+.2f}%"),
+                            use_container_width=True,
+                        )
+                    except Exception:
+                        st.dataframe(_monthly.rename("O/N return (%)").reset_index(),
+                                     hide_index=True, use_container_width=True)
+
+                # Rolling 63-day overnight Sharpe
+                st.markdown("**Rolling 63-day overnight Sharpe**")
+                _roll_on = _on_detail["_on_series"]
+                _roll_sh = (_roll_on.rolling(63).mean() / _roll_on.rolling(63).std() * np.sqrt(252)).rename("Rolling Sharpe")
+                st.line_chart(_roll_sh.dropna(), use_container_width=True)
+
+                # Cost sensitivity table
+                st.markdown("**Net Sharpe vs round-trip cost assumption**")
+                _cost_rows = []
+                for _cp in [0, 2, 4, 6, 8, 10, 15, 20]:
+                    _c_daily = _cp / 10_000
+                    _on_net_c = _on_detail["_on_series"] - _c_daily
+                    _sh = (_on_net_c.mean() / _on_net_c.std() * np.sqrt(252)) if _on_net_c.std() > 0 else 0
+                    _cum = float((1 + _on_net_c).prod() - 1) * 100
+                    _cost_rows.append({
+                        "Round-trip cost (bps)": _cp,
+                        "Net Sharpe"           : round(_sh, 3),
+                        f"Net cum % ({_on_p_used})": round(_cum, 1),
+                    })
+                st.dataframe(pd.DataFrame(_cost_rows), hide_index=True, use_container_width=True)
+
+            else:
+                st.warning(f"Could not load detail for {_on_detail_tk}.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB
