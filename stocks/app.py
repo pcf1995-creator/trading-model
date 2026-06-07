@@ -50,10 +50,123 @@ def color_pnl(val: str) -> str:
 st.set_page_config(page_title="Stocks Dashboard", layout="wide")
 st.title("Stocks Dashboard")
 
-tab_dash, tab_lt, tab_conviction = st.tabs([
+
+@st.fragment
+def _real_trade_editor(edit_rows, trade_ids, side_col, editor_key, save_key):
+    """Inline editor for real trades. Fragment isolates reruns to this widget only."""
+    orig_df = pd.DataFrame(edit_rows)
+    result = st.data_editor(
+        orig_df,
+        column_config={
+            side_col     : st.column_config.SelectboxColumn(side_col,   options=["LONG", "SHORT"]),
+            "Ticker"     : st.column_config.TextColumn("Ticker"),
+            "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01),
+            "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001),
+            "Entry Date" : st.column_config.DateColumn("Entry Date"),
+            "Source"     : st.column_config.TextColumn("Source",      disabled=True),
+            "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
+            "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
+            "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.2f%%", disabled=True),
+            "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
+            "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=editor_key,
+    )
+    if st.button("💾 Save Changes", key=save_key):
+        any_saved = False
+        for ri, orig in enumerate(edit_rows):
+            ed = result.iloc[ri]
+            upd = {}
+            if abs(float(ed["Entry $"] or 0) - float(orig["Entry $"] or 0)) > 0.001:
+                upd["entry_price"] = float(ed["Entry $"])
+            if abs(float(ed["Shares"] or 0) - float(orig["Shares"] or 0)) > 0.00001:
+                upd["shares"] = float(ed["Shares"])
+            if str(ed["Entry Date"]) != str(orig["Entry Date"]):
+                upd["entry_date"] = str(ed["Entry Date"])
+            if str(ed[side_col]) != str(orig[side_col]):
+                upd["side"] = "short" if ed[side_col] == "SHORT" else "long"
+            if str(ed["Ticker"]).upper().strip() != str(orig["Ticker"]).upper().strip():
+                upd["ticker"] = str(ed["Ticker"]).upper().strip()
+            if upd:
+                try:
+                    db.update_stock_real_trade(trade_ids[ri], upd)
+                    any_saved = True
+                except Exception as ue:
+                    st.error(f"Save failed: {ue}")
+        if any_saved:
+            st.session_state.pop(editor_key, None)
+            st.success("Changes saved.")
+            st.rerun(scope="app")
+        else:
+            st.info("No changes to save.")
+
+
+@st.fragment
+def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
+    """Editable table for closed real trades — lets user fix exit price/date/reason."""
+    import math as _math
+    orig_df = pd.DataFrame(closed_rows)
+    result = st.data_editor(
+        orig_df,
+        column_config={
+            "Dir"        : st.column_config.TextColumn("Dir",        disabled=True),
+            "Ticker"     : st.column_config.TextColumn("Ticker",     disabled=True),
+            "Source"     : st.column_config.TextColumn("Source",     disabled=True),
+            "Entry $"    : st.column_config.NumberColumn("Entry $",  format="$%.2f", disabled=True),
+            "Exit $"     : st.column_config.NumberColumn("Exit $",   format="$%.2f", step=0.01),
+            "Shares"     : st.column_config.NumberColumn("Shares",   format="%.4f",  disabled=True),
+            "Reason"     : st.column_config.TextColumn("Reason"),
+            "P&L %"      : st.column_config.NumberColumn("P&L %",   format="%.2f%%", disabled=True),
+            "P&L $"      : st.column_config.NumberColumn("P&L $",   format="$%.2f",  disabled=True),
+            "Entry Date" : st.column_config.DateColumn("Entry Date", disabled=True),
+            "Exit Date"  : st.column_config.DateColumn("Exit Date"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=editor_key,
+    )
+    if st.button("💾 Save Changes", key=save_key):
+        any_saved = False
+        for ri, orig in enumerate(closed_rows):
+            ed = result.iloc[ri]
+            upd = {}
+            orig_exit = orig.get("Exit $") or 0
+            new_exit  = float(ed["Exit $"] or 0)
+            if abs(new_exit - float(orig_exit)) > 0.001 and new_exit > 0:
+                upd["exit_price"] = new_exit
+                # Recompute P&L with new exit price
+                ep    = float(orig.get("Entry $") or 0)
+                sh    = float(orig.get("Shares") or 0)
+                side  = "short" if orig.get("Dir") == "SHORT" else "long"
+                if ep > 0:
+                    pct = ((ep - new_exit) / ep if side == "short" else (new_exit - ep) / ep)
+                    upd["pnl_pct"]    = round(pct * 100, 2)
+                    upd["pnl_dollars"] = round((ep - new_exit if side == "short" else new_exit - ep) * sh, 2)
+            if str(ed["Exit Date"]) != str(orig.get("Exit Date", "")):
+                upd["exit_date"] = str(ed["Exit Date"])
+            if str(ed["Reason"]).strip() != str(orig.get("Reason", "")).strip():
+                upd["exit_reason"] = str(ed["Reason"]).strip()
+            if upd:
+                try:
+                    db.update_stock_real_trade(trade_ids[ri], upd)
+                    any_saved = True
+                except Exception as ue:
+                    st.error(f"Save failed for {orig.get('Ticker')}: {ue}")
+        if any_saved:
+            st.session_state.pop(editor_key, None)
+            st.success("Changes saved.")
+            st.rerun(scope="app")
+        else:
+            st.info("No changes to save.")
+
+
+tab_dash, tab_lt, tab_conviction, tab_overnight = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
     "🎯 S&P Benchmark L/S",
+    "🌙 Overnight Drift",
 ])
 
 with tab_dash:
@@ -658,50 +771,7 @@ with tab_dash:
                     "P&L $"      : round(_pnl_d, 2),
                     "Invested $" : round(_ep * _sh, 2),
                 })
-            _rt_orig_df = pd.DataFrame(_rt_edit_rows)
-            _rt_result  = st.data_editor(
-                _rt_orig_df,
-                column_config={
-                    "Side"       : st.column_config.SelectboxColumn("Side",        options=["LONG", "SHORT"]),
-                    "Ticker"     : st.column_config.TextColumn("Ticker"),
-                    "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,   min_value=0.01),
-                    "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001, min_value=0.0001),
-                    "Entry Date" : st.column_config.DateColumn("Entry Date"),
-                    "Source"     : st.column_config.TextColumn("Source",      disabled=True),
-                    "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
-                    "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
-                    "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.1f%%", disabled=True),
-                    "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
-                    "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
-                },
-                hide_index=True,
-                use_container_width=True,
-                key="rt_open_editor",
-            )
-            # Detect changes by comparing return value to original row data
-            _rt_any_saved = False
-            for _ri, _orig in enumerate(_rt_edit_rows):
-                _ed = _rt_result.iloc[_ri]
-                _upd = {}
-                if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
-                    _upd["entry_price"] = float(_ed["Entry $"])
-                if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
-                    _upd["shares"] = float(_ed["Shares"])
-                if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
-                    _upd["entry_date"] = str(_ed["Entry Date"])
-                if str(_ed["Side"]) != str(_orig["Side"]):
-                    _upd["side"] = "short" if _ed["Side"] == "SHORT" else "long"
-                if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
-                    _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
-                if _upd:
-                    try:
-                        db.update_stock_real_trade(_rt_trade_ids[_ri], _upd)
-                        _rt_any_saved = True
-                    except Exception as _ue:
-                        st.error(f"Save failed: {_ue}")
-            if _rt_any_saved:
-                st.session_state.pop("rt_open_editor", None)
-                st.rerun()
+            _real_trade_editor(_rt_edit_rows, _rt_trade_ids, "Side", "rt_open_editor", "rt_save_edits")
 
             # Per-row close form
             st.caption("✅ Close a real trade with the actual fill price:")
@@ -1719,7 +1789,6 @@ with tab_conviction:
                     _cv_existing_real = {
                         r["ticker"] for r in db.load_stock_real_trades()
                         if r.get("status") == "open"
-                           and r.get("source") in ("conviction", "paper_promotion")
                     }
                     # Backwards compat for code below that still references _cv_existing.
                     _cv_existing = _cv_existing_paper
@@ -1755,10 +1824,12 @@ with tab_conviction:
                             # % from prior daily close — flag with ⚠️ when the stock has
                             # already moved >2% intraday in the unfavorable direction
                             # (up for a long, down for a short).
-                            _pfc_l = _lr.get("pct_from_close", 0.0) or 0.0
+                            _pfc_l      = _lr.get("pct_from_close", 0.0) or 0.0
+                            _prior_cl_l = _lr.get("prior_close") or _lr.get("current_price")
                             _pfc_l_warn = "  ⚠️" if _pfc_l > 2.0 else ""
-                            _pfc_l_str = f" ({_pfc_l:+.2f}% from close{_pfc_l_warn})" if abs(_pfc_l) >= 0.05 else ""
-                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}{_pfc_l_str}  —  {_score_breakdown}{_earn_note}")
+                            _pfc_l_str  = f" ({_pfc_l:+.2f}%{_pfc_l_warn})" if abs(_pfc_l) >= 0.05 else ""
+                            _close_str_l = f" | close ${_prior_cl_l}" if _prior_cl_l else ""
+                            st.markdown(f"**{_tk}** @ ${_lr['current_price']}{_pfc_l_str}{_close_str_l}  —  {_score_breakdown}{_earn_note}")
                             st.caption(f"{_shares:.4f} shares · ${_per_long:,.0f} allocation")
                         with _col2:
                             # Paper button: hidden if already held in paper.
@@ -1842,7 +1913,6 @@ with tab_conviction:
                             _cv_existing_real = {
                                 r["ticker"] for r in db.load_stock_real_trades()
                                 if r.get("status") == "open"
-                                   and r.get("source") in ("conviction", "paper_promotion")
                             }
                         _in_paper = _tk in _cv_existing_paper
                         _in_real  = _tk in _cv_existing_real
@@ -1864,10 +1934,12 @@ with tab_conviction:
                             _earn_note = f" | 📅 Earnings in {_edays}d" if _eflag and _edays else ""
                             # % from prior daily close — for shorts, the unfavorable
                             # direction is DOWN (price already gave us alpha intraday).
-                            _pfc_s = _sr.get("pct_from_close", 0.0) or 0.0
+                            _pfc_s      = _sr.get("pct_from_close", 0.0) or 0.0
+                            _prior_cl_s = _sr.get("prior_close") or _sr.get("current_price")
                             _pfc_s_warn = "  ⚠️" if _pfc_s < -2.0 else ""
-                            _pfc_s_str = f" ({_pfc_s:+.2f}% from close{_pfc_s_warn})" if abs(_pfc_s) >= 0.05 else ""
-                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}{_pfc_s_str}  —  {_score_breakdown}{_earn_note}")
+                            _pfc_s_str  = f" ({_pfc_s:+.2f}%{_pfc_s_warn})" if abs(_pfc_s) >= 0.05 else ""
+                            _close_str_s = f" | close ${_prior_cl_s}" if _prior_cl_s else ""
+                            st.markdown(f"**{_tk}** @ ${_sr['current_price']}{_pfc_s_str}{_close_str_s}  —  {_score_breakdown}{_earn_note}")
                             st.caption(f"{_shares:.4f} shares · ${_per_short:,.0f} allocation")
                         with _col2:
                             if _in_paper:
@@ -2010,9 +2082,15 @@ with tab_conviction:
                                 _pdir  = _pp["direction"]
                                 _pool  = _pa_long_pool if _pdir == "LONG" else _pa_short_pool
                                 _pool_tickers = _pool["ticker"].tolist() if not _pool.empty else []
-                                _cur_p = float(_pa_price_map.get(_ptk) or _pp.get("entry_price") or 0)
+                                # Resolve current price: scan map → live fetch → entry price fallback.
+                                # Must guard NaN: float(NaN) is truthy in Python so plain `or` won't fall through.
+                                _raw_p = _pa_price_map.get(_ptk)
+                                if _raw_p is None or (isinstance(_raw_p, float) and (pd.isna(_raw_p) or _raw_p <= 0)):
+                                    _raw_p = _cv_live_price(_ptk) or _pp.get("entry_price") or 0
+                                _cur_p = float(_raw_p) if _raw_p else float(_pp.get("entry_price") or 0)
                                 _ep    = float(_pp.get("entry_price") or _cur_p or 1)
-                                _pnl_r = ((_cur_p - _ep) / _ep if _pdir == "LONG" else (_ep - _cur_p) / _ep) if _ep else 0
+                                _pnl_r_raw = ((_cur_p - _ep) / _ep if _pdir == "LONG" else (_ep - _cur_p) / _ep) if _ep else 0
+                                _pnl_r = 0.0 if (pd.isna(_pnl_r_raw) if isinstance(_pnl_r_raw, float) else False) else _pnl_r_raw
                                 _pnl_d = round(_pnl_r * float(_pp.get("cost") or 0), 2)
                                 with st.container(border=True):
                                     _rc1, _rc2 = st.columns([3, 1])
@@ -2042,6 +2120,18 @@ with tab_conviction:
                                                     "pnl_dollars": _pnl_d,
                                                 }
                                                 break
+                                        # Also close any open real trade for this ticker
+                                        _real_closed = []
+                                        for _rt in db.load_stock_real_trades():
+                                            if _rt.get("ticker") == _ptk and _rt.get("status") == "open":
+                                                try:
+                                                    db.close_stock_real_trade(
+                                                        _rt["id"], _cur_p,
+                                                        str(date.today()), "reassessment",
+                                                    )
+                                                    _real_closed.append(_ptk)
+                                                except Exception as _rce:
+                                                    st.warning(f"Could not auto-close real {_ptk}: {_rce}")
                                         if _do_replace:
                                             _nr     = _pool[_pool["ticker"] == _repl_sel].iloc[0]
                                             _cost_r = float(_pp.get("cost") or 0)
@@ -2063,6 +2153,8 @@ with tab_conviction:
                                             })
                                         _cv_mod.save_conviction_positions(_cv_positions)
                                         _msg = f"Replaced {_ptk} → {_repl_sel}" if _do_replace else f"Closed {_ptk}"
+                                        if _real_closed:
+                                            _msg += f" (real trade also closed @ ${_cur_p:.2f})"
                                         st.success(_msg)
                                         st.rerun()
 
@@ -2407,50 +2499,7 @@ with tab_conviction:
                         _cvr_long_entry  += _cost
                         _cvr_long_curr   += _curv
 
-                _cvr_orig_df = pd.DataFrame(_cvr_edit_rows)
-                _cvr_result  = st.data_editor(
-                    _cvr_orig_df,
-                    column_config={
-                        "Dir"        : st.column_config.SelectboxColumn("Dir",        options=["LONG", "SHORT"]),
-                        "Ticker"     : st.column_config.TextColumn("Ticker"),
-                        "Entry $"    : st.column_config.NumberColumn("Entry $",    format="$%.2f",  step=0.01,    min_value=0.01),
-                        "Shares"     : st.column_config.NumberColumn("Shares",     format="%.4f",   step=0.0001,  min_value=0.0001),
-                        "Entry Date" : st.column_config.DateColumn("Entry Date"),
-                        "Source"     : st.column_config.TextColumn("Source",      disabled=True),
-                        "Cur $"      : st.column_config.NumberColumn("Cur $",      format="$%.2f",  disabled=True),
-                        "Days"       : st.column_config.NumberColumn("Days",                        disabled=True),
-                        "P&L %"      : st.column_config.NumberColumn("P&L %",     format="%.2f%%", disabled=True),
-                        "P&L $"      : st.column_config.NumberColumn("P&L $",     format="$%.2f",  disabled=True),
-                        "Invested $" : st.column_config.NumberColumn("Invested $", format="$%.2f", disabled=True),
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                    key="cvr_open_editor",
-                )
-                # Detect changes by comparing return value to original row data
-                _cvr_any_saved = False
-                for _ri, _orig in enumerate(_cvr_edit_rows):
-                    _ed = _cvr_result.iloc[_ri]
-                    _upd = {}
-                    if abs(float(_ed["Entry $"] or 0) - float(_orig["Entry $"] or 0)) > 0.001:
-                        _upd["entry_price"] = float(_ed["Entry $"])
-                    if abs(float(_ed["Shares"] or 0) - float(_orig["Shares"] or 0)) > 0.00001:
-                        _upd["shares"] = float(_ed["Shares"])
-                    if str(_ed["Entry Date"]) != str(_orig["Entry Date"]):
-                        _upd["entry_date"] = str(_ed["Entry Date"])
-                    if str(_ed["Dir"]) != str(_orig["Dir"]):
-                        _upd["side"] = "short" if _ed["Dir"] == "SHORT" else "long"
-                    if str(_ed["Ticker"]).upper().strip() != str(_orig["Ticker"]).upper().strip():
-                        _upd["ticker"] = str(_ed["Ticker"]).upper().strip()
-                    if _upd:
-                        try:
-                            db.update_stock_real_trade(_cvr_trade_ids[_ri], _upd)
-                            _cvr_any_saved = True
-                        except Exception as _ue:
-                            st.error(f"Save failed: {_ue}")
-                if _cvr_any_saved:
-                    st.session_state.pop("cvr_open_editor", None)
-                    st.rerun()
+                _real_trade_editor(_cvr_edit_rows, _cvr_trade_ids, "Dir", "cvr_open_editor", "cvr_save_edits")
 
                 # ── Stocks-style P&L summary (mirrors the paper-portfolio block) ──
                 _cvr_total_pnl  = sum(_cvr_pnl_dollars)
@@ -2500,26 +2549,35 @@ with tab_conviction:
 
             if _cv_real_closed:
                 with st.expander(f"Closed ({len(_cv_real_closed)})"):
+                    st.caption("Click any white cell to edit. Exit $, Exit Date, and Reason are editable.")
                     _cvrc_rows = []
+                    _cvrc_ids  = []
                     for _rt in sorted(_cv_real_closed, key=lambda x: x.get("exit_date", ""), reverse=True):
-                        _pnl = _rt.get("pnl_dollars")
+                        _pnl   = _rt.get("pnl_dollars")
+                        _pnlp  = _rt.get("pnl_pct", 0) or 0
+                        _ep_v  = float(_rt["entry_price"]) if _rt.get("entry_price") else 0.0
+                        _ex_v  = float(_rt["exit_price"])  if _rt.get("exit_price")  else 0.0
+                        try:
+                            _ex_date_v = date.fromisoformat(_rt.get("exit_date", "")) if _rt.get("exit_date") else date.today()
+                            _en_date_v = date.fromisoformat(_rt.get("entry_date", "")) if _rt.get("entry_date") else date.today()
+                        except Exception:
+                            _ex_date_v = date.today()
+                            _en_date_v = date.today()
+                        _cvrc_ids.append(_rt["id"])
                         _cvrc_rows.append({
-                            "Dir"       : "SHORT" if _rt.get("side") == "short" else "LONG",
-                            "Ticker"    : _rt["ticker"],
-                            "Source"    : _rt.get("source", "—"),
-                            "Entry $"   : f"${float(_rt['entry_price']):.2f}",
-                            "Exit $"    : f"${float(_rt['exit_price']):.2f}" if _rt.get("exit_price") else "—",
-                            "Shares"    : _rt.get("shares", 0),
-                            "Reason"    : _rt.get("exit_reason", "—"),
-                            "P&L %"     : f"{_rt.get('pnl_pct', 0):+.2f}%",
-                            "P&L $"     : f"${_pnl:+.2f}" if _pnl is not None else "—",
-                            "Entry Date": _rt.get("entry_date", ""),
-                            "Exit Date" : _rt.get("exit_date", ""),
+                            "Dir"        : "SHORT" if _rt.get("side") == "short" else "LONG",
+                            "Ticker"     : _rt["ticker"],
+                            "Source"     : _rt.get("source", "—"),
+                            "Entry $"    : _ep_v,
+                            "Exit $"     : _ex_v,
+                            "Shares"     : float(_rt.get("shares") or 0),
+                            "Reason"     : _rt.get("exit_reason", ""),
+                            "P&L %"      : round(_pnlp, 2),
+                            "P&L $"      : round(_pnl, 2) if _pnl is not None else 0.0,
+                            "Entry Date" : _en_date_v,
+                            "Exit Date"  : _ex_date_v,
                         })
-                    st.dataframe(
-                        pd.DataFrame(_cvrc_rows).style.map(color_pnl, subset=["P&L %", "P&L $"]),
-                        hide_index=True, use_container_width=True,
-                    )
+                    _closed_trade_editor(_cvrc_rows, _cvrc_ids, "cvrc_closed_editor", "cvrc_closed_save")
 
                 # Realized P&L from closed real trades (stocks-style, no win rate).
                 _cvr_realized = [t for t in _cv_real_closed if t.get("pnl_dollars") is not None]
@@ -2533,6 +2591,201 @@ with tab_conviction:
                     _crc1.metric("Realized Total P&L $", f"${_cvr_realized_total:+.2f}")
                     _crc2.metric("Realized Long P&L $",  f"${_cvr_realized_long:+.2f}")
                     _crc3.metric("Realized Short P&L $", f"${_cvr_realized_short:+.2f}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OVERNIGHT DRIFT TAB
+# ══════════════════════════════════════════════════════════════════════════════
+import overnight as _on_mod  # noqa: E402
+
+with tab_overnight:
+    st.header("🌙 Overnight Drift Scanner")
+    st.markdown(
+        "Stocks often earn positive returns **close → open** while losing intraday "
+        "(**open → close**). This scanner quantifies that edge per ticker so you can "
+        "find names where the drift is statistically significant and survives transaction costs."
+    )
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    _on_c1, _on_c2, _on_c3 = st.columns(3)
+    with _on_c1:
+        _on_period = st.selectbox("Lookback period", list(_on_mod.PERIOD_DAYS.keys()), index=3)
+    with _on_c2:
+        _on_cost = st.slider("Round-trip cost (bps)", min_value=0, max_value=20, value=6,
+                             help="Total bps for one buy + one sell (e.g. spread + commission). "
+                                  "6 bps ≈ $0.006/share on a $100 stock.")
+    with _on_c3:
+        _on_cost_side = _on_cost / 2
+        st.metric("Cost per side", f"{_on_cost_side:.1f} bps")
+
+    # Ticker universe — default to the same tickers used in the conviction scan
+    _on_summary = ROOT / "ticker_summary.csv"
+    _on_universe = (
+        pd.read_csv(_on_summary)["Ticker"].tolist()
+        if _on_summary.exists()
+        else _on_mod.DEFAULT_TICKERS
+    )
+    _on_tickers_input = st.text_area(
+        "Tickers to scan (one per line or comma-separated)",
+        value="\n".join(_on_universe),
+        height=120,
+    )
+    _on_tickers = [
+        t.strip().upper() for t in _on_tickers_input.replace(",", "\n").splitlines()
+        if t.strip()
+    ]
+
+    _on_period_days = _on_mod.PERIOD_DAYS[_on_period]
+
+    if st.button("🔍 Run Overnight Scan", key="on_run_scan", type="primary"):
+        _on_prog = st.progress(0, text="Starting…")
+
+        def _on_cb(tk, i, n):
+            _on_prog.progress((i + 1) / n, text=f"Scanning {tk} ({i+1}/{n})")
+
+        with st.spinner("Fetching data…"):
+            _on_result = _on_mod.scan_tickers(
+                _on_tickers, _on_period_days, _on_cost / 2, _on_cb
+            )
+        _on_prog.empty()
+        if not _on_result.empty:
+            st.session_state["on_scan_result"] = _on_result
+            st.session_state["on_scan_cost"]   = _on_cost
+            st.session_state["on_scan_period"] = _on_period
+            st.rerun()
+        else:
+            st.error("No results returned — check ticker list.")
+
+    # ── Scanner results ────────────────────────────────────────────────────────
+    if "on_scan_result" in st.session_state:
+        _on_df     = st.session_state["on_scan_result"]
+        _on_c_used = st.session_state.get("on_scan_cost", _on_cost)
+        _on_p_used = st.session_state.get("on_scan_period", _on_period)
+
+        st.divider()
+        st.subheader(f"Results — {_on_p_used} lookback · {_on_c_used} bps round-trip cost")
+        st.caption(
+            "**Net Sharpe**: overnight-only strategy Sharpe after costs  |  "
+            "**Edge (bps/day)**: overnight mean minus intraday mean  |  "
+            "**Win Rate**: % of days with positive overnight return  |  "
+            "**Breakeven**: max cost/side where strategy still earns > 0"
+        )
+
+        # Display columns
+        _on_show_cols = [
+            "rank", "ticker", "cur_price",
+            "overnight_mean_bps", "intraday_mean_bps", "edge_bps",
+            "net_sharpe", "win_rate", "t_stat", "p_val",
+            "breakeven_bps", "gross_cum_pct", "net_cum_pct",
+        ]
+        _on_show_cols = [c for c in _on_show_cols if c in _on_df.columns]
+        _on_display   = _on_df[_on_show_cols].copy()
+        _on_display.columns = [
+            c.replace("_", " ").replace("bps", "(bps)").replace("cum pct", "cum %").title()
+            for c in _on_show_cols
+        ]
+
+        st.dataframe(
+            _on_display,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Net Sharpe"       : st.column_config.NumberColumn(format="%.3f"),
+                "Edge (Bps)"       : st.column_config.NumberColumn("Edge (bps/day)", format="%.2f"),
+                "Overnight Mean (Bps)": st.column_config.NumberColumn("O/N mean (bps)", format="%.2f"),
+                "Intraday Mean (Bps)" : st.column_config.NumberColumn("Intraday mean (bps)", format="%.2f"),
+                "Win Rate"         : st.column_config.NumberColumn("Win Rate %", format="%.1f%%"),
+                "Gross Cum %"      : st.column_config.NumberColumn("Gross cum %", format="%.1f%%"),
+                "Net Cum %"        : st.column_config.NumberColumn("Net cum %", format="%.1f%%"),
+                "Breakeven (Bps)"  : st.column_config.NumberColumn("Breakeven (bps/side)", format="%.1f"),
+                "Cur Price"        : st.column_config.NumberColumn("Price", format="$%.2f"),
+            },
+        )
+
+        # ── Deep-dive ─────────────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Deep Dive")
+        _on_detail_tk = st.selectbox(
+            "Select ticker for detailed analysis",
+            _on_df["ticker"].tolist(),
+            key="on_detail_tk",
+        )
+
+        if _on_detail_tk:
+            with st.spinner(f"Loading {_on_detail_tk} detail…"):
+                _on_detail = _on_mod.compute_overnight_stats(
+                    _on_detail_tk, _on_period_days, _on_c_used / 2
+                )
+
+            if _on_detail:
+                # Stats row
+                _od1, _od2, _od3, _od4, _od5, _od6 = st.columns(6)
+                _od1.metric("O/N mean",    f"{_on_detail['overnight_mean_bps']:+.2f} bps/day")
+                _od2.metric("Intraday mean", f"{_on_detail['intraday_mean_bps']:+.2f} bps/day")
+                _od3.metric("Edge",        f"{_on_detail['edge_bps']:+.2f} bps/day")
+                _od4.metric("Net Sharpe",  f"{_on_detail['net_sharpe']:+.3f}")
+                _od5.metric("Win rate",    f"{_on_detail['win_rate']:.1f}%")
+                _od6.metric("Breakeven",   f"{_on_detail['breakeven_bps']:.1f} bps/side")
+
+                _od7, _od8, _od9 = st.columns(3)
+                _od7.metric("t-stat (O/N > 0)", f"{_on_detail['t_stat']:.2f}",
+                            help="Values > 2.0 suggest the overnight edge is statistically significant (p < 0.05)")
+                _od8.metric("p-value", f"{_on_detail['p_val']:.4f}" if _on_detail["p_val"] else "—")
+                _od9.metric("Days in sample", f"{_on_detail['n_days']:,}")
+
+                # Cumulative return chart
+                st.markdown("**Cumulative return — strategy comparison**")
+                _chart_df = pd.DataFrame({
+                    "O/N gross"   : _on_detail["_on_cum"] - 1,
+                    f"O/N net ({_on_c_used} bps RT)": _on_detail["_on_net_cum"] - 1,
+                    "Intraday"    : _on_detail["_id_cum"] - 1,
+                    "Buy & Hold"  : _on_detail["_bah_cum"] - 1,
+                }, index=_on_detail["_dates"])
+                st.line_chart(_chart_df, use_container_width=True)
+
+                # Monthly overnight returns heatmap
+                st.markdown("**Monthly overnight returns (%)**")
+                _monthly = _on_detail["_monthly"]
+                if not _monthly.empty:
+                    try:
+                        _mo_df = _monthly.unstack(level=1)
+                        _mo_df.index.name   = "Year"
+                        _mo_df.columns      = [
+                            ["Jan","Feb","Mar","Apr","May","Jun",
+                             "Jul","Aug","Sep","Oct","Nov","Dec"][m-1]
+                            for m in _mo_df.columns
+                        ]
+                        st.dataframe(
+                            _mo_df.style.background_gradient(cmap="RdYlGn", axis=None)
+                                        .format("{:+.2f}%"),
+                            use_container_width=True,
+                        )
+                    except Exception:
+                        st.dataframe(_monthly.rename("O/N return (%)").reset_index(),
+                                     hide_index=True, use_container_width=True)
+
+                # Rolling 63-day overnight Sharpe
+                st.markdown("**Rolling 63-day overnight Sharpe**")
+                _roll_on = _on_detail["_on_series"]
+                _roll_sh = (_roll_on.rolling(63).mean() / _roll_on.rolling(63).std() * np.sqrt(252)).rename("Rolling Sharpe")
+                st.line_chart(_roll_sh.dropna(), use_container_width=True)
+
+                # Cost sensitivity table
+                st.markdown("**Net Sharpe vs round-trip cost assumption**")
+                _cost_rows = []
+                for _cp in [0, 2, 4, 6, 8, 10, 15, 20]:
+                    _c_daily = _cp / 10_000
+                    _on_net_c = _on_detail["_on_series"] - _c_daily
+                    _sh = (_on_net_c.mean() / _on_net_c.std() * np.sqrt(252)) if _on_net_c.std() > 0 else 0
+                    _cum = float((1 + _on_net_c).prod() - 1) * 100
+                    _cost_rows.append({
+                        "Round-trip cost (bps)": _cp,
+                        "Net Sharpe"           : round(_sh, 3),
+                        f"Net cum % ({_on_p_used})": round(_cum, 1),
+                    })
+                st.dataframe(pd.DataFrame(_cost_rows), hide_index=True, use_container_width=True)
+
+            else:
+                st.warning(f"Could not load detail for {_on_detail_tk}.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB

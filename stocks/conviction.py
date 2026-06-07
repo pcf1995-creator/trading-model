@@ -614,9 +614,15 @@ def _fetch_ticker_data(ticker: str, sector_rel_3m: float) -> dict | None:
             # features are unchanged.
             live = _fetch_live_price(t)
             display_price = float(live) if (live is not None and live > 0) else cur
+
+            # prior_close = last fully-settled daily bar (exclude today's partial bar)
+            _today_date = pd.Timestamp.today(tz=hist.index.tz).date() if hist.index.tz else pd.Timestamp.today().date()
+            _settled = hist["Close"][hist.index.date < _today_date]
+            prior_close_val = round(float(_settled.iloc[-1]), 2) if len(_settled) > 0 else round(cur, 2)
+
             result["current_price"]   = round(display_price, 2)
-            result["prior_close"]     = round(cur, 2)
-            result["pct_from_close"]  = ((display_price - cur) / cur * 100.0) if cur > 0 else 0.0
+            result["prior_close"]     = prior_close_val
+            result["pct_from_close"]  = ((display_price - prior_close_val) / prior_close_val * 100.0) if prior_close_val > 0 else 0.0
             result["price_vs_50sma"]  = (cur - sma50)  / sma50
             result["price_vs_200sma"] = (cur - sma200) / sma200
             result["sma50_vs_200"]    = sma50 / sma200 - 1

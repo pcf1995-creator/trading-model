@@ -119,7 +119,8 @@ def update_stock_real_trade(trade_id: str, updates: dict) -> None:
 
     Automatically recomputes `dollars` when entry_price or shares change.
     """
-    allowed = {"ticker", "side", "entry_price", "entry_date", "shares"}
+    allowed = {"ticker", "side", "entry_price", "entry_date", "shares",
+               "exit_price", "exit_date", "exit_reason", "pnl_pct", "pnl_dollars"}
     payload = {k: v for k, v in updates.items() if k in allowed}
     if not payload:
         return
@@ -338,6 +339,14 @@ def save_conviction_positions(positions: list[dict]) -> None:
                     known["data"] = extra
                 rows.append(known)
             if rows:
+                import math as _math
+                # Strip NaN/Inf floats before upsert — JSON serialization rejects them
+                # and the Supabase client will raise, silently falling back to local file.
+                def _clean(v):
+                    if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)):
+                        return None
+                    return v
+                rows = [{k: _clean(v) for k, v in r.items()} for r in rows]
                 client.table("lt_positions").upsert(rows).execute()
             return
         except Exception as e:

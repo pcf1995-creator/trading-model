@@ -1,64 +1,78 @@
 # Claude Code Guidelines
 
+## TWO SEPARATE APPS — Do Not Mix
+
+This repo contains **two completely independent applications**. Always be clear which one you're working on.
+
+| App | What it is | Where it runs | Entry point |
+|---|---|---|---|
+| **Stocks app** | S&P 500 L/S conviction model, paper/real trade tracking, overnight drift scanner | **Streamlit Cloud** (share.streamlit.io) | `stocks/app.py` |
+| **Kalshi app** | Kalshi prediction market trading, cron-based scanning and order placement | Separate infrastructure (do not touch without explicit instruction) | `kalshi/scan_cron.py` |
+
+---
+
+## Stocks App — Deployment
+
+- **Platform: Streamlit Cloud** — NOT Render, NOT local
+- Auto-deploys from GitHub `main` branch (~1-2 min after push)
+- To access: log into share.streamlit.io with GitHub account `pcf1995-creator`
+- Live URL: _(fill in from Streamlit Cloud dashboard)_
+- **When code is pushed to main → Streamlit Cloud redeploys automatically**
+  - Do NOT say "Render will redeploy" — it is Streamlit Cloud, not Render
+
+---
+
 ## Commits & Push to GitHub
 
-**CRITICAL: Always commit AND push code changes to GitHub.** Render auto-deploys from GitHub — commits stay local until pushed.
+**CRITICAL: Always commit AND push code changes to GitHub.** Streamlit Cloud auto-deploys from GitHub — commits stay local until pushed.
 
 1. Make the change
-2. Test it (refresh browser, check output)
-3. **Commit** with clear message: `git commit -m "..."`
-4. **Push to GitHub**: `git push origin main`
-5. Wait for Render to redeploy (~1-2 min)
-6. Only then consider the task complete
+2. **Commit** with clear message: `git commit -m "..."`
+3. **Push to GitHub**: `git push origin main`
+4. Wait for Streamlit Cloud to redeploy (~1-2 min)
+5. Only then consider the task complete
 
-This is essential for:
-- App modifications (Streamlit dashboard changes)
-- Any changes to Python files that are actively running
-- Bug fixes and feature updates
-- Feature flags and cloud-first state changes
+---
 
-If you commit without pushing, Render won't see the changes and the user won't see them on the deployed app.
+## ⚠️ No Hidden Infrastructure
 
-## Kalshi Scan & Stop-Loss Architecture
+**Claude must NEVER set up external services, cron jobs, scheduled tasks, or automated processes without the user explicitly doing it themselves in their own account.**
 
-### Scan Cron (scan_cron.py)
-- Deployed as a **Render Web Service** (main branch, `Procfile: web: python kalshi/scan_cron.py`)
-- Triggered by **cron-job.org** hitting the `/scan` endpoint
-- **Run interval: 30–60 minutes** (NOT every 5 minutes — caused memory/503 errors on Render free tier)
-- Runs **weekly-only scan** (`kalshi_crypto_weekly.py --auto-save-db`) — only scores >24h contracts
-- After scan: runs `place_scheduled_orders()` for auto-placement of weekly trades only
-- After placement: runs `check_positions()` from monitor.py for stop-loss enforcement
+A previous session created services the user could not find or control, resulting in live orders placed invisibly. This must never happen again.
 
-### Stop-Loss Monitor (monitor.py)
-- `STOP_LOSS_PCT = 0.50` — triggers when price drops 50% from entry
-- `STOP_LOSS_EXEMPT_MINUTES = 15` — vol model contracts within 15 min of expiry are skipped
-- **No longer runs from local Mac crontab** — those were removed. Runs exclusively via scan_cron.py on Render
-- The old local Mac cron jobs (3min/10min/30min) have been permanently deleted
+- Do NOT create Render services, workers, or cron jobs
+- Do NOT set up cron-job.org, GitHub Actions, or any other scheduler
+- Push code to GitHub only — the user controls all deployment and automation
+- If infrastructure is needed, describe exactly what's needed and let the user set it up
 
-### Vol Model (contracts < 1 hour to expiry)
-- Uses Black-Scholes log-normal formula with Binance 1m realized vol
-- Stop-loss is SKIPPED for vol model contracts within 15 minutes of expiry (they settle naturally)
-- Vol bucket budget: $100, max single bet $25 (25% Kelly cap)
+---
 
-### What NOT to do
-- Do NOT add local Mac cron jobs for any trading automation — use Render + scan_cron.py
-- Do NOT run the scan every 5 minutes — memory constraints on Render free tier require 30–60 min intervals
-- Do NOT score intraday (<24h) contracts in the automated scan — weekly only to stay within memory limits
+## Kalshi App — Separate, Do Not Touch Unless Asked
+
+The Kalshi app is a completely separate trading system for Kalshi prediction markets. It has its own scan/stop-loss architecture documented in `SCAN_CRON_SETUP.md`. Do not modify or deploy anything related to Kalshi unless explicitly asked.
+
+### Stop-Loss Rules (monitor.py) — Per-Bucket, Computed Dynamically
+
+| Bucket | Trigger | Exempt window |
+|---|---|---|
+| Weekly (>24 hr) | Price drops 50% from entry | Last 60 min |
+| Intraday (1–24 hr) | Price drops 70% from entry | Last 15 min |
+| Vol model (<1 hr) | Never exempt | Entire duration |
+
+**DO NOT** collapse these into a single constant.
+
+### What NOT to do (Kalshi)
+- Do NOT add local Mac cron jobs for any trading automation
+- Do NOT run the weekly scan every 5–15 minutes (memory constraints)
+- Do NOT score intraday (<24h) contracts in the automated scan
+- Do NOT merge `/scan` and `/check-stops` back into one job
+
+---
 
 ## Architecture: Cloud-First, Not Local
 
-**Always design for cloud deployment (Render), not local development.** This project is automated trading that runs 24/7 on Render. Default to:
+**Always design for cloud deployment, not local development.**
+
 - **Cloud state (Supabase)** for any shared configuration, flags, or state
-- **Environment variables (Render)** for secrets and configuration
-- **NOT local JSON files** (feature_flags.json, etc) — local files only exist on your machine, Render doesn't have them
-
-**Why:** Local JSON files create sync issues:
-- User toggles flag locally → saves to local feature_flags.json
-- Render has its own copy (empty or stale)
-- Cron runs on Render, reads stale flags, nothing happens
-- Hours wasted debugging
-
-**How to apply:** When adding a feature that needs state/config:
-1. Store it in Supabase (preferred), not local files
-2. Or store it as Render environment variables
-3. Not in local JSON unless it's dev-only and explicitly ignored
+- **NOT local JSON files** — local files only exist on the dev machine, not in the cloud
+- Local JSON files create silent sync failures that are hard to debug

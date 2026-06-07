@@ -179,6 +179,34 @@ def trigger_scan():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+def _run_stop_loss_background():
+    """Lightweight stop-loss check — no heavy scan, safe to run every 15 min."""
+    try:
+        logger.info("Stop-loss background check starting...")
+        from monitor import check_positions
+        from kalshi_api import KalshiClient as _KalshiClient
+        _client = _KalshiClient()
+        check_positions(_client, dry_run_sell=False)
+        logger.info("Stop-loss background check complete.")
+    except Exception as e:
+        logger.error(f"Stop-loss background check failed: {e}")
+    finally:
+        import gc
+        gc.collect()
+
+
+@app.route("/check-stops", methods=["GET", "POST"])
+def trigger_stop_loss_check():
+    """Lightweight stop-loss check — no weekly scan, safe to hit every 15 min."""
+    try:
+        thread = threading.Thread(target=_run_stop_loss_background, daemon=True)
+        thread.start()
+        return jsonify({"status": "accepted", "message": "Stop-loss check queued"}), 202
+    except Exception as e:
+        logger.error(f"Error queuing stop-loss check: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
