@@ -1,5 +1,38 @@
 # Claude Code Guidelines
 
+## Render Deployment — Access & Architecture
+
+### How deploys work
+All code changes go to **GitHub** (`pcf1995-creator/trading-model`), and Render
+auto-deploys from there via webhook. Claude never logs into Render directly —
+it only pushes to GitHub. Render detects the new commit on `main` and
+rebuilds/restarts the service automatically (~1-2 min).
+
+**To see the running app or check deploy logs:**
+1. Log into **render.com** with your account (email: _fill in_)
+2. Dashboard shows all services — look for the Stocks dashboard and Kalshi cron
+3. Click a service → "Logs" tab to see live output / errors
+4. Click "Manual Deploy" if you need to force a redeploy
+
+### Render services in this project
+
+| Service | Type | Start command | Triggered by |
+|---|---|---|---|
+| **Stocks Streamlit app** | Web Service | `streamlit run stocks/app.py --server.port $PORT` | GitHub push to `main` |
+| **Kalshi scan cron** | Web Service | `python kalshi/scan_cron.py` (see `Procfile`) | GitHub push to `main` |
+
+**Live URLs:** _(fill in from Render dashboard — format: `https://<service-name>.onrender.com`)_
+- Stocks app: `https://__________.onrender.com`
+- Kalshi cron: `https://__________.onrender.com`
+
+### Environment variables (set in Render dashboard, NOT in code)
+These must exist in each service's "Environment" tab on Render:
+- `SUPABASE_URL` — Supabase project URL
+- `SUPABASE_KEY` — Supabase anon/service key
+- Any broker API keys (Alpaca, etc.) if added in future
+
+---
+
 ## Commits & Push to GitHub
 
 **CRITICAL: Always commit AND push code changes to GitHub.** Render auto-deploys from GitHub — commits stay local until pushed.
