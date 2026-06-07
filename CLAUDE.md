@@ -17,11 +17,20 @@ Previous sessions created Render services the user could not find or control, wh
 
 ## Deployment — Current Status
 
-**Where the app runs:** _(to be confirmed by user — do not assume Render)_
+### Stocks Streamlit Dashboard
+- **Platform: Streamlit Cloud** (share.streamlit.io) — NOT Render, NOT local
+- Connected to the `pcf1995-creator/trading-model` GitHub repo, main branch
+- Entry point: `stocks/app.py`
+- Auto-redeploys when main branch gets a new commit (~1-2 min)
+- To access: log into share.streamlit.io with your GitHub account (`pcf1995-creator`)
+- Live URL: _(fill in from Streamlit Cloud dashboard)_
 
-**How code gets deployed:** Push to GitHub main branch. The user then deploys manually or via whatever hosting they control and can see.
+### Kalshi Scan Cron
+- **Platform: Render** (see SCAN_CRON_SETUP.md for setup details)
+- This is the service the user lost visibility into — confirm current status before touching
+- Entry point: `kalshi/scan_cron.py`
 
-**If you need to add infrastructure** (e.g. a new cron job): describe what's needed, provide the exact commands/config, and let the user set it up in their account. Never do it silently.
+**If you need to add infrastructure** (e.g. a new cron job): describe what's needed, provide the exact commands/config, and let the user set it up in their own account. Never do it silently.
 
 ---
 
