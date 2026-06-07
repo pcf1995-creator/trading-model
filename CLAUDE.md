@@ -1,35 +1,27 @@
 # Claude Code Guidelines
 
-## Render Deployment — Access & Architecture
+## ⚠️ CRITICAL: No Hidden Infrastructure
 
-### How deploys work
-All code changes go to **GitHub** (`pcf1995-creator/trading-model`), and Render
-auto-deploys from there via webhook. Claude never logs into Render directly —
-it only pushes to GitHub. Render detects the new commit on `main` and
-rebuilds/restarts the service automatically (~1-2 min).
+**Claude must NEVER set up external services, cron jobs, Render services, scheduled tasks, or any automated processes without the user explicitly seeing and approving them in their own account.**
 
-**To see the running app or check deploy logs:**
-1. Log into **render.com** with your account (email: _fill in_)
-2. Dashboard shows all services — look for the Stocks dashboard and Kalshi cron
-3. Click a service → "Logs" tab to see live output / errors
-4. Click "Manual Deploy" if you need to force a redeploy
+Previous sessions created Render services the user could not find or control, which resulted in live orders being placed invisibly. This must never happen again.
 
-### Render services in this project
+**Rules:**
+- Do NOT create Render services, workers, or cron jobs
+- Do NOT set up cron-job.org, GitHub Actions, or any other scheduler
+- Do NOT configure any external service that fires automatically
+- Push code to GitHub only — the user decides how and where to deploy it
+- If deployment setup is needed, walk the user through doing it themselves in their own account
 
-| Service | Type | Start command | Triggered by |
-|---|---|---|---|
-| **Stocks Streamlit app** | Web Service | `streamlit run stocks/app.py --server.port $PORT` | GitHub push to `main` |
-| **Kalshi scan cron** | Web Service | `python kalshi/scan_cron.py` (see `Procfile`) | GitHub push to `main` |
+---
 
-**Live URLs:** _(fill in from Render dashboard — format: `https://<service-name>.onrender.com`)_
-- Stocks app: `https://__________.onrender.com`
-- Kalshi cron: `https://__________.onrender.com`
+## Deployment — Current Status
 
-### Environment variables (set in Render dashboard, NOT in code)
-These must exist in each service's "Environment" tab on Render:
-- `SUPABASE_URL` — Supabase project URL
-- `SUPABASE_KEY` — Supabase anon/service key
-- Any broker API keys (Alpaca, etc.) if added in future
+**Where the app runs:** _(to be confirmed by user — do not assume Render)_
+
+**How code gets deployed:** Push to GitHub main branch. The user then deploys manually or via whatever hosting they control and can see.
+
+**If you need to add infrastructure** (e.g. a new cron job): describe what's needed, provide the exact commands/config, and let the user set it up in their account. Never do it silently.
 
 ---
 
