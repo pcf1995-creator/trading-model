@@ -41,7 +41,7 @@ COST_BPS      = 3.0   # per side (6 bps round-trip)
 
 # ── Position sizing ────────────────────────────────────────────────────────────
 DOLLARS_PER_TRADE = 1_000.0
-MAX_POSITIONS     = 10
+MAX_POSITIONS     = 5
 
 
 def _get_price(ticker: str, field: str) -> float | None:
