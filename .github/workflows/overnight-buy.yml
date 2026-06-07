@@ -1,0 +1,31 @@
+name: Overnight Drift — Buy Signal
+
+# Runs at 9:30 PM UTC Mon-Fri:
+#   - EST (UTC-5): 4:30 PM ET  (standard time, Nov-Mar)
+#   - EDT (UTC-4): 5:30 PM ET  (daylight time, Mar-Nov)
+# Either way this is comfortably after the 4:00 PM ET market close.
+# yfinance will have today's official close price by this time.
+
+on:
+  schedule:
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:   # allow manual trigger from the Actions tab
+
+jobs:
+  buy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Record paper buy at today's close price
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python stocks/overnight_cron.py --action buy

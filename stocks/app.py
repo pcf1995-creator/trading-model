@@ -2787,6 +2787,92 @@ with tab_overnight:
             else:
                 st.warning(f"Could not load detail for {_on_detail_tk}.")
 
+    # ── Automated paper trades ─────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📈 Automated Paper Trades")
+    st.caption(
+        "Positions opened nightly by GitHub Actions: **buy at close** (4:30 PM ET) "
+        "→ **sell at open** (10:00 AM ET next day).  "
+        "Selection criteria: t-stat ≥ 2.0 · Net Sharpe ≥ 0.30 · Win rate ≥ 52% · "
+        "Breakeven cost ≥ 3 bps/side."
+    )
+
+    _on_all_trades = db.load_overnight_paper_trades()
+    _on_open_trades   = [t for t in _on_all_trades if t.get("status") == "open"]
+    _on_closed_trades = [t for t in _on_all_trades if t.get("status") == "closed"]
+
+    if _on_open_trades:
+        st.markdown(f"**Open positions ({len(_on_open_trades)})**")
+        _on_open_rows = []
+        for _ot in _on_open_trades:
+            _ot_cur = _cv_live_price(_ot["ticker"])
+            _ot_ep  = float(_ot.get("entry_price") or 0)
+            _ot_sh  = float(_ot.get("shares") or 0)
+            _ot_pnl = (_ot_cur - _ot_ep) / _ot_ep * 100 if _ot_ep > 0 and _ot_cur else None
+            _on_open_rows.append({
+                "Ticker"    : _ot["ticker"],
+                "Entry $"   : _ot_ep,
+                "Entry Date": _ot.get("entry_date"),
+                "Cur $"     : round(_ot_cur, 2) if _ot_cur else None,
+                "Unrealized %": round(_ot_pnl, 2) if _ot_pnl is not None else None,
+                "Invested $": round(_ot_ep * _ot_sh, 2),
+                "Net Sharpe": _ot.get("net_sharpe"),
+                "t-stat"    : _ot.get("t_stat"),
+            })
+        st.dataframe(
+            pd.DataFrame(_on_open_rows),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Entry $"      : st.column_config.NumberColumn(format="$%.4f"),
+                "Cur $"        : st.column_config.NumberColumn(format="$%.2f"),
+                "Unrealized %" : st.column_config.NumberColumn(format="%+.2f%%"),
+                "Invested $"   : st.column_config.NumberColumn(format="$%.2f"),
+                "Net Sharpe"   : st.column_config.NumberColumn(format="%.3f"),
+                "t-stat"       : st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+    else:
+        st.info("No open overnight positions right now.")
+
+    if _on_closed_trades:
+        _on_closed_df = pd.DataFrame(_on_closed_trades)
+        _on_total_pnl = float((_on_closed_df["pnl_dollars"].fillna(0)).sum())
+        _on_avg_pct   = float((_on_closed_df["pnl_pct"].fillna(0)).mean())
+        _on_win_count = int((_on_closed_df["pnl_pct"].fillna(0) > 0).sum())
+        _on_wr_pct    = _on_win_count / len(_on_closed_trades) * 100
+
+        _onc1, _onc2, _onc3, _onc4 = st.columns(4)
+        _onc1.metric("Total P&L",      f"${_on_total_pnl:+.2f}")
+        _onc2.metric("Avg return",     f"{_on_avg_pct:+.3f}%")
+        _onc3.metric("Win rate",       f"{_on_wr_pct:.1f}%")
+        _onc4.metric("Trades closed",  str(len(_on_closed_trades)))
+
+        st.markdown(f"**Closed trades ({len(_on_closed_trades)})**")
+        _on_show_closed = [
+            "ticker", "entry_date", "entry_price", "exit_date", "exit_price",
+            "pnl_pct", "pnl_dollars", "net_sharpe", "t_stat",
+        ]
+        _on_show_closed = [c for c in _on_show_closed if c in _on_closed_df.columns]
+        st.dataframe(
+            _on_closed_df[_on_show_closed].sort_values("exit_date", ascending=False),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "ticker"      : st.column_config.TextColumn("Ticker"),
+                "entry_date"  : st.column_config.DateColumn("Entry Date"),
+                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
+                "exit_date"   : st.column_config.DateColumn("Exit Date"),
+                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
+                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
+                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+                "net_sharpe"  : st.column_config.NumberColumn("Net Sharpe (at entry)", format="%.3f"),
+                "t_stat"      : st.column_config.NumberColumn("t-stat (at entry)",     format="%.2f"),
+            },
+        )
+    elif not _on_open_trades:
+        st.caption("No paper trades yet — the cron runs nightly on trading days.")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB
 # ══════════════════════════════════════════════════════════════════════════════
