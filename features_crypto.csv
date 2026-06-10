@@ -112,6 +112,13 @@ Lag_ret_2
 Lag_ret_3
 Lag_ret_5
 Lag_ret_10
+mom_3d
+mom_7d
+mom_14d
+mom_30d
+mom_7v30
+fng
+fng_ma7
 days_to_expiry
 strike_distance
 strike_z_score

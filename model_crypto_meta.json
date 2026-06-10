@@ -1,9 +1,9 @@
 {
-  "training_base_rate": 0.4900554299999455,
-  "trained_on": "2026-03-26",
-  "n_samples": 77376,
-  "cv_roc_auc": 0.8755,
-  "weight_half_life_days": 180,
+  "training_base_rate": 0.47373958462015564,
+  "trained_on": "2026-06-10",
+  "n_samples": 129040,
+  "cv_roc_auc": 0.9158,
+  "weight_half_life_days": 90,
   "feature_names": [
     "SMA_5",
     "Price_SMA_5",
@@ -119,8 +119,23 @@
     "Lag_ret_3",
     "Lag_ret_5",
     "Lag_ret_10",
+    "mom_3d",
+    "mom_7d",
+    "mom_14d",
+    "mom_30d",
+    "mom_7v30",
+    "fng",
+    "fng_ma7",
     "days_to_expiry",
     "strike_distance",
     "strike_z_score"
+  ],
+  "model_type": "daily",
+  "horizons_days": [
+    1,
+    3,
+    5,
+    7,
+    10
   ]
 }
