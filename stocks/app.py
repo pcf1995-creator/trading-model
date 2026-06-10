@@ -16,6 +16,7 @@ import warnings
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -2701,6 +2702,61 @@ with tab_overnight:
             },
         )
 
+        # ── Manual paper trade ────────────────────────────────────────────────
+        _on_qualify = _on_df[
+            (_on_df["t_stat"]        >= 2.0)
+            & (_on_df["net_sharpe"]  >= 0.30)
+            & (_on_df["win_rate"]    >= 52.0)
+            & (_on_df["breakeven_bps"] >= 3.0)
+        ].head(5)
+
+        if not _on_qualify.empty:
+            st.info(
+                f"**{len(_on_qualify)} qualifying tickers** meet all drift criteria: "
+                + ", ".join(_on_qualify["ticker"].tolist())
+            )
+            if st.button("📥 Paper trade top 5 now (at live price)", key="on_paper_now",
+                         type="primary"):
+                import uuid as _uuid
+                _on_existing_open = {
+                    t["ticker"]
+                    for t in db.load_overnight_paper_trades()
+                    if t.get("status") == "open"
+                }
+                _on_added = []
+                _on_skipped = []
+                for _, _qrow in _on_qualify.iterrows():
+                    _qtk = _qrow["ticker"]
+                    if _qtk in _on_existing_open:
+                        _on_skipped.append(_qtk)
+                        continue
+                    _qlive = _cv_live_price(_qtk)
+                    if not _qlive or _qlive <= 0:
+                        _on_skipped.append(_qtk)
+                        continue
+                    _qsh = round(1_000.0 / _qlive, 4)
+                    db.add_overnight_paper_trade({
+                        "id"         : str(_uuid.uuid4()),
+                        "ticker"     : _qtk,
+                        "entry_date" : str(date.today()),
+                        "entry_price": round(_qlive, 4),
+                        "shares"     : _qsh,
+                        "dollars"    : round(_qlive * _qsh, 2),
+                        "status"     : "open",
+                        "t_stat"     : float(_qrow.get("t_stat") or 0),
+                        "net_sharpe" : float(_qrow.get("net_sharpe") or 0),
+                        "win_rate"   : float(_qrow.get("win_rate") or 0),
+                        "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                    })
+                    _on_added.append(f"{_qtk} @ ${_qlive:.2f}")
+                if _on_added:
+                    st.success(f"Opened: {', '.join(_on_added)}")
+                if _on_skipped:
+                    st.warning(f"Skipped (already open or no price): {', '.join(_on_skipped)}")
+                st.rerun()
+        else:
+            st.warning("No tickers in the current scan meet all overnight drift criteria.")
+
         # ── Deep-dive ─────────────────────────────────────────────────────────
         st.divider()
         st.subheader("Deep Dive")
@@ -2786,6 +2842,88 @@ with tab_overnight:
 
             else:
                 st.warning(f"Could not load detail for {_on_detail_tk}.")
+
+    # ── Paper trade history ────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📈 Paper Trade History")
+    st.caption(
+        "Positions opened here (button above) or by the nightly cron: "
+        "**buy at close → sell at next open** automatically."
+    )
+
+    _on_all = db.load_overnight_paper_trades()
+    _on_open_pos   = [t for t in _on_all if t.get("status") == "open"]
+    _on_closed_pos = [t for t in _on_all if t.get("status") == "closed"]
+
+    if _on_open_pos:
+        st.markdown(f"**Open positions ({len(_on_open_pos)})**")
+        _on_open_rows = []
+        for _ot in _on_open_pos:
+            _ot_ep  = float(_ot.get("entry_price") or 0)
+            _ot_sh  = float(_ot.get("shares") or 0)
+            _ot_cur = _cv_live_price(_ot["ticker"])
+            _ot_pnl = (_ot_cur - _ot_ep) / _ot_ep * 100 if (_ot_ep > 0 and _ot_cur) else None
+            _on_open_rows.append({
+                "Ticker"      : _ot["ticker"],
+                "Entry $"     : _ot_ep,
+                "Entry Date"  : _ot.get("entry_date"),
+                "Cur $"       : round(_ot_cur, 2) if _ot_cur else None,
+                "Unrealized %" : round(_ot_pnl, 2) if _ot_pnl is not None else None,
+                "Invested $"  : round(_ot_ep * _ot_sh, 2),
+                "Net Sharpe"  : _ot.get("net_sharpe"),
+                "t-stat"      : _ot.get("t_stat"),
+            })
+        st.dataframe(
+            pd.DataFrame(_on_open_rows),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Entry $"      : st.column_config.NumberColumn(format="$%.4f"),
+                "Cur $"        : st.column_config.NumberColumn(format="$%.2f"),
+                "Unrealized %" : st.column_config.NumberColumn(format="%+.2f%%"),
+                "Invested $"   : st.column_config.NumberColumn(format="$%.2f"),
+                "Net Sharpe"   : st.column_config.NumberColumn(format="%.3f"),
+                "t-stat"       : st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+    else:
+        st.info("No open overnight positions.")
+
+    if _on_closed_pos:
+        _on_cdf = pd.DataFrame(_on_closed_pos)
+        _on_tot_pnl  = float(_on_cdf["pnl_dollars"].fillna(0).sum())
+        _on_avg_pct  = float(_on_cdf["pnl_pct"].fillna(0).mean())
+        _on_win_rt   = float((_on_cdf["pnl_pct"].fillna(0) > 0).mean() * 100)
+
+        _oc1, _oc2, _oc3, _oc4 = st.columns(4)
+        _oc1.metric("Total P&L",    f"${_on_tot_pnl:+.2f}")
+        _oc2.metric("Avg return",   f"{_on_avg_pct:+.3f}%")
+        _oc3.metric("Win rate",     f"{_on_win_rt:.1f}%")
+        _oc4.metric("Trades",       str(len(_on_closed_pos)))
+
+        st.markdown(f"**Closed trades ({len(_on_closed_pos)})**")
+        _on_show = [c for c in
+            ["ticker", "entry_date", "entry_price", "exit_date", "exit_price",
+             "pnl_pct", "pnl_dollars", "net_sharpe", "t_stat"]
+            if c in _on_cdf.columns]
+        st.dataframe(
+            _on_cdf[_on_show].sort_values("exit_date", ascending=False),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "ticker"      : st.column_config.TextColumn("Ticker"),
+                "entry_date"  : st.column_config.DateColumn("Entry Date"),
+                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
+                "exit_date"   : st.column_config.DateColumn("Exit Date"),
+                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
+                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
+                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+                "net_sharpe"  : st.column_config.NumberColumn("Net Sharpe", format="%.3f"),
+                "t_stat"      : st.column_config.NumberColumn("t-stat",     format="%.2f"),
+            },
+        )
+    elif not _on_open_pos:
+        st.caption("No paper trades yet — run a scan and click 'Paper trade top 5'.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB
