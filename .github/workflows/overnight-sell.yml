@@ -1,0 +1,31 @@
+name: Overnight Drift — Sell Signal
+
+# Runs at 3:00 PM UTC Mon-Fri:
+#   - EST (UTC-5): 10:00 AM ET  (standard time, Nov-Mar)
+#   - EDT (UTC-4): 11:00 AM ET  (daylight time, Mar-Nov)
+# The NYSE opens at 9:30 AM ET; waiting until 10:00 AM ensures yfinance
+# has a stable opening price before we record the exit.
+
+on:
+  schedule:
+    - cron: '0 15 * * 1-5'
+  workflow_dispatch:   # allow manual trigger from the Actions tab
+
+jobs:
+  sell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Record paper sell at today's open price
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python stocks/overnight_cron.py --action sell

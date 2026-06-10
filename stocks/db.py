@@ -406,6 +406,83 @@ def upload_stock_file(filename: str, local_path: Path) -> bool:
         return False
 
 
+# ── Overnight drift paper trades ──────────────────────────────────────────────
+#
+# Supabase table DDL (run once in the Supabase SQL editor):
+#
+#   CREATE TABLE overnight_paper_trades (
+#       id           TEXT PRIMARY KEY,
+#       ticker       TEXT NOT NULL,
+#       entry_date   DATE NOT NULL,
+#       entry_price  FLOAT NOT NULL,
+#       shares       FLOAT,
+#       dollars      FLOAT,
+#       status       TEXT DEFAULT 'open',   -- 'open' | 'closed'
+#       exit_date    DATE,
+#       exit_price   FLOAT,
+#       pnl_pct      FLOAT,
+#       pnl_dollars  FLOAT,
+#       t_stat       FLOAT,
+#       net_sharpe   FLOAT,
+#       win_rate     FLOAT,
+#       placed_at    TIMESTAMPTZ DEFAULT now(),
+#       updated_at   TIMESTAMPTZ
+#   );
+#
+_OVERNIGHT_PAPER_TRADES_JSON = ROOT / "overnight_paper_trades.json"
+
+
+def load_overnight_paper_trades() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("overnight_paper_trades")
+                    .select("*")
+                    .order("placed_at", desc=False)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_overnight_paper_trades failed: {e}")
+    return _load_json(_OVERNIGHT_PAPER_TRADES_JSON)
+
+
+def add_overnight_paper_trade(trade: dict) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("overnight_paper_trades").insert(trade).execute()
+            return
+        except Exception as e:
+            logger.warning(f"add_overnight_paper_trade failed: {e}")
+    trades = _load_json(_OVERNIGHT_PAPER_TRADES_JSON)
+    trades.append(trade)
+    _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
+
+
+def close_overnight_paper_trade(trade_id: str, exit_price: float, exit_date: str,
+                                 pnl_pct: float, pnl_dollars: float) -> None:
+    updates = {
+        "status":      "closed",
+        "exit_price":  exit_price,
+        "exit_date":   exit_date,
+        "pnl_pct":     pnl_pct,
+        "pnl_dollars": pnl_dollars,
+        "updated_at":  datetime.now(timezone.utc).isoformat(),
+    }
+    client = _get_client()
+    if client:
+        try:
+            client.table("overnight_paper_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"close_overnight_paper_trade failed: {e}")
+    trades = _load_json(_OVERNIGHT_PAPER_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(updates)
+    _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
+
+
 # ── Fundamental cache ──────────────────────────────────────────────────────────
 #
 # Supabase table DDL (run once in the Supabase SQL editor):
