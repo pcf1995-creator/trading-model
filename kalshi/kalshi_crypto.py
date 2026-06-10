@@ -78,15 +78,21 @@ REGIME_WINDOW      = 30                  # trailing days defining momentum regim
 REGIME_FLAT_BAND   = 0.05                # |30d return| below this = "flat" regime
 REGIME_SHRINK_N    = 60                  # pseudo-count blend toward unconditional rate
 
+# Model artifacts live at the repo root (committed to git so deployments get
+# them). Anchored to this file's location so they resolve regardless of cwd —
+# the scan_cron subprocess runs with cwd=kalshi/, where bare relative paths
+# silently failed to find the model ("No daily model found. Skipping scan.").
+_REPO_ROOT = _KALSHI_DIR.parent
+
 # Daily model paths (backward-compatible names)
-MODEL_PATH         = "model_crypto.joblib"
-FEATURES_PATH      = "features_crypto.csv"
-METADATA_PATH      = "model_crypto_meta.json"
+MODEL_PATH         = _REPO_ROOT / "model_crypto.joblib"
+FEATURES_PATH      = _REPO_ROOT / "features_crypto.csv"
+METADATA_PATH      = _REPO_ROOT / "model_crypto_meta.json"
 
 # Intraday model paths
-MODEL_INTRADAY_PATH    = "model_crypto_intraday.joblib"
-FEATURES_INTRADAY_PATH = "features_crypto_intraday.csv"
-METADATA_INTRADAY_PATH = "model_crypto_intraday_meta.json"
+MODEL_INTRADAY_PATH    = _REPO_ROOT / "model_crypto_intraday.joblib"
+FEATURES_INTRADAY_PATH = _REPO_ROOT / "features_crypto_intraday.csv"
+METADATA_INTRADAY_PATH = _REPO_ROOT / "model_crypto_intraday_meta.json"
 
 # Vol model (contracts < 1 hour to expiry)
 VOL_MODEL_HOURS      = 1.0   # use vol model below this threshold
@@ -98,7 +104,7 @@ DIST_FILTER_MAX_HOURS = 3.0
 DIST_FILTER_SIGMA_K   = 0.5   # require strike ≥ 0.5σ away from current price
 
 # Paper-trade calibration (Platt scaling fitted on live outcomes)
-CALIBRATION_PATH   = "model_crypto_calibration.json"
+CALIBRATION_PATH   = _KALSHI_DIR / "model_crypto_calibration.json"
 
 RF_TREES           = 300
 RF_MAX_DEPTH       = 12
