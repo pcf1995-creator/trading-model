@@ -70,6 +70,13 @@ HOURLY_HORIZONS    = [1, 2, 3, 4, 8, 12, 24]  # hours
 
 HIST_VOL_WINDOW    = 30                  # days for rolling daily vol
 BASE_RATE_LOOKBACK = 3                   # years for base-rate estimation
+# Regime-conditional base rate: condition the historical prior on the current
+# trailing-momentum regime so a 5y bull-market history doesn't inflate P(up)
+# during downtrends. The regime-matched rate is blended with the unconditional
+# rate via pseudo-counts so thin regime samples never dominate.
+REGIME_WINDOW      = 30                  # trailing days defining momentum regime
+REGIME_FLAT_BAND   = 0.05                # |30d return| below this = "flat" regime
+REGIME_SHRINK_N    = 60                  # pseudo-count blend toward unconditional rate
 
 # Daily model paths (backward-compatible names)
 MODEL_PATH         = "model_crypto.joblib"
@@ -204,6 +211,62 @@ def hist_vol(close: pd.Series, window: int = HIST_VOL_WINDOW) -> pd.Series:
     return close.pct_change().apply(np.log1p).rolling(window).std() * math.sqrt(252)
 
 
+# ── Crypto-specific daily features (momentum + sentiment regime) ────────────────────────────────────────────────
+FNG_API_URL = "https://api.alternative.me/fng/"
+_fng_cache: pd.Series | None = None
+
+
+def fetch_fear_greed() -> pd.Series:
+    """
+    Daily Crypto Fear & Greed index (0-100) from alternative.me, full history
+    (starts Feb 2018). Returns empty Series on failure so callers degrade to
+    a neutral 50.
+    """
+    global _fng_cache
+    if _fng_cache is not None:
+        return _fng_cache
+    try:
+        resp = requests.get(FNG_API_URL, params={"limit": 0, "format": "json"},
+                            timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        _fng_cache = pd.Series({
+            pd.Timestamp(datetime.fromtimestamp(int(d["timestamp"]),
+                                                tz=timezone.utc).date()): float(d["value"])
+            for d in data
+        }).sort_index()
+        logger.info(f"Fear & Greed index loaded: {len(_fng_cache)} days "
+                    f"(latest = {_fng_cache.iloc[-1]:.0f})")
+    except Exception as e:
+        logger.warning(f"Fear & Greed fetch failed ({e}); using neutral 50")
+        _fng_cache = pd.Series(dtype=float)
+    return _fng_cache
+
+
+def compute_crypto_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Daily features for the crypto model: shared stock indicators plus
+    crypto-specific short-term momentum (calendar days — crypto trades 7d/wk)
+    and the Fear & Greed sentiment regime.
+    """
+    feat = compute_features(df)
+    c    = df["Close"]
+    for d in [3, 7, 14, 30]:
+        feat[f"mom_{d}d"] = c.pct_change(d)
+    feat["mom_7v30"] = feat["mom_7d"] - feat["mom_30d"]
+
+    fng = fetch_fear_greed()
+    if not fng.empty:
+        days    = pd.to_datetime(pd.DatetimeIndex(df.index).date)
+        aligned = fng.reindex(days).ffill().to_numpy()
+        feat["fng"]     = aligned
+        feat["fng_ma7"] = pd.Series(aligned, index=feat.index).rolling(7).mean()
+    else:
+        feat["fng"]     = 50.0
+        feat["fng_ma7"] = 50.0
+    return feat
+
+
 # ── Hourly feature engineering ──────────────────────────────────────────────────────────────────────────────────────────────────────
 def compute_features_hourly(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -258,13 +321,13 @@ def compute_features_hourly(df: pd.DataFrame) -> pd.DataFrame:
 def generate_training_samples(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """
     Daily training samples. For each date t, strike offset, and horizon:
-      - tech features from compute_features(df).iloc[t]
+      - tech features from compute_crypto_features(df).iloc[t]
       - contract features: days_to_expiry, strike_distance, strike_z_score
       - label: 1 if close[t+horizon] > close[t]*(1+offset)
     """
     logger.info(f"  Generating daily training samples for {symbol} ...")
 
-    feat_df = compute_features(df).dropna(how="all")
+    feat_df = compute_crypto_features(df).dropna(how="all")
     vol_s   = hist_vol(df["Close"])
     close   = df["Close"]
 
@@ -411,7 +474,10 @@ def _walk_forward_cv(X: pd.DataFrame, y: pd.Series,
 def build_crypto_model() -> tuple[RandomForestClassifier, list[str], float]:
     """Train daily model on BTC + ETH, run walk-forward CV, save model."""
     logger.info("Building daily crypto model ...")
-    half_life = 180
+    # 90-day half-life: full 5y history is kept, but a sample from one year
+    # ago carries ~6% of a current sample's weight, so the model adapts to
+    # regime changes (e.g. bull → bear) within weeks rather than quarters.
+    half_life = 90
 
     all_samples = []
     for symbol in CRYPTO_ASSETS:
@@ -719,26 +785,57 @@ def _apply_platt(model_prob: float, coef: float, intercept: float,
 
 
 # ── Base rate ─────────────────────────────────────────────────────────────────────────────────────────────────
+def _momentum_regime(trailing_return: float) -> str:
+    """Bucket a trailing REGIME_WINDOW-day return into down / flat / up."""
+    if trailing_return < -REGIME_FLAT_BAND:
+        return "down"
+    if trailing_return > REGIME_FLAT_BAND:
+        return "up"
+    return "flat"
+
+
 def compute_base_rate(close: pd.Series, strike_distance: float,
                       horizon: int) -> float:
     """
     Fraction of historical days where close[t+horizon] > close[t]*(1+strike_distance).
     Always uses daily close data regardless of model type.
+
+    Conditioned on the current momentum regime: historical windows whose
+    trailing REGIME_WINDOW-day return falls in the same bucket (down/flat/up)
+    as today's are weighted via pseudo-count blending with the unconditional
+    rate. In a downtrend the prior comes mostly from past downtrends instead
+    of the full (bull-heavy) history.
     """
     if close is None or len(close) == 0:
         return 0.5
+    closes = close.to_numpy(dtype=float)
+    n      = len(closes)
     cutoff = close.index[-1] - pd.DateOffset(years=BASE_RATE_LOOKBACK)
-    recent = close[close.index >= cutoff]
-    hits   = 0
-    total  = 0
-    for i in range(len(recent) - horizon):
-        c0      = float(recent.iloc[i])
-        c_future = float(recent.iloc[i + horizon])
-        strike  = c0 * (1 + strike_distance)
-        total  += 1
-        if c_future > strike:
-            hits += 1
-    rate = hits / total if total > 0 else 0.5
+    start  = int(close.index.searchsorted(cutoff))
+
+    cur_regime = None
+    if n > REGIME_WINDOW:
+        r_now      = closes[-1] / closes[-1 - REGIME_WINDOW] - 1
+        cur_regime = _momentum_regime(r_now)
+
+    hits = total = r_hits = r_total = 0
+    for i in range(start, n - horizon):
+        hit    = closes[i + horizon] > closes[i] * (1 + strike_distance)
+        total += 1
+        hits  += hit
+        if cur_regime is not None and i >= REGIME_WINDOW:
+            r_t = closes[i] / closes[i - REGIME_WINDOW] - 1
+            if _momentum_regime(r_t) == cur_regime:
+                r_total += 1
+                r_hits  += hit
+
+    uncond = hits / total if total > 0 else 0.5
+    if cur_regime is None or r_total == 0:
+        rate = uncond
+    else:
+        regime_rate = r_hits / r_total
+        rate = ((r_total * regime_rate + REGIME_SHRINK_N * uncond)
+                / (r_total + REGIME_SHRINK_N))
     return float(np.clip(rate, 0.01, 0.99))
 
 
@@ -1028,7 +1125,7 @@ def score_contract(market: dict, models: dict, asset_dfs: dict) -> list[dict]:
         model, feature_names, training_base_rate = daily_tuple
         df_daily = asset_dfs["daily"]
 
-        feat_df  = compute_features(df_daily)
+        feat_df  = compute_crypto_features(df_daily)
         if feat_df.empty:
             return []
         last_row = feat_df.iloc[[-1]]
