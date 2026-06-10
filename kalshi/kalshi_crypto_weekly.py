@@ -72,6 +72,9 @@ def main():
     parser.add_argument("--min-edge", type=float, default=MIN_EDGE)
     parser.add_argument("--auto-save-db", action="store_true",
                         help="Save results to Supabase")
+    parser.add_argument("--place", action="store_true",
+                        help="Auto-place top saved trades (gated by Supabase "
+                             "auto_place_* feature flags; no-op in dry run)")
     args = parser.parse_args()
     print(f"SCAN_ARGS: parsed args OK", flush=True)
     sys.stdout.flush()
@@ -214,6 +217,15 @@ def main():
             logger.info(f"Saved {added} trades to Supabase")
         except Exception as e:
             logger.error(f"Auto-save failed: {e}")
+
+    # ── Auto-placement (same call scan_cron makes after each scan) ──
+    if args.place and not client.dry_run:
+        try:
+            from kalshi_crypto import place_scheduled_orders
+            stats = place_scheduled_orders(client)
+            logger.info(f"Auto-placement results: {stats}")
+        except Exception as e:
+            logger.error(f"Auto-placement failed: {e}")
 
     print(f"\n{'='*65}\n")
 

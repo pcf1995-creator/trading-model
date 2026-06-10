@@ -1,0 +1,52 @@
+# Kalshi weekly scan on GitHub Actions — replaces the Render /scan cron job.
+#
+# Why: Render free tier (512MB) OOMs loading the model; GitHub runners have
+# 7GB+ and no cold starts.
+#
+# Control:
+#   - Disable anytime: Actions tab → "Kalshi Weekly Scan" → "..." → Disable workflow
+#   - Without the four repository secrets below, runs are dry-run no-ops:
+#     no Kalshi login, no orders, no Supabase writes.
+#   - Actual order placement is additionally gated by the auto_place_weekly
+#     feature flag in Supabase (toggled from the dashboard).
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   KALSHI_KEY_ID       — Kalshi API key ID
+#   KALSHI_KEY_CONTENT  — Kalshi API private key (raw PEM contents)
+#   SUPABASE_URL        — Supabase project URL
+#   SUPABASE_KEY        — Supabase service key
+
+name: Kalshi Weekly Scan
+
+on:
+  schedule:
+    - cron: "5 * * * *"   # hourly at :05 UTC (offset avoids top-of-hour delays)
+  workflow_dispatch: {}    # manual "Run workflow" button for testing
+
+concurrency:
+  group: kalshi-weekly-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run weekly scan + placement
+        working-directory: kalshi
+        env:
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_KEY_CONTENT: ${{ secrets.KALSHI_KEY_CONTENT }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python kalshi_crypto_weekly.py --auto-save-db --place
