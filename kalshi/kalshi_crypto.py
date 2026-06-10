@@ -436,9 +436,10 @@ def _time_decay_weights(dates: pd.Series, half_life: int = 180) -> np.ndarray:
     """Exponential decay weights so recent data has more influence."""
     today_ts = pd.Timestamp(datetime.now(timezone.utc).date())
     days_old = (today_ts - pd.to_datetime(dates).dt.tz_localize(None)).dt.days.clip(lower=0)
-    weights  = np.exp(-np.log(2) * days_old / half_life).values
-    weights /= weights.mean()
-    return weights
+    # Non-inplace: pandas 3.x copy-on-write returns read-only arrays from
+    # Series, so `weights /= ...` raises "output array is read-only"
+    weights = np.exp(-np.log(2) * days_old / half_life).to_numpy()
+    return weights / weights.mean()
 
 
 def _walk_forward_cv(X: pd.DataFrame, y: pd.Series,
