@@ -365,17 +365,27 @@ def compute_sor() -> pd.DataFrame:
             # Teams at strictly lower placements (higher tier index) were beaten.
             beats = [t for idx in range(team_tier + 1, len(placements)) for t in placements[idx]]
 
-            strength_wins = (
-                statistics.mean(avg_dupr(t) for t in beats) if beats else 0.0
-            )
-            strength_losses = (
-                statistics.mean(avg_dupr(t) for t in loses_to) if loses_to else 0.0
-            )
-            contribution = strength_wins - strength_losses
+            all_event_teams = [t for tier in placements for t in tier]
+            max_field_dupr = max(avg_dupr(t) for t in all_event_teams)
+            n_opponents = len(all_event_teams) - 1  # every team at event except self
+
+            # Win vs O: +O.dupr (beating a stronger team is better)
+            # Loss vs O: +(O.dupr - max_field_dupr)  ≤ 0
+            #   → losing to the best team in the field costs ~0; losing to a weak team
+            #     costs more. This is the key fix: strong beaters ≠ bigger penalty.
+            win_contributions = [avg_dupr(t) for t in beats]
+            loss_contributions = [avg_dupr(t) - max_field_dupr for t in loses_to]
+
+            total = sum(win_contributions) + sum(loss_contributions)
+            contribution = total / n_opponents if n_opponents > 0 else 0.0
             event_sors.append(contribution)
+
+            n_wins = len(beats)
+            n_losses = len(loses_to)
             event_details.append(
                 f"{event['name']}: tier={team_tier+1}, "
-                f"SW={strength_wins:.3f}, SL={strength_losses:.3f}, "
+                f"W={n_wins} L={n_losses}, "
+                f"max_field={max_field_dupr:.3f}, "
                 f"contrib={contribution:+.3f}"
             )
 
@@ -428,9 +438,10 @@ def print_results(df: pd.DataFrame, verbose: bool = False) -> None:
                 print(f"   {detail}")
 
     print(
-        "\nSOR = avg over events of (avg DUPR of teams you beat − avg DUPR of teams that beat you)."
+        "\nSOR formula: per-event contribution = (Σ win_opponent_DUPR + Σ(loss_opponent_DUPR − max_field_DUPR)) / (n_teams_at_event − 1)"
     )
-    print("Positive SOR = record stronger than DUPR of opponents suggests.")
+    print("Losses to the strongest team in the field cost ~0; losses to weak teams cost more.")
+    print("Positive SOR = record stronger than field quality alone would predict.")
     print("⚠  DUPR values marked (est) were estimated; treat exact numbers as directional.")
 
     print("\nDUPR data notes:")
