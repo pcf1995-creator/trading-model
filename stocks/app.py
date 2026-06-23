@@ -2656,6 +2656,131 @@ with tab_overnight:
         else:
             st.error("No results returned — check ticker list.")
 
+    # ── Paper Trade History (always visible, above scan results) ──────────────
+    def _on_last_close(ticker: str) -> float | None:
+        """Last SETTLED close price — excludes today's intraday bar."""
+        try:
+            import yfinance as _yf
+            _h = _yf.Ticker(ticker).history(period="5d", auto_adjust=True)
+            if isinstance(_h.columns, pd.MultiIndex):
+                _h.columns = _h.columns.get_level_values(0)
+            _settled = _h[_h.index.date < date.today()]
+            if not _settled.empty:
+                return float(_settled["Close"].iloc[-1])
+            return float(_h["Close"].iloc[-1]) if not _h.empty else None
+        except Exception:
+            return None
+
+    def _on_sim_pnl(ticker: str, entry_date_str: str, dollars: float):
+        """Compound actual overnight (open/prev-close − 1) returns from entry to today."""
+        try:
+            import yfinance as _yf
+            _ed = pd.Timestamp(entry_date_str)
+            _end = pd.Timestamp(date.today()) + pd.Timedelta(days=1)
+            _h = _yf.Ticker(ticker).history(
+                start=str(_ed.date()), end=str(_end.date()), auto_adjust=True
+            )
+            if isinstance(_h.columns, pd.MultiIndex):
+                _h.columns = _h.columns.get_level_values(0)
+            if _h.empty or "Open" not in _h.columns:
+                return None, None, 0, None
+            _h = _h[["Open", "Close"]].dropna()
+            _h = _h[_h.index >= _ed]
+            if len(_h) < 2:
+                return None, None, 0, None
+            _on_ret = (_h["Open"] / _h["Close"].shift(1) - 1).dropna()
+            if _on_ret.empty:
+                return None, None, 0, None
+            _cum = float((1 + _on_ret).prod() - 1) * 100
+            _win = float((_on_ret > 0).mean() * 100)
+            return round(_cum, 3), round((dollars or 0) * _cum / 100, 2), len(_on_ret), round(_win, 1)
+        except Exception:
+            return None, None, 0, None
+
+    st.divider()
+    st.subheader("📈 Paper Trade History")
+    st.caption(
+        "Each position simulates **daily overnight cycling** since entry: "
+        "buy at close → sell at open, every trading day. "
+        "P&L compounds actual overnight returns — not buy-and-hold."
+    )
+
+    _on_all      = db.load_overnight_paper_trades()
+    _on_open_pos = [t for t in _on_all if t.get("status") == "open"]
+    _on_cls_pos  = [t for t in _on_all if t.get("status") == "closed"]
+
+    if _on_open_pos:
+        st.markdown(f"**Open positions ({len(_on_open_pos)})**")
+        _on_open_rows = []
+        for _ot in _on_open_pos:
+            _ot_ep  = float(_ot.get("entry_price") or 0)
+            _ot_sh  = float(_ot.get("shares") or 0)
+            _ot_dol = round(_ot_ep * _ot_sh, 2)
+            _cpct, _cusd, _ncyc, _wr = _on_sim_pnl(
+                _ot["ticker"], _ot.get("entry_date", ""), _ot_dol
+            )
+            _on_open_rows.append({
+                "Ticker"     : _ot["ticker"],
+                "Entry Date" : _ot.get("entry_date"),
+                "Invested $" : _ot_dol,
+                "O/N Cycles" : _ncyc,
+                "O/N P&L %"  : _cpct,
+                "O/N P&L $"  : _cusd,
+                "Win Rate %"  : _wr,
+                "Net Sharpe" : _ot.get("net_sharpe"),
+                "t-stat"     : _ot.get("t_stat"),
+            })
+        st.dataframe(
+            pd.DataFrame(_on_open_rows),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Invested $" : st.column_config.NumberColumn(format="$%.2f"),
+                "O/N Cycles" : st.column_config.NumberColumn(format="%d"),
+                "O/N P&L %"  : st.column_config.NumberColumn(format="%+.3f%%"),
+                "O/N P&L $"  : st.column_config.NumberColumn(format="$%+.2f"),
+                "Win Rate %"  : st.column_config.NumberColumn(format="%.1f%%"),
+                "Net Sharpe" : st.column_config.NumberColumn(format="%.3f"),
+                "t-stat"     : st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        st.caption(
+            "**O/N Cycles** = # of close→open trades since entry.  "
+            "**O/N P&L** = compounded overnight-only return. "
+            "Intraday is excluded — position is flat during market hours."
+        )
+    else:
+        st.info("No open overnight positions. Run a scan and click the paper trade button.")
+
+    if _on_cls_pos:
+        _on_cdf = pd.DataFrame(_on_cls_pos)
+        _oc1, _oc2, _oc3, _oc4 = st.columns(4)
+        _oc1.metric("Total P&L",  f"${float(_on_cdf['pnl_dollars'].fillna(0).sum()):+.2f}")
+        _oc2.metric("Avg return", f"{float(_on_cdf['pnl_pct'].fillna(0).mean()):+.3f}%")
+        _oc3.metric("Win rate",   f"{float((_on_cdf['pnl_pct'].fillna(0) > 0).mean() * 100):.1f}%")
+        _oc4.metric("Trades",     str(len(_on_cls_pos)))
+
+        st.markdown(f"**Closed trades ({len(_on_cls_pos)})**")
+        _on_show = [c for c in
+            ["ticker", "entry_date", "entry_price", "exit_date", "exit_price",
+             "pnl_pct", "pnl_dollars", "net_sharpe", "t_stat"]
+            if c in _on_cdf.columns]
+        st.dataframe(
+            _on_cdf[_on_show].sort_values("exit_date", ascending=False),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "ticker"      : st.column_config.TextColumn("Ticker"),
+                "entry_date"  : st.column_config.DateColumn("Entry Date"),
+                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
+                "exit_date"   : st.column_config.DateColumn("Exit Date"),
+                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
+                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
+                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+                "net_sharpe"  : st.column_config.NumberColumn("Net Sharpe", format="%.3f"),
+                "t_stat"      : st.column_config.NumberColumn("t-stat",     format="%.2f"),
+            },
+        )
+
     # ── Scanner results ────────────────────────────────────────────────────────
     if "on_scan_result" in st.session_state:
         _on_df     = st.session_state["on_scan_result"]
@@ -2715,7 +2840,7 @@ with tab_overnight:
                 f"**{len(_on_qualify)} qualifying tickers** meet all drift criteria: "
                 + ", ".join(_on_qualify["ticker"].tolist())
             )
-            if st.button("📥 Paper trade top 5 now (at live price)", key="on_paper_now",
+            if st.button("📥 Paper trade top 5 at last close", key="on_paper_now",
                          type="primary"):
                 import uuid as _uuid
                 _on_existing_open = {
@@ -2730,25 +2855,25 @@ with tab_overnight:
                     if _qtk in _on_existing_open:
                         _on_skipped.append(_qtk)
                         continue
-                    _qlive = _cv_live_price(_qtk)
-                    if not _qlive or _qlive <= 0:
+                    _qclose = _on_last_close(_qtk)   # settled close, not intraday
+                    if not _qclose or _qclose <= 0:
                         _on_skipped.append(_qtk)
                         continue
-                    _qsh = round(1_000.0 / _qlive, 4)
+                    _qsh = round(1_000.0 / _qclose, 4)
                     db.add_overnight_paper_trade({
                         "id"         : str(_uuid.uuid4()),
                         "ticker"     : _qtk,
                         "entry_date" : str(date.today()),
-                        "entry_price": round(_qlive, 4),
+                        "entry_price": round(_qclose, 4),
                         "shares"     : _qsh,
-                        "dollars"    : round(_qlive * _qsh, 2),
+                        "dollars"    : round(_qclose * _qsh, 2),
                         "status"     : "open",
                         "t_stat"     : float(_qrow.get("t_stat") or 0),
                         "net_sharpe" : float(_qrow.get("net_sharpe") or 0),
                         "win_rate"   : float(_qrow.get("win_rate") or 0),
                         "placed_at"  : datetime.now(timezone.utc).isoformat(),
                     })
-                    _on_added.append(f"{_qtk} @ ${_qlive:.2f}")
+                    _on_added.append(f"{_qtk} @ ${_qclose:.2f}")
                 if _on_added:
                     st.success(f"Opened: {', '.join(_on_added)}")
                 if _on_skipped:
@@ -2843,127 +2968,6 @@ with tab_overnight:
             else:
                 st.warning(f"Could not load detail for {_on_detail_tk}.")
 
-    # ── Paper trade history ────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("📈 Paper Trade History")
-    st.caption(
-        "Each position simulates **daily overnight cycling**: buy at close, sell at open, "
-        "repeat every trading day since entry. P&L below compounds all actual overnight "
-        "returns (open/prev-close − 1) from entry date to today — not buy-and-hold."
-    )
-
-    _on_all = db.load_overnight_paper_trades()
-    _on_open_pos   = [t for t in _on_all if t.get("status") == "open"]
-    _on_closed_pos = [t for t in _on_all if t.get("status") == "closed"]
-
-    def _on_sim_pnl(ticker: str, entry_date_str: str, dollars: float):
-        """
-        Compound all actual overnight returns (open/prev_close - 1) from
-        entry_date to today. Returns (cum_pct, cum_dollars, n_cycles, win_rate).
-        """
-        try:
-            import yfinance as _yf
-            _ed = pd.Timestamp(entry_date_str)
-            _hist = _yf.Ticker(ticker).history(
-                start=str(_ed.date()), period="400d", auto_adjust=True
-            )
-            if isinstance(_hist.columns, pd.MultiIndex):
-                _hist.columns = _hist.columns.get_level_values(0)
-            if _hist.empty or "Open" not in _hist.columns:
-                return None, None, 0, None
-            _hist = _hist[["Open", "Close"]].dropna()
-            _hist = _hist[_hist.index >= _ed]
-            if len(_hist) < 2:
-                return None, None, 0, None
-            _on_ret = _hist["Open"] / _hist["Close"].shift(1) - 1
-            _on_ret = _on_ret.dropna()
-            if _on_ret.empty:
-                return None, None, 0, None
-            _cum = float((1 + _on_ret).prod() - 1) * 100
-            _win = float((_on_ret > 0).mean() * 100)
-            _usd = round((dollars or 0) * _cum / 100, 2)
-            return round(_cum, 3), _usd, len(_on_ret), round(_win, 1)
-        except Exception:
-            return None, None, 0, None
-
-    if _on_open_pos:
-        st.markdown(f"**Open positions — simulated overnight cycling ({len(_on_open_pos)})**")
-        _on_open_rows = []
-        for _ot in _on_open_pos:
-            _ot_ep   = float(_ot.get("entry_price") or 0)
-            _ot_sh   = float(_ot.get("shares") or 0)
-            _ot_dol  = round(_ot_ep * _ot_sh, 2)
-            _ot_cpct, _ot_cusd, _ot_ncyc, _ot_wr = _on_sim_pnl(
-                _ot["ticker"], _ot.get("entry_date", ""), _ot_dol
-            )
-            _on_open_rows.append({
-                "Ticker"         : _ot["ticker"],
-                "Entry Date"     : _ot.get("entry_date"),
-                "Invested $"     : _ot_dol,
-                "Cycles"         : _ot_ncyc,
-                "O/N P&L %"      : _ot_cpct,
-                "O/N P&L $"      : _ot_cusd,
-                "Win Rate %"     : _ot_wr,
-                "Net Sharpe"     : _ot.get("net_sharpe"),
-                "t-stat"         : _ot.get("t_stat"),
-            })
-        st.dataframe(
-            pd.DataFrame(_on_open_rows),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Invested $"  : st.column_config.NumberColumn(format="$%.2f"),
-                "Cycles"      : st.column_config.NumberColumn("O/N Cycles", format="%d"),
-                "O/N P&L %"   : st.column_config.NumberColumn("O/N P&L %",  format="%+.3f%%"),
-                "O/N P&L $"   : st.column_config.NumberColumn("O/N P&L $",  format="$%+.2f"),
-                "Win Rate %"  : st.column_config.NumberColumn("Win Rate %",  format="%.1f%%"),
-                "Net Sharpe"  : st.column_config.NumberColumn(format="%.3f"),
-                "t-stat"      : st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
-        st.caption(
-            "**Cycles** = trading days since entry. "
-            "**O/N P&L** = compounded overnight-only returns on the invested amount. "
-            "Intraday moves are excluded — the strategy is flat during market hours."
-        )
-    else:
-        st.info("No open overnight positions.")
-
-    if _on_closed_pos:
-        _on_cdf = pd.DataFrame(_on_closed_pos)
-        _on_tot_pnl  = float(_on_cdf["pnl_dollars"].fillna(0).sum())
-        _on_avg_pct  = float(_on_cdf["pnl_pct"].fillna(0).mean())
-        _on_win_rt   = float((_on_cdf["pnl_pct"].fillna(0) > 0).mean() * 100)
-
-        _oc1, _oc2, _oc3, _oc4 = st.columns(4)
-        _oc1.metric("Total P&L",    f"${_on_tot_pnl:+.2f}")
-        _oc2.metric("Avg return",   f"{_on_avg_pct:+.3f}%")
-        _oc3.metric("Win rate",     f"{_on_win_rt:.1f}%")
-        _oc4.metric("Trades",       str(len(_on_closed_pos)))
-
-        st.markdown(f"**Closed trades ({len(_on_closed_pos)})**")
-        _on_show = [c for c in
-            ["ticker", "entry_date", "entry_price", "exit_date", "exit_price",
-             "pnl_pct", "pnl_dollars", "net_sharpe", "t_stat"]
-            if c in _on_cdf.columns]
-        st.dataframe(
-            _on_cdf[_on_show].sort_values("exit_date", ascending=False),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "ticker"      : st.column_config.TextColumn("Ticker"),
-                "entry_date"  : st.column_config.DateColumn("Entry Date"),
-                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
-                "exit_date"   : st.column_config.DateColumn("Exit Date"),
-                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
-                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
-                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
-                "net_sharpe"  : st.column_config.NumberColumn("Net Sharpe", format="%.3f"),
-                "t_stat"      : st.column_config.NumberColumn("t-stat",     format="%.2f"),
-            },
-        )
-    elif not _on_open_pos:
-        st.caption("No paper trades yet — run a scan and click 'Paper trade top 5'.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB
