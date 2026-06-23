@@ -2069,19 +2069,20 @@ with tab_conviction:
 
                         if _pa_replace:
                             st.markdown("**Replace** — score dropped below threshold or ticker left scan universe")
-                            _pa_long_pool = (
-                                _cv_df[(_cv_df["direction"].fillna("") == "LONG") & (~_cv_df["ticker"].isin(_held_tickers))].head(5)
-                                if "direction" in _cv_df.columns else pd.DataFrame()
-                            )
-                            _pa_short_pool = (
-                                _cv_df[(_cv_df["direction"].fillna("") == "SHORT") & (~_cv_df["ticker"].isin(_held_tickers))].head(5)
-                                if "direction" in _cv_df.columns else pd.DataFrame()
-                            )
+                            _repl_claimed = set()   # tickers already assigned as replacements this pass
                             for _pa_item in _pa_replace:
                                 _pp    = _pa_item["pos"]
                                 _ptk   = _pp["ticker"]
                                 _pdir  = _pp["direction"]
-                                _pool  = _pa_long_pool if _pdir == "LONG" else _pa_short_pool
+                                # Exclude held positions AND tickers already claimed by earlier replacements
+                                _exclude = _held_tickers | _repl_claimed
+                                _pool = (
+                                    _cv_df[
+                                        (_cv_df["direction"].fillna("") == _pdir)
+                                        & (~_cv_df["ticker"].isin(_exclude))
+                                    ].head(5)
+                                    if "direction" in _cv_df.columns else pd.DataFrame()
+                                )
                                 _pool_tickers = _pool["ticker"].tolist() if not _pool.empty else []
                                 # Resolve current price: scan map → live fetch → entry price fallback.
                                 # Must guard NaN: float(NaN) is truthy in Python so plain `or` won't fall through.
@@ -2102,6 +2103,8 @@ with tab_conviction:
                                                 "Replace with", _pool_tickers,
                                                 key=f"pa_repl_sel_{_ptk}",
                                             )
+                                            if _repl_sel:
+                                                _repl_claimed.add(_repl_sel)
                                         else:
                                             st.caption("No replacement candidates available.")
                                             _repl_sel = None
