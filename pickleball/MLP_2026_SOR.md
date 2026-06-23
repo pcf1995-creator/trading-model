@@ -37,26 +37,26 @@ A team's final SOR is the average of its per-event contributions across all even
 
 | Rank | Team | Avg DUPR | Events Played | SOR |
 |------|------|:--------:|:-------------:|:---:|
-| 1 | Los Angeles Mad Drops | 6.270 | 2 | **+5.77** |
-| 2 | New Jersey 5s | 6.382 | 3 | **+5.64** |
-| 3 | Columbus Sliders | 6.250 | 3 | **+5.23** |
-| 4 | St. Louis Shock | 6.348 | 3 | **+5.22** |
-| 5 | Brooklyn Pickleball Team † | 6.160 | 1 | **+4.79** |
-| 6 | Palm Beach Royals ‡ | 5.950 | 2 | **+3.85** |
-| 7 | Las Vegas Night Owls ‡ | 5.858 | 2 | **+3.23** |
-| 8 | Texas Ranchers ‡ | 6.058 | 2 | **+2.39** |
-| 9 | SoCal Hard Eights ‡ | 6.050 | 2 | **+2.26** |
-| 10 | Orlando Squeeze ‡ | 6.050 | 2 | **+2.07** |
-| 11 | Miami Pickleball Club ‡ | 6.020 | 2 | **+1.70** |
-| 12 | Atlanta Bouncers ‡ | 6.142 | 3 | **+1.45** |
-| 13 | Bay Area Breakers ‡ | 6.000 | 3 | **+1.30** |
-| 14 | Utah Black Diamonds ‡ | 5.950 | 2 | **+1.12** |
-| 15 | Florida Smash ‡ | 5.917 | 2 | **+0.16** |
-| 16 | California Black Bears ‡ | 5.833 | 2 | **+0.16** |
-| 17 | Carolina Hogs ‡ | 6.050 | 3 | **+0.10** |
-| 18 | Chicago Slice ‡ | 6.042 | 1 | **−0.14** |
-| 19 | Phoenix Flames ‡ | 5.950 | 2 | **−0.15** |
-| 20 | Dallas Flash | 6.178 | 2 | **−0.17** |
+| 1 | Los Angeles Mad Drops | 6.180 | 2 | **+5.74** |
+| 2 | New Jersey 5s | 6.343 | 3 | **+5.59** |
+| 3 | St. Louis Shock | 6.212 | 3 | **+5.19** |
+| 4 | Columbus Sliders | 6.177 | 3 | **+5.18** |
+| 5 | Brooklyn Pickleball Team † | 6.274 | 1 | **+4.78** |
+| 6 | Palm Beach Royals | 6.030 | 2 | **+3.84** |
+| 7 | Las Vegas Night Owls ‡ | 5.813 | 2 | **+3.23** |
+| 8 | Texas Ranchers | 5.929 | 2 | **+2.35** |
+| 9 | SoCal Hard Eights | 5.849 | 2 | **+2.28** |
+| 10 | Orlando Squeeze | 6.150 | 2 | **+2.06** |
+| 11 | Miami Pickleball Club ‡ | 6.014 | 2 | **+1.67** |
+| 12 | Atlanta Bouncers ‡ | 6.149 | 3 | **+1.44** |
+| 13 | Bay Area Breakers ‡ | 6.000 | 3 | **+1.28** |
+| 14 | Utah Black Diamonds ‡ | 5.975 | 2 | **+1.13** |
+| 15 | Florida Smash ‡ | 5.917 | 2 | **+0.15** |
+| 16 | California Black Bears ‡ | 5.833 | 2 | **+0.15** |
+| 17 | Carolina Hogs | 5.829 | 3 | **+0.09** |
+| 18 | Phoenix Flames ‡ | 5.950 | 2 | **−0.13** |
+| 19 | Chicago Slice ‡ | 5.999 | 1 | **−0.13** |
+| 20 | Dallas Flash | 6.090 | 2 | **−0.19** |
 
 **† Small sample** (1 event played — treat with caution)
 **‡ All DUPR values estimated** — see below
@@ -66,11 +66,15 @@ A team's final SOR is the average of its per-event contributions across all even
 ## Where Estimates Are Made
 
 ### Player DUPR Ratings
-DUPR.com and affiliated sites block automated data access. We have **confirmed DUPR values for 15 players:**
+DUPR.com blocks direct access, so values were sourced from PickleWave profiles, Electrum Pickleball athlete pages, and continental rankings. We now have **confirmed DUPR values for ~55+ players**, including full rosters for NJ 5s, St. Louis Shock, LA Mad Drops, Brooklyn, and Texas Ranchers.
 
-Ben Johns (7.12), JW Johnson (7.17), Andrei Daescu (6.95), Hayden Patriquin (6.90), Gabriel Tardio (6.88), Riley Newman (6.81), CJ Klinger (6.70), Will Howells (6.64), Anna Leigh Waters (6.56), Noe Khlif (6.49), Anna Bright (6.38), Catherine Parenteau (6.16), Parris Todd (6.00), Jade Kawamoto (5.99), Kate Fahey (5.83).
+**Teams with fully confirmed rosters** (no estimates): NJ 5s, St. Louis Shock, LA Mad Drops, Brooklyn Pickleball Team, Texas Ranchers.
 
-All other player DUPRs (~57 players across 20 teams) are **estimated** based on draft position, known pro rankings, and comparable players. Teams with at least one confirmed DUPR are: LA Mad Drops, NJ 5s, St. Louis Shock, Columbus Sliders, Brooklyn, and Dallas Flash. The remaining 14 teams are marked ‡ above and their relative rankings should be treated as directional only.
+**Teams with mostly confirmed rosters** (1–2 players estimated): Columbus Sliders, Dallas Flash, SoCal Hard Eights, Carolina Hogs, Atlanta Bouncers, Chicago Slice, Las Vegas Night Owls, Orlando Squeeze, Miami, Palm Beach Royals, Utah Black Diamonds.
+
+**Teams with all-estimated rosters** (marked ‡): Bay Area Breakers, California Black Bears, Florida Smash, Phoenix Flames.
+
+Two values to note: Elsie Hendershot's DUPR (5.124) is confirmed from Sep 2025 and may have since risen; JW Johnson's value was updated to 7.021 (May 2026 source) from a previously cited 7.17.
 
 ### Event Placements
 MLP publishes final standings but not always the detailed sub-placings within the lower half of the field. The following positions are grouped as "tied" in our model:

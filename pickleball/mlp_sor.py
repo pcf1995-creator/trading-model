@@ -34,171 +34,170 @@ import pandas as pd
 
 TEAMS: dict[str, list[tuple[str, float, bool]]] = {
     "New Jersey 5s": [
-        ("Will Howells",        6.64, False),
-        ("Noe Khlif",           6.49, False),
-        ("Martin Emmrich",      6.45, True),
-        ("Anna Leigh Waters",   6.56, False),  # from 2025 rating; may have shifted
-        ("Jorja Johnson",       6.50, True),   # 2nd overall draft pick / 2025 MLP MVP
-        ("Lina Padegimaite",    5.65, True),
+        ("Will Howells",        6.64,  False),
+        ("Noe Khlif",           6.49,  False),
+        ("Martin Emmrich",      6.416, False),
+        ("Anna Leigh Waters",   6.56,  False),
+        ("Jorja Johnson",       6.282, False),
+        ("Lina Padegimaite",    5.67,  False),
     ],
     "St. Louis Shock": [
-        ("Hayden Patriquin",    6.90, False),
-        ("Gabriel Tardio",      6.88, False),
-        ("John Lucian Goins",   6.25, True),
-        ("Anna Bright",         6.38, False),
-        ("Kate Fahey",          5.83, False),
-        ("Elsie Hendershot",    5.85, True),
+        ("Hayden Patriquin",    6.90,  False),
+        ("Gabriel Tardio",      6.88,  False),
+        ("John Lucian Goins",   6.158, False),
+        ("Anna Bright",         6.38,  False),
+        ("Kate Fahey",          5.83,  False),
+        ("Elsie Hendershot",    5.124, False),  # Sep 2025 confirmed value; may have risen
     ],
     "Los Angeles Mad Drops": [
-        ("Ben Johns",           7.12, False),
-        ("Max Freeman",         6.50, True),
-        ("Gabriel Joseph",      6.30, True),
-        ("Catherine Parenteau", 6.16, False),
-        ("Jade Kawamoto",       5.99, False),
-        ("Samantha Parker",     5.55, True),
+        ("Ben Johns",           7.12,  False),
+        ("Max Freeman",         6.26,  False),
+        ("Gabriel Joseph",      6.177, False),
+        ("Catherine Parenteau", 6.16,  False),
+        ("Jade Kawamoto",       5.99,  False),
+        ("Samantha Parker",     5.371, False),
     ],
     "Columbus Sliders": [
-        ("Andrei Daescu",       6.95, False),
-        ("CJ Klinger",          6.70, False),
-        ("Alix Truong",         6.20, True),
-        ("Parris Todd",         6.00, False),
+        ("Andrei Daescu",       6.95,  False),
+        ("CJ Klinger",          6.70,  False),
+        ("Alix Truong",         5.764, False),
+        ("Parris Todd",         6.00,  False),
         # Danni-Elle Townsend (pick #3) was traded to Dallas Flash.
         # Columbus acquired a player in return (identity TBD).
-        ("Acquired Player",     5.85, True),
-        ("Player 6",            5.80, True),
+        ("Acquired Player",     5.85,  True),
+        ("Player 6",            5.80,  True),
     ],
     "Brooklyn Pickleball Team": [
         # Dylan Frazier (pick #7) was traded to Texas Ranchers, then on to Miami.
-        ("Riley Newman",        6.81, False),
-        ("Christian Alshon",    6.50, True),
-        ("Chris Haworth",       6.45, True),
-        ("Jackie Kawamoto",     5.80, True),
-        ("Rachel Rohrabacher",  5.75, True),
-        ("Hannah Blatt",        5.65, True),
+        ("Riley Newman",        6.815, False),
+        ("Christian Alshon",    7.148, False),
+        ("Chris Haworth",       6.219, False),
+        ("Jackie Kawamoto",     6.082, False),
+        ("Rachel Rohrabacher",  6.089, False),
+        ("Hannah Blatt",        5.288, False),
     ],
     "Texas Ranchers": [
         # Acquired Nico Acevedo from Miami in exchange for Dylan Frazier.
-        ("Eric Oncins",         6.50, True),
-        ("Nico Acevedo",        6.30, True),
-        ("Matthew Barlow",      6.20, True),
-        ("Lea Jansen",          6.10, True),   # 4th overall pick
-        ("Layne Sleeth",        5.80, True),
-        ("Marcela Hones",       5.45, True),
+        ("Eric Oncins",         6.532, False),
+        ("Nico Acevedo",        6.269, False),
+        ("Matthew Barlow",      6.29,  False),
+        ("Lea Jansen",          5.974, False),
+        ("Layne Sleeth",        5.391, False),
+        ("Marcela Hones",       5.116, False),
     ],
     "SoCal Hard Eights": [
-        ("Will MacKinnon",      6.40, True),   # pick #17
-        ("Armaan Bhatia",       6.30, True),   # pick #14
-        ("Player 3",            6.20, True),
-        ("Meghan Dizon",        6.00, True),   # pick #11
-        ("Cailyn Campbell",     5.80, True),   # pick #13
-        ("Player 6",            5.60, True),
+        ("Will MacKinnon",      5.729, False),
+        ("Armaan Bhatia",       6.328, False),
+        ("Player 3",            6.20,  True),
+        ("Meghan Dizon",        5.815, False),
+        ("Cailyn Campbell",     5.421, False),
+        ("Player 6",            5.60,  True),
     ],
     "Dallas Flash": [
         # Acquired Danni-Elle Townsend from Columbus.
-        ("JW Johnson",          7.17, False),
-        ("Augie Ge",            6.50, True),
-        ("Ivan Jakovljevic",    6.40, True),
-        ("Danni-Elle Townsend", 5.90, True),   # pick #3 overall, moved here via trade
-        ("Brooke Buckner",      5.60, True),
-        ("Albie Huang",         5.50, True),
+        ("JW Johnson",          7.021, False),
+        ("Augie Ge",            6.58,  False),
+        ("Ivan Jakovljevic",    6.136, False),
+        ("Danni-Elle Townsend", 5.70,  False),
+        ("Brooke Buckner",      5.60,  True),
+        ("Albie Huang",         5.50,  True),
     ],
     "Utah Black Diamonds": [
-        ("Connor Garnett",      6.60, True),
-        ("Tama Shimabukuro",    6.00, True),   # pick #9
-        ("Player 3",            6.20, True),
-        ("Allyce Jones",        5.80, True),
-        ("Etta Tuionetoa",      5.60, True),
-        ("Player 6",            5.50, True),
+        ("Connor Garnett",      6.752, False),
+        ("Tama Shimabukuro",    6.00,  True),
+        ("Player 3",            6.20,  True),
+        ("Allyce Jones",        5.80,  True),
+        ("Etta Tuionetoa",      5.60,  True),
+        ("Player 6",            5.50,  True),
     ],
     "Florida Smash": [
-        ("Cason Campbell",      6.40, True),
-        ("Travis Rettenmaier",  6.50, True),
-        ("Player 3",            6.10, True),
-        ("Zoey Weil",           5.60, True),
-        ("Martina Frantova",    5.70, True),
-        ("Genie Bouchard",      5.20, True),   # pick #23, tennis-to-pickleball crossover
+        ("Cason Campbell",      6.40,  True),
+        ("Travis Rettenmaier",  6.50,  True),
+        ("Player 3",            6.10,  True),
+        ("Zoey Weil",           5.60,  True),
+        ("Martina Frantova",    5.70,  True),
+        ("Genie Bouchard",      5.20,  True),   # pick #23, tennis-to-pickleball crossover
     ],
     "Carolina Hogs": [
-        ("James Delgado",       6.40, True),
-        ("DJ Young",            6.50, True),
-        ("Brandon French",      6.10, True),
-        ("Angie Walker",        5.60, True),
-        ("Allison Phillips",    5.80, True),
-        ("Ava Ignatowich",      5.90, True),
+        ("James Delgado",       6.061, False),
+        ("DJ Young",            6.312, False),
+        ("Brandon French",      6.10,  True),
+        ("Angie Walker",        5.394, False),
+        ("Allison Phillips",    5.80,  True),
+        ("Ava Ignatowich",      5.309, False),
     ],
     "Atlanta Bouncers": [
-        ("Jaume Martinez Vich", 6.75, True),
-        ("Jay Devilliers",      6.70, True),
-        ("Player 3",            6.30, True),
-        ("Jessie Irvine",       5.80, True),
-        ("Kaitlyn Christian",   5.70, True),
-        ("Daria Walczak",       5.60, True),   # pick #20
+        ("Jaume Martinez Vich", 6.70,  False),
+        ("Jay Devilliers",      6.678, False),
+        ("Player 3",            6.30,  True),
+        ("Jessie Irvine",       5.915, False),
+        ("Kaitlyn Christian",   5.70,  True),
+        ("Daria Walczak",       5.60,  True),
     ],
     "Chicago Slice": [
-        ("Hunter Johnson",      6.80, True),
-        ("Zane Navratil",       6.65, True),
-        ("Tom Protzek",         6.20, True),
-        ("Mari Humberg",        5.70, True),
-        ("Jamie Wei",           5.50, True),
-        ("Jalina Ingram",       5.40, True),
+        ("Hunter Johnson",      6.625, False),
+        ("Zane Navratil",       6.57,  False),
+        ("Tom Protzek",         6.20,  True),
+        ("Mari Humberg",        5.70,  True),
+        ("Jamie Wei",           5.50,  True),
+        ("Jalina Ingram",       5.40,  True),
     ],
     "Las Vegas Night Owls": [
-        ("Blaine Hovenier",     6.20, True),
-        ("Roscoe Bellamy",      6.30, True),
-        ("Player 3",            6.10, True),
-        ("Zoey Wang",           5.50, True),
-        ("Player 5",            5.60, True),
-        ("Player 6",            5.45, True),
+        ("Blaine Hovenier",     6.011, False),
+        ("Roscoe Bellamy",      6.218, False),
+        ("Player 3",            6.10,  True),
+        ("Zoey Wang",           5.50,  True),
+        ("Player 5",            5.60,  True),
+        ("Player 6",            5.45,  True),
     ],
     "Phoenix Flames": [
-        ("Jonathan Truong",     6.20, True),   # pick #10
-        ("Cam Chaffin",         6.40, True),   # pick #16
-        ("Wyatt Stone",         6.30, True),
-        ("Judit Castillo",      5.70, True),   # pick #21
-        ("Alexa Schull",        5.60, True),
-        ("Player 6",            5.50, True),
+        ("Jonathan Truong",     6.20,  True),
+        ("Cam Chaffin",         6.40,  True),
+        ("Wyatt Stone",         6.30,  True),
+        ("Judit Castillo",      5.70,  True),
+        ("Alexa Schull",        5.60,  True),
+        ("Player 6",            5.50,  True),
     ],
     "Orlando Squeeze": [
-        ("Federico Staksrud",   6.70, True),
-        ("Jack Sock",           6.20, True),   # pick #8, tennis crossover
-        ("Yates Johnson",       6.00, True),
-        ("Lacy Schneemann",     5.80, True),
-        ("Milan Rane",          5.70, True),
-        ("Alex Walker",         5.90, True),
+        ("Federico Staksrud",   6.975, False),
+        ("Jack Sock",           6.525, False),
+        ("Yates Johnson",       6.00,  True),
+        ("Lacy Schneemann",     5.80,  True),
+        ("Milan Rane",          5.70,  True),
+        ("Alex Walker",         5.90,  True),
     ],
     "Miami Pickleball Club": [
         # Acquired Dylan Frazier from Texas Ranchers.
-        ("Dylan Frazier",       6.92, True),
-        ("Player 2",            6.20, True),
-        ("Player 3",            6.00, True),
-        ("Player 4",            5.80, True),
-        ("Player 5",            5.70, True),
-        ("Player 6",            5.50, True),
+        ("Dylan Frazier",       6.881, False),
+        ("Player 2",            6.20,  True),
+        ("Player 3",            6.00,  True),
+        ("Player 4",            5.80,  True),
+        ("Player 5",            5.70,  True),
+        ("Player 6",            5.50,  True),
     ],
     "Bay Area Breakers": [
-        # International roster with experienced veterans and young players.
-        ("Len Yang",            6.10, True),   # pick #18
-        ("Player 2",            6.20, True),
-        ("Player 3",            6.30, True),
-        ("Player 4",            6.00, True),
-        ("Mya [Player]",        5.80, True),
-        ("Player 6",            5.60, True),
+        ("Len Yang",            6.10,  True),
+        ("Player 2",            6.20,  True),
+        ("Player 3",            6.30,  True),
+        ("Player 4",            6.00,  True),
+        ("Mya [Player]",        5.80,  True),
+        ("Player 6",            5.60,  True),
     ],
     "California Black Bears": [
-        ("Kiora Kunimoto",      5.80, True),   # pick #15
-        ("Player 2",            6.30, True),
-        ("Player 3",            6.10, True),
-        ("Player 4",            5.70, True),
-        ("Player 5",            5.60, True),
-        ("Player 6",            5.50, True),
+        ("Kiora Kunimoto",      5.80,  True),
+        ("Player 2",            6.30,  True),
+        ("Player 3",            6.10,  True),
+        ("Player 4",            5.70,  True),
+        ("Player 5",            5.60,  True),
+        ("Player 6",            5.50,  True),
     ],
     "Palm Beach Royals": [
-        ("Tyson McGuffin",      6.60, True),   # pick #12, established veteran
-        ("Player 2",            6.30, True),
-        ("Sofia Sewing",        5.70, True),
-        ("Pisnik [Player]",     5.80, True),
-        ("Player 5",            5.80, True),
-        ("Player 6",            5.50, True),
+        ("Tyson McGuffin",      6.737, False),
+        ("Player 2",            6.30,  True),
+        ("Tina Pisnik",         6.085, False),
+        ("Sofia Sewing",        5.759, False),
+        ("Player 5",            5.80,  True),
+        ("Player 6",            5.50,  True),
     ],
 }
 
@@ -445,11 +444,15 @@ def print_results(df: pd.DataFrame, verbose: bool = False) -> None:
     print("⚠  DUPR values marked (est) were estimated; treat exact numbers as directional.")
 
     print("\nDUPR data notes:")
-    print("  Confirmed: Ben Johns 7.12, JW Johnson 7.17, Andrei Daescu 6.95,")
-    print("             Hayden Patriquin 6.90, Gabriel Tardio 6.88, Riley Newman 6.81,")
-    print("             CJ Klinger 6.70, Will Howells 6.64, Anna Leigh Waters 6.56,")
-    print("             Noe Khlif 6.49, Anna Bright 6.38, Catherine Parenteau 6.16,")
-    print("             Parris Todd 6.00, Jade Kawamoto 5.99, Kate Fahey 5.83.")
+    print("  Fully confirmed rosters: NJ 5s, St. Louis Shock, LA Mad Drops, Brooklyn.")
+    print("  Fully confirmed rosters: Texas Ranchers.")
+    print("  Partially confirmed (2+ players est.): Columbus, Dallas Flash, SoCal,")
+    print("    Carolina Hogs, Atlanta Bouncers, Chicago Slice, Las Vegas, Orlando,")
+    print("    Miami, Palm Beach Royals, Utah Black Diamonds.")
+    print("  All estimated: Bay Area Breakers, California Black Bears, Florida Smash,")
+    print("    Phoenix Flames.")
+    print("  Note: Elsie Hendershot DUPR (5.124) confirmed as of Sep 2025; may have risen.")
+    print("  Note: JW Johnson updated to 7.021 (May 2026 PickleWave; prior value was 7.17).")
     print("  Event placement notes:")
     print("    Dallas: positions 3-4 are estimated (NJ 5s 3rd, St. Louis 4th).")
     print("    Columbus: positions 7-11 are grouped as tied.")
