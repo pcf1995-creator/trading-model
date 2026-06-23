@@ -2847,44 +2847,84 @@ with tab_overnight:
     st.divider()
     st.subheader("📈 Paper Trade History")
     st.caption(
-        "Positions opened here (button above) or by the nightly cron: "
-        "**buy at close → sell at next open** automatically."
+        "Each position simulates **daily overnight cycling**: buy at close, sell at open, "
+        "repeat every trading day since entry. P&L below compounds all actual overnight "
+        "returns (open/prev-close − 1) from entry date to today — not buy-and-hold."
     )
 
     _on_all = db.load_overnight_paper_trades()
     _on_open_pos   = [t for t in _on_all if t.get("status") == "open"]
     _on_closed_pos = [t for t in _on_all if t.get("status") == "closed"]
 
+    def _on_sim_pnl(ticker: str, entry_date_str: str, dollars: float):
+        """
+        Compound all actual overnight returns (open/prev_close - 1) from
+        entry_date to today. Returns (cum_pct, cum_dollars, n_cycles, win_rate).
+        """
+        try:
+            import yfinance as _yf
+            _ed = pd.Timestamp(entry_date_str)
+            _hist = _yf.Ticker(ticker).history(
+                start=str(_ed.date()), period="400d", auto_adjust=True
+            )
+            if isinstance(_hist.columns, pd.MultiIndex):
+                _hist.columns = _hist.columns.get_level_values(0)
+            if _hist.empty or "Open" not in _hist.columns:
+                return None, None, 0, None
+            _hist = _hist[["Open", "Close"]].dropna()
+            _hist = _hist[_hist.index >= _ed]
+            if len(_hist) < 2:
+                return None, None, 0, None
+            _on_ret = _hist["Open"] / _hist["Close"].shift(1) - 1
+            _on_ret = _on_ret.dropna()
+            if _on_ret.empty:
+                return None, None, 0, None
+            _cum = float((1 + _on_ret).prod() - 1) * 100
+            _win = float((_on_ret > 0).mean() * 100)
+            _usd = round((dollars or 0) * _cum / 100, 2)
+            return round(_cum, 3), _usd, len(_on_ret), round(_win, 1)
+        except Exception:
+            return None, None, 0, None
+
     if _on_open_pos:
-        st.markdown(f"**Open positions ({len(_on_open_pos)})**")
+        st.markdown(f"**Open positions — simulated overnight cycling ({len(_on_open_pos)})**")
         _on_open_rows = []
         for _ot in _on_open_pos:
-            _ot_ep  = float(_ot.get("entry_price") or 0)
-            _ot_sh  = float(_ot.get("shares") or 0)
-            _ot_cur = _cv_live_price(_ot["ticker"])
-            _ot_pnl = (_ot_cur - _ot_ep) / _ot_ep * 100 if (_ot_ep > 0 and _ot_cur) else None
+            _ot_ep   = float(_ot.get("entry_price") or 0)
+            _ot_sh   = float(_ot.get("shares") or 0)
+            _ot_dol  = round(_ot_ep * _ot_sh, 2)
+            _ot_cpct, _ot_cusd, _ot_ncyc, _ot_wr = _on_sim_pnl(
+                _ot["ticker"], _ot.get("entry_date", ""), _ot_dol
+            )
             _on_open_rows.append({
-                "Ticker"      : _ot["ticker"],
-                "Entry $"     : _ot_ep,
-                "Entry Date"  : _ot.get("entry_date"),
-                "Cur $"       : round(_ot_cur, 2) if _ot_cur else None,
-                "Unrealized %" : round(_ot_pnl, 2) if _ot_pnl is not None else None,
-                "Invested $"  : round(_ot_ep * _ot_sh, 2),
-                "Net Sharpe"  : _ot.get("net_sharpe"),
-                "t-stat"      : _ot.get("t_stat"),
+                "Ticker"         : _ot["ticker"],
+                "Entry Date"     : _ot.get("entry_date"),
+                "Invested $"     : _ot_dol,
+                "Cycles"         : _ot_ncyc,
+                "O/N P&L %"      : _ot_cpct,
+                "O/N P&L $"      : _ot_cusd,
+                "Win Rate %"     : _ot_wr,
+                "Net Sharpe"     : _ot.get("net_sharpe"),
+                "t-stat"         : _ot.get("t_stat"),
             })
         st.dataframe(
             pd.DataFrame(_on_open_rows),
             hide_index=True,
             use_container_width=True,
             column_config={
-                "Entry $"      : st.column_config.NumberColumn(format="$%.4f"),
-                "Cur $"        : st.column_config.NumberColumn(format="$%.2f"),
-                "Unrealized %" : st.column_config.NumberColumn(format="%+.2f%%"),
-                "Invested $"   : st.column_config.NumberColumn(format="$%.2f"),
-                "Net Sharpe"   : st.column_config.NumberColumn(format="%.3f"),
-                "t-stat"       : st.column_config.NumberColumn(format="%.2f"),
+                "Invested $"  : st.column_config.NumberColumn(format="$%.2f"),
+                "Cycles"      : st.column_config.NumberColumn("O/N Cycles", format="%d"),
+                "O/N P&L %"   : st.column_config.NumberColumn("O/N P&L %",  format="%+.3f%%"),
+                "O/N P&L $"   : st.column_config.NumberColumn("O/N P&L $",  format="$%+.2f"),
+                "Win Rate %"  : st.column_config.NumberColumn("Win Rate %",  format="%.1f%%"),
+                "Net Sharpe"  : st.column_config.NumberColumn(format="%.3f"),
+                "t-stat"      : st.column_config.NumberColumn(format="%.2f"),
             },
+        )
+        st.caption(
+            "**Cycles** = trading days since entry. "
+            "**O/N P&L** = compounded overnight-only returns on the invested amount. "
+            "Intraday moves are excluded — the strategy is flat during market hours."
         )
     else:
         st.info("No open overnight positions.")
