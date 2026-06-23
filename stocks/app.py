@@ -2675,17 +2675,18 @@ with tab_overnight:
         """Compound actual overnight (open/prev-close − 1) returns from entry to today."""
         try:
             import yfinance as _yf
-            _ed = pd.Timestamp(entry_date_str)
-            _end = pd.Timestamp(date.today()) + pd.Timedelta(days=1)
+            _ed_date = pd.Timestamp(entry_date_str).date()
+            _end_date = date.today() + timedelta(days=1)
             _h = _yf.Ticker(ticker).history(
-                start=str(_ed.date()), end=str(_end.date()), auto_adjust=True
+                start=str(_ed_date), end=str(_end_date), auto_adjust=True
             )
             if isinstance(_h.columns, pd.MultiIndex):
                 _h.columns = _h.columns.get_level_values(0)
             if _h.empty or "Open" not in _h.columns:
                 return None, None, 0, None
             _h = _h[["Open", "Close"]].dropna()
-            _h = _h[_h.index >= _ed]
+            # Use .date() comparison to avoid tz-aware vs tz-naive mismatch
+            _h = _h[_h.index.date >= _ed_date]
             if len(_h) < 2:
                 return None, None, 0, None
             _on_ret = (_h["Open"] / _h["Close"].shift(1) - 1).dropna()
