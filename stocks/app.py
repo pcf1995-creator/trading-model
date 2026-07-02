@@ -2074,16 +2074,14 @@ with tab_conviction:
                                 _pp    = _pa_item["pos"]
                                 _ptk   = _pp["ticker"]
                                 _pdir  = _pp["direction"]
-                                # Exclude: the ticker being replaced + already-claimed replacements.
-                                # Do NOT exclude currently-held tickers — the user may legitimately
-                                # want to replace one position with a higher-ranked ticker they already
-                                # hold on paper (e.g. replace ARM with AMD which is paper-only).
-                                _exclude = {_ptk} | _repl_claimed
+                                # Exclude: currently-held conviction tickers + already-claimed replacements.
+                                # Use head(10) so enough non-held options appear even when many are held.
+                                _exclude = _held_tickers | _repl_claimed
                                 _pool = (
                                     _cv_df[
                                         (_cv_df["direction"].fillna("") == _pdir)
                                         & (~_cv_df["ticker"].isin(_exclude))
-                                    ].head(8)
+                                    ].head(10)
                                     if "direction" in _cv_df.columns else pd.DataFrame()
                                 )
                                 _pool_tickers = _pool["ticker"].tolist() if not _pool.empty else []
