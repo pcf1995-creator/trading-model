@@ -182,15 +182,26 @@ def main():
                   f"{r['ev']:>+.3f}  {r['kelly_pct']:>5.1f}%  {win_label}")
         print(f"\n  (* = also in main recommendations above)")
 
-    # ── Auto-save to DB ──
+    # ── Auto-save to DB (with portfolio guard) ──
     if args.auto_save_db and recommendations:
         try:
             import db
-            added = 0
-            # Per-bucket Kelly sizing (dollars-first). This file only handles
-            # weekly markets, so BUCKET_BUDGETS["weekly"] is the cap.
             from kalshi_crypto import _size_contracts
-            for rec in recommendations:
+            from portfolio_guard import apply_portfolio_guard
+
+            open_trades = [t for t in db.load_paper_trades()
+                           if t.get("status") == "open"]
+            guarded = apply_portfolio_guard(
+                recommendations, open_trades,
+                bankroll=bankroll, bucket="weekly",
+            )
+            logger.info(
+                f"Portfolio guard: {len(recommendations)} recs → "
+                f"{len(guarded)} after correlation + drawdown filter"
+            )
+
+            added = 0
+            for rec in guarded:
                 try:
                     contracts, bet_dollars = _size_contracts(
                         rec["kelly_pct"], rec["price"], "weekly"
