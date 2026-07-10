@@ -459,6 +459,34 @@ def add_overnight_paper_trade(trade: dict) -> None:
     _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
 
 
+def close_overnight_real_trade(trade_id: str, exit_price: float, exit_date: str) -> None:
+    """Close a real overnight trade. Fetches entry_price/shares to compute P&L."""
+    client = _get_client()
+    rows = []
+    if client:
+        try:
+            resp = client.table("overnight_paper_trades").select("*").eq("id", trade_id).execute()
+            rows = resp.data or []
+        except Exception as e:
+            logger.warning(f"close_overnight_real_trade fetch failed: {e}")
+    if not rows:
+        rows = [t for t in _load_json(_OVERNIGHT_PAPER_TRADES_JSON) if t.get("id") == trade_id]
+    if not rows:
+        raise ValueError(f"overnight trade {trade_id} not found")
+    r = rows[0]
+    entry_price = float(r.get("entry_price") or 0)
+    shares      = float(r.get("shares") or 0)
+    pnl_pct     = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
+    pnl_dollars = round((exit_price - entry_price) * shares, 2)
+    close_overnight_paper_trade(
+        trade_id    = trade_id,
+        exit_price  = exit_price,
+        exit_date   = exit_date,
+        pnl_pct     = round(pnl_pct * 100, 4),
+        pnl_dollars = pnl_dollars,
+    )
+
+
 def close_overnight_paper_trade(trade_id: str, exit_price: float, exit_date: str,
                                  pnl_pct: float, pnl_dollars: float) -> None:
     updates = {
