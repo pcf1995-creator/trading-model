@@ -2981,24 +2981,19 @@ with tab_overnight:
 _SP500_CSV = ROOT / "sp500_constituents.csv"
 
 
-def _sma_load_tickers() -> list[str]:
-    """Load the S&P 500 ticker list from the static repo CSV (Yahoo-formatted)."""
-    if _SP500_CSV.exists():
-        _df = pd.read_csv(_SP500_CSV)
-        return _df["Ticker"].dropna().astype(str).str.strip().tolist()
-    return []
-
-
 def _sma_run_scan() -> pd.DataFrame:
     """Batch-download 1yr of closes for the full S&P 500 and compute 200d SMA proximity."""
     import yfinance as yf
-    _tickers = _sma_load_tickers()
-    if not _tickers:
+    if not _SP500_CSV.exists():
         st.warning(
             f"Ticker list not found at {_SP500_CSV.name}. "
             "Commit stocks/sp500_constituents.csv to the repo."
         )
         return pd.DataFrame()
+
+    _uni = pd.read_csv(_SP500_CSV)
+    _tickers = _uni["Ticker"].dropna().astype(str).str.strip().tolist()
+    _sector_map = dict(zip(_uni["Ticker"], _uni.get("Sector", pd.Series(dtype=str))))
 
     _data = yf.download(_tickers, period="1y", auto_adjust=True,
                         progress=False, threads=True)
@@ -3022,7 +3017,8 @@ def _sma_run_scan() -> pd.DataFrame:
                 _sig = "near"
             else:
                 _sig = "above"
-            _rows.append({"Ticker": _tk, "Close": round(_c1, 2),
+            _rows.append({"Ticker": _tk, "Sector": _sector_map.get(_tk, ""),
+                           "Close": round(_c1, 2),
                            "200d SMA": round(_m1, 2), "% vs SMA": round(_pct, 2),
                            "Signal": _sig})
         except Exception:
@@ -3063,6 +3059,16 @@ with tab_sma:
         _sm2.metric("🔻 Below SMA",        _n_below)
         _sm3.metric("🟡 Within 2% above",  _n_near)
 
+        # Sector filter
+        if "Sector" in _sdf.columns:
+            _sectors = sorted(s for s in _sdf["Sector"].dropna().unique() if s)
+            _sel_sectors = st.multiselect(
+                "Filter by sector", options=_sectors, default=[],
+                placeholder="All sectors",
+            )
+            if _sel_sectors:
+                _sdf = _sdf[_sdf["Sector"].isin(_sel_sectors)]
+
         # Filter tabs
         _sv1, _sv2, _sv3 = st.tabs([
             f"🎯 Actionable — near or below ({_n_cross + _n_below + _n_near})",
@@ -3071,6 +3077,7 @@ with tab_sma:
         ])
 
         _col_cfg = {
+            "Sector"   : st.column_config.TextColumn("Sector"),
             "Close"    : st.column_config.NumberColumn("Close $",    format="$%.2f"),
             "200d SMA" : st.column_config.NumberColumn("200d SMA $", format="$%.2f"),
             "% vs SMA" : st.column_config.NumberColumn("% vs SMA",   format="%+.2f%%"),
