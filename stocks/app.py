@@ -3006,8 +3006,10 @@ def _sma_run_scan() -> pd.DataFrame:
             if len(_s) < 201:
                 continue
             _sma = _s.rolling(200).mean()
+            _sma50 = _s.rolling(50).mean()
             _c0, _c1 = float(_s.iloc[-2]), float(_s.iloc[-1])
             _m0, _m1 = float(_sma.iloc[-2]), float(_sma.iloc[-1])
+            _m50 = float(_sma50.iloc[-1])
             _pct = (_c1 - _m1) / _m1 * 100
             if _c0 > _m0 and _c1 <= _m1:
                 _sig = "crossunder"
@@ -3017,10 +3019,21 @@ def _sma_run_scan() -> pd.DataFrame:
                 _sig = "near"
             else:
                 _sig = "above"
+            # Trend structure: price vs 50d and 200d SMAs
+            _above200, _above50 = _c1 >= _m1, _c1 >= _m50
+            if _above200 and _above50:
+                _struct = "🟢 Above both"
+            elif _above200 and not _above50:
+                _struct = "🟢 Dip in uptrend"
+            elif not _above200 and _above50:
+                _struct = "🟡 Bouncing"
+            else:
+                _struct = "🔴 Below both"
             _rows.append({"Ticker": _tk, "Sector": _sector_map.get(_tk, ""),
                            "Close": round(_c1, 2),
-                           "200d SMA": round(_m1, 2), "% vs SMA": round(_pct, 2),
-                           "Signal": _sig})
+                           "50d SMA": round(_m50, 2), "200d SMA": round(_m1, 2),
+                           "% vs SMA": round(_pct, 2),
+                           "Signal": _sig, "Structure": _struct})
         except Exception:
             continue
 
@@ -3077,10 +3090,12 @@ with tab_sma:
         ])
 
         _col_cfg = {
-            "Sector"   : st.column_config.TextColumn("Sector"),
-            "Close"    : st.column_config.NumberColumn("Close $",    format="$%.2f"),
-            "200d SMA" : st.column_config.NumberColumn("200d SMA $", format="$%.2f"),
-            "% vs SMA" : st.column_config.NumberColumn("% vs SMA",   format="%+.2f%%"),
+            "Sector"    : st.column_config.TextColumn("Sector"),
+            "Close"     : st.column_config.NumberColumn("Close $",    format="$%.2f"),
+            "50d SMA"   : st.column_config.NumberColumn("50d SMA $",  format="$%.2f"),
+            "200d SMA"  : st.column_config.NumberColumn("200d SMA $", format="$%.2f"),
+            "% vs SMA"  : st.column_config.NumberColumn("% vs 200d",  format="%+.2f%%"),
+            "Structure" : st.column_config.TextColumn("Structure"),
         }
 
         with _sv1:
