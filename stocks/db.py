@@ -340,8 +340,6 @@ def save_conviction_positions(positions: list[dict]) -> None:
                 rows.append(known)
             if rows:
                 import math as _math
-                # Strip NaN/Inf floats before upsert — JSON serialization rejects them
-                # and the Supabase client will raise, silently falling back to local file.
                 def _clean(v):
                     if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)):
                         return None
@@ -359,10 +357,7 @@ _MODEL_CACHE_DIR = Path("/tmp/trading_models")
 
 
 def get_stock_file(filename: str, local_root: Path | None = None) -> Path | None:
-    """Return path to a stock model file, downloading from Supabase Storage if needed.
-
-    Priority: local_root/filename, then /tmp cache, then Supabase Storage 'stock-models'.
-    """
+    """Return path to a stock model file, downloading from Supabase Storage if needed."""
     if local_root:
         local_path = local_root / filename
         if local_path.exists():
@@ -483,6 +478,98 @@ def close_overnight_paper_trade(trade_id: str, exit_price: float, exit_date: str
     _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
 
 
+# ── SMA trades ────────────────────────────────────────────────────────────────
+#
+# Supabase table DDL (run once):
+#
+#   CREATE TABLE IF NOT EXISTS sma_trades (
+#       id           TEXT PRIMARY KEY,
+#       ticker       TEXT NOT NULL,
+#       entry_date   DATE NOT NULL,
+#       entry_price  NUMERIC NOT NULL,
+#       shares       NUMERIC,
+#       dollars      NUMERIC,
+#       status       TEXT DEFAULT 'open',
+#       exit_date    DATE,
+#       exit_price   NUMERIC,
+#       pnl_pct      NUMERIC,
+#       pnl_dollars  NUMERIC,
+#       notes        TEXT,
+#       placed_at    TIMESTAMPTZ DEFAULT NOW(),
+#       updated_at   TIMESTAMPTZ
+#   );
+#
+_SMA_TRADES_JSON = ROOT / "sma_trades.json"
+
+
+def load_sma_trades() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("sma_trades")
+                    .select("*")
+                    .order("placed_at", desc=False)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_sma_trades failed: {e}")
+    return _load_json(_SMA_TRADES_JSON)
+
+
+def add_sma_trade(trade: dict) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("sma_trades").insert(trade).execute()
+            return
+        except Exception as e:
+            logger.warning(f"add_sma_trade failed: {e}")
+    trades = _load_json(_SMA_TRADES_JSON)
+    trades.append(trade)
+    _save_json(_SMA_TRADES_JSON, trades)
+
+
+def close_sma_trade(trade_id: str, exit_price: float, exit_date: str) -> None:
+    """Close an SMA trade, auto-computing P&L from the stored entry row."""
+    client = _get_client()
+    rows = []
+    if client:
+        try:
+            resp = client.table("sma_trades").select("*").eq("id", trade_id).execute()
+            rows = resp.data or []
+        except Exception as e:
+            logger.warning(f"close_sma_trade fetch failed: {e}")
+    if not rows:
+        rows = [t for t in _load_json(_SMA_TRADES_JSON) if t.get("id") == trade_id]
+    if not rows:
+        raise ValueError(f"SMA trade {trade_id} not found")
+    r = rows[0]
+    entry_price = float(r.get("entry_price") or 0)
+    shares      = float(r.get("shares") or 0)
+    pnl_pct     = (exit_price - entry_price) / entry_price * 100 if entry_price > 0 else 0.0
+    pnl_dollars = round((exit_price - entry_price) * shares, 2)
+    updates = {
+        "status":      "closed",
+        "exit_price":  round(exit_price, 4),
+        "exit_date":   exit_date,
+        "pnl_pct":     round(pnl_pct, 4),
+        "pnl_dollars": pnl_dollars,
+        "updated_at":  datetime.now(timezone.utc).isoformat(),
+    }
+    client = _get_client()
+    if client:
+        try:
+            client.table("sma_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"close_sma_trade update failed: {e}")
+    trades = _load_json(_SMA_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(updates)
+    _save_json(_SMA_TRADES_JSON, trades)
+
+
 # ── Fundamental cache ──────────────────────────────────────────────────────────
 #
 # Supabase table DDL (run once in the Supabase SQL editor):
@@ -519,10 +606,7 @@ _FUND_CACHE_COLS = {
 
 
 def get_fundamental_cache(ticker: str) -> dict | None:
-    """Return cached fundamentals for ticker if within TTL, else None.
-
-    Returns None on any error so callers always fall back to live fetch.
-    """
+    """Return cached fundamentals for ticker if within TTL, else None."""
     from datetime import date as _date
     import math
     client = _get_client()
@@ -552,11 +636,7 @@ def get_fundamental_cache(ticker: str) -> dict | None:
 
 
 def upsert_fundamental_cache(ticker: str, data: dict) -> None:
-    """Write or overwrite the fundamental cache row for ticker.
-
-    Silently skips NaN/inf/None values so the column stays NULL rather than
-    storing a sentinel that would look like real data.
-    """
+    """Write or overwrite the fundamental cache row for ticker."""
     import math
     client = _get_client()
     if not client:
