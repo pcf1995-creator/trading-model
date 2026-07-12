@@ -2978,15 +2978,26 @@ with tab_overnight:
 # ══════════════════════════════════════════════════════════════════════════════
 # 200d SMA TAB
 # ══════════════════════════════════════════════════════════════════════════════
+_SP500_CSV = ROOT / "sp500_constituents.csv"
+
+
+def _sma_load_tickers() -> list[str]:
+    """Load the S&P 500 ticker list from the static repo CSV (Yahoo-formatted)."""
+    if _SP500_CSV.exists():
+        _df = pd.read_csv(_SP500_CSV)
+        return _df["Ticker"].dropna().astype(str).str.strip().tolist()
+    return []
+
+
 def _sma_run_scan() -> pd.DataFrame:
     """Batch-download 1yr of closes for the full S&P 500 and compute 200d SMA proximity."""
     import yfinance as yf
-    try:
-        _sp_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        _sp_df  = pd.read_html(_sp_url)[0]
-        _tickers = _sp_df["Symbol"].str.replace(".", "-", regex=False).tolist()
-    except Exception as _e:
-        st.warning(f"Could not fetch S&P 500 list: {_e}")
+    _tickers = _sma_load_tickers()
+    if not _tickers:
+        st.warning(
+            f"Ticker list not found at {_SP500_CSV.name}. "
+            "Commit stocks/sp500_constituents.csv to the repo."
+        )
         return pd.DataFrame()
 
     _data = yf.download(_tickers, period="1y", auto_adjust=True,
