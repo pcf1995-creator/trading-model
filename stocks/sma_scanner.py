@@ -40,6 +40,7 @@ SMA_PERIOD  = 200
 
 
 def load_universe() -> list[str]:
+    # 1. Supabase curated universe (populated by refresh_sma_universe.py)
     client = _get_client()
     if client:
         try:
@@ -50,12 +51,25 @@ def load_universe() -> list[str]:
                 return tickers
         except Exception as e:
             print(f"[sma_scanner] Supabase load failed: {e}")
-    # Fallback: ticker_summary.csv if it exists in the repo
+
+    # 2. Fetch full S&P 500 from Wikipedia (works on GH Actions / Python 3.11 + lxml)
+    print("[sma_scanner] Fetching S&P 500 from Wikipedia…")
+    try:
+        sp_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        sp_df  = pd.read_html(sp_url)[0]
+        tickers = sp_df["Symbol"].str.replace(".", "-", regex=False).tolist()
+        print(f"[sma_scanner] Fetched {len(tickers)} tickers from Wikipedia")
+        return tickers
+    except Exception as e:
+        print(f"[sma_scanner] Wikipedia fetch failed: {e}")
+
+    # 3. Last resort: ticker_summary.csv already in the repo
     csv = _STOCKS_DIR / "ticker_summary.csv"
     if csv.exists():
         print("[sma_scanner] Falling back to ticker_summary.csv")
         return pd.read_csv(csv)["Ticker"].tolist()
-    raise RuntimeError("No scanner universe available — run refresh_sma_universe.py first")
+
+    raise RuntimeError("No scanner universe available")
 
 
 def fetch_sma_data(ticker: str) -> dict | None:
