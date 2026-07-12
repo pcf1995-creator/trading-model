@@ -163,11 +163,12 @@ def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
             st.info("No changes to save.")
 
 
-tab_dash, tab_lt, tab_conviction, tab_overnight = st.tabs([
+tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
     "🎯 S&P Benchmark L/S",
     "🌙 Overnight Drift",
+    "📉 200d SMA",
 ])
 
 with tab_dash:
@@ -2069,19 +2070,21 @@ with tab_conviction:
 
                         if _pa_replace:
                             st.markdown("**Replace** — score dropped below threshold or ticker left scan universe")
-                            _pa_long_pool = (
-                                _cv_df[(_cv_df["direction"].fillna("") == "LONG") & (~_cv_df["ticker"].isin(_held_tickers))].head(5)
-                                if "direction" in _cv_df.columns else pd.DataFrame()
-                            )
-                            _pa_short_pool = (
-                                _cv_df[(_cv_df["direction"].fillna("") == "SHORT") & (~_cv_df["ticker"].isin(_held_tickers))].head(5)
-                                if "direction" in _cv_df.columns else pd.DataFrame()
-                            )
+                            _repl_claimed = set()   # tickers already assigned as replacements this pass
                             for _pa_item in _pa_replace:
                                 _pp    = _pa_item["pos"]
                                 _ptk   = _pp["ticker"]
                                 _pdir  = _pp["direction"]
-                                _pool  = _pa_long_pool if _pdir == "LONG" else _pa_short_pool
+                                # Exclude: currently-held conviction tickers + already-claimed replacements.
+                                # Use head(10) so enough non-held options appear even when many are held.
+                                _exclude = _held_tickers | _repl_claimed
+                                _pool = (
+                                    _cv_df[
+                                        (_cv_df["direction"].fillna("") == _pdir)
+                                        & (~_cv_df["ticker"].isin(_exclude))
+                                    ].head(10)
+                                    if "direction" in _cv_df.columns else pd.DataFrame()
+                                )
                                 _pool_tickers = _pool["ticker"].tolist() if not _pool.empty else []
                                 # Resolve current price: scan map → live fetch → entry price fallback.
                                 # Must guard NaN: float(NaN) is truthy in Python so plain `or` won't fall through.
@@ -2102,6 +2105,8 @@ with tab_conviction:
                                                 "Replace with", _pool_tickers,
                                                 key=f"pa_repl_sel_{_ptk}",
                                             )
+                                            if _repl_sel:
+                                                _repl_claimed.add(_repl_sel)
                                         else:
                                             st.caption("No replacement candidates available.")
                                             _repl_sel = None
@@ -2656,6 +2661,132 @@ with tab_overnight:
         else:
             st.error("No results returned — check ticker list.")
 
+    # ── Paper Trade History (always visible, above scan results) ──────────────
+    def _on_last_close(ticker: str) -> float | None:
+        """Last SETTLED close price — excludes today's intraday bar."""
+        try:
+            import yfinance as _yf
+            _h = _yf.Ticker(ticker).history(period="5d", auto_adjust=True)
+            if isinstance(_h.columns, pd.MultiIndex):
+                _h.columns = _h.columns.get_level_values(0)
+            _settled = _h[_h.index.date < date.today()]
+            if not _settled.empty:
+                return float(_settled["Close"].iloc[-1])
+            return float(_h["Close"].iloc[-1]) if not _h.empty else None
+        except Exception:
+            return None
+
+    def _on_sim_pnl(ticker: str, entry_date_str: str, dollars: float):
+        """Compound actual overnight (open/prev-close − 1) returns from entry to today."""
+        try:
+            import yfinance as _yf
+            _ed_date = pd.Timestamp(entry_date_str).date()
+            _end_date = date.today() + timedelta(days=1)
+            _h = _yf.Ticker(ticker).history(
+                start=str(_ed_date), end=str(_end_date), auto_adjust=True
+            )
+            if isinstance(_h.columns, pd.MultiIndex):
+                _h.columns = _h.columns.get_level_values(0)
+            if _h.empty or "Open" not in _h.columns:
+                return None, None, 0, None
+            _h = _h[["Open", "Close"]].dropna()
+            # Use .date() comparison to avoid tz-aware vs tz-naive mismatch
+            _h = _h[_h.index.date >= _ed_date]
+            if len(_h) < 2:
+                return None, None, 0, None
+            _on_ret = (_h["Open"] / _h["Close"].shift(1) - 1).dropna()
+            if _on_ret.empty:
+                return None, None, 0, None
+            _cum = float((1 + _on_ret).prod() - 1) * 100
+            _win = float((_on_ret > 0).mean() * 100)
+            return round(_cum, 3), round((dollars or 0) * _cum / 100, 2), len(_on_ret), round(_win, 1)
+        except Exception:
+            return None, None, 0, None
+
+    st.divider()
+    st.subheader("📈 Paper Trade History")
+    st.caption(
+        "Each position simulates **daily overnight cycling** since entry: "
+        "buy at close → sell at open, every trading day. "
+        "P&L compounds actual overnight returns — not buy-and-hold."
+    )
+
+    _on_all      = db.load_overnight_paper_trades()
+    _on_open_pos = [t for t in _on_all if t.get("status") == "open"]
+    _on_cls_pos  = [t for t in _on_all if t.get("status") == "closed"]
+
+    if _on_open_pos:
+        st.markdown(f"**Open positions ({len(_on_open_pos)})**")
+        _on_open_rows = []
+        for _ot in _on_open_pos:
+            _ot_ep  = float(_ot.get("entry_price") or 0)
+            _ot_sh  = float(_ot.get("shares") or 0)
+            _ot_dol = round(_ot_ep * _ot_sh, 2)
+            _cpct, _cusd, _ncyc, _wr = _on_sim_pnl(
+                _ot["ticker"], _ot.get("entry_date", ""), _ot_dol
+            )
+            _on_open_rows.append({
+                "Ticker"     : _ot["ticker"],
+                "Entry Date" : _ot.get("entry_date"),
+                "Invested $" : _ot_dol,
+                "O/N Cycles" : _ncyc,
+                "O/N P&L %"  : _cpct,
+                "O/N P&L $"  : _cusd,
+                "Win Rate %"  : _wr,
+                "Net Sharpe" : _ot.get("net_sharpe"),
+                "t-stat"     : _ot.get("t_stat"),
+            })
+        st.dataframe(
+            pd.DataFrame(_on_open_rows),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Invested $" : st.column_config.NumberColumn(format="$%.2f"),
+                "O/N Cycles" : st.column_config.NumberColumn(format="%d"),
+                "O/N P&L %"  : st.column_config.NumberColumn(format="%+.3f%%"),
+                "O/N P&L $"  : st.column_config.NumberColumn(format="$%+.2f"),
+                "Win Rate %"  : st.column_config.NumberColumn(format="%.1f%%"),
+                "Net Sharpe" : st.column_config.NumberColumn(format="%.3f"),
+                "t-stat"     : st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        st.caption(
+            "**O/N Cycles** = # of close→open trades since entry.  "
+            "**O/N P&L** = compounded overnight-only return. "
+            "Intraday is excluded — position is flat during market hours."
+        )
+    else:
+        st.info("No open overnight positions. Run a scan and click the paper trade button.")
+
+    if _on_cls_pos:
+        _on_cdf = pd.DataFrame(_on_cls_pos)
+        _oc1, _oc2, _oc3, _oc4 = st.columns(4)
+        _oc1.metric("Total P&L",  f"${float(_on_cdf['pnl_dollars'].fillna(0).sum()):+.2f}")
+        _oc2.metric("Avg return", f"{float(_on_cdf['pnl_pct'].fillna(0).mean()):+.3f}%")
+        _oc3.metric("Win rate",   f"{float((_on_cdf['pnl_pct'].fillna(0) > 0).mean() * 100):.1f}%")
+        _oc4.metric("Trades",     str(len(_on_cls_pos)))
+
+        st.markdown(f"**Closed trades ({len(_on_cls_pos)})**")
+        _on_show = [c for c in
+            ["ticker", "entry_date", "entry_price", "exit_date", "exit_price",
+             "pnl_pct", "pnl_dollars", "net_sharpe", "t_stat"]
+            if c in _on_cdf.columns]
+        st.dataframe(
+            _on_cdf[_on_show].sort_values("exit_date", ascending=False),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "ticker"      : st.column_config.TextColumn("Ticker"),
+                "entry_date"  : st.column_config.DateColumn("Entry Date"),
+                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
+                "exit_date"   : st.column_config.DateColumn("Exit Date"),
+                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
+                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
+                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+                "net_sharpe"  : st.column_config.NumberColumn("Net Sharpe", format="%.3f"),
+                "t_stat"      : st.column_config.NumberColumn("t-stat",     format="%.2f"),
+            },
+        )
+
     # ── Scanner results ────────────────────────────────────────────────────────
     if "on_scan_result" in st.session_state:
         _on_df     = st.session_state["on_scan_result"]
@@ -2702,36 +2833,60 @@ with tab_overnight:
             },
         )
 
-        # ── Qualifying tickers ────────────────────────────────────────────────
-        if all(c in _on_df.columns for c in ["t_stat", "net_sharpe", "win_rate", "breakeven_bps"]):
-            _on_qual = _on_df[
-                (_on_df["t_stat"]          >= 2.0)
-                & (_on_df["net_sharpe"]    >= 0.30)
-                & (_on_df["win_rate"]      >= 52.0)
-                & (_on_df["breakeven_bps"] >= 3.0)
-            ].head(5)
-            if not _on_qual.empty:
-                st.divider()
-                st.subheader("✅ Qualifying Tickers")
-                st.caption(
-                    "These pass all selection criteria (t ≥ 2, Sharpe ≥ 0.30, win rate ≥ 52%, "
-                    "breakeven ≥ 3 bps). Log a real trade in the **💰 Real Overnight Trades** "
-                    "section below using your actual MOC fill price."
-                )
-                _on_qshow = [c for c in ["ticker", "cur_price", "net_sharpe", "win_rate",
-                                          "t_stat", "breakeven_bps"] if c in _on_qual.columns]
-                st.dataframe(
-                    _on_qual[_on_qshow],
-                    hide_index=True, use_container_width=True,
-                    column_config={
-                        "ticker"        : st.column_config.TextColumn("Ticker"),
-                        "cur_price"     : st.column_config.NumberColumn("Price",           format="$%.2f"),
-                        "net_sharpe"    : st.column_config.NumberColumn("Net Sharpe",      format="%.3f"),
-                        "win_rate"      : st.column_config.NumberColumn("Win Rate %",      format="%.1f"),
-                        "t_stat"        : st.column_config.NumberColumn("t-stat",          format="%.2f"),
-                        "breakeven_bps" : st.column_config.NumberColumn("Breakeven (bps)", format="%.1f"),
-                    },
-                )
+        # ── Manual paper trade ────────────────────────────────────────────────
+        _on_qualify = _on_df[
+            (_on_df["t_stat"]        >= 2.0)
+            & (_on_df["net_sharpe"]  >= 0.30)
+            & (_on_df["win_rate"]    >= 52.0)
+            & (_on_df["breakeven_bps"] >= 3.0)
+        ].head(5)
+
+        if not _on_qualify.empty:
+            st.info(
+                f"**{len(_on_qualify)} qualifying tickers** meet all drift criteria: "
+                + ", ".join(_on_qualify["ticker"].tolist())
+            )
+            if st.button("📥 Paper trade top 5 at last close", key="on_paper_now",
+                         type="primary"):
+                import uuid as _uuid
+                _on_existing_open = {
+                    t["ticker"]
+                    for t in db.load_overnight_paper_trades()
+                    if t.get("status") == "open"
+                }
+                _on_added = []
+                _on_skipped = []
+                for _, _qrow in _on_qualify.iterrows():
+                    _qtk = _qrow["ticker"]
+                    if _qtk in _on_existing_open:
+                        _on_skipped.append(_qtk)
+                        continue
+                    _qclose = _on_last_close(_qtk)   # settled close, not intraday
+                    if not _qclose or _qclose <= 0:
+                        _on_skipped.append(_qtk)
+                        continue
+                    _qsh = round(1_000.0 / _qclose, 4)
+                    db.add_overnight_paper_trade({
+                        "id"         : str(_uuid.uuid4()),
+                        "ticker"     : _qtk,
+                        "entry_date" : str(date.today()),
+                        "entry_price": round(_qclose, 4),
+                        "shares"     : _qsh,
+                        "dollars"    : round(_qclose * _qsh, 2),
+                        "status"     : "open",
+                        "t_stat"     : float(_qrow.get("t_stat") or 0),
+                        "net_sharpe" : float(_qrow.get("net_sharpe") or 0),
+                        "win_rate"   : float(_qrow.get("win_rate") or 0),
+                        "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                    })
+                    _on_added.append(f"{_qtk} @ ${_qclose:.2f}")
+                if _on_added:
+                    st.success(f"Opened: {', '.join(_on_added)}")
+                if _on_skipped:
+                    st.warning(f"Skipped (already open or no price): {', '.join(_on_skipped)}")
+                st.rerun()
+        else:
+            st.warning("No tickers in the current scan meet all overnight drift criteria.")
 
         # ── Deep-dive ─────────────────────────────────────────────────────────
         st.divider()
@@ -2819,67 +2974,180 @@ with tab_overnight:
             else:
                 st.warning(f"Could not load detail for {_on_detail_tk}.")
 
-    # ── Real Overnight Trades ─────────────────────────────────────────────────
-    st.divider()
-    st.subheader("💰 Real Overnight Trades")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 200d SMA TAB
+# ══════════════════════════════════════════════════════════════════════════════
+def _sma_run_scan() -> pd.DataFrame:
+    """Batch-download 1yr of closes for the full S&P 500 and compute 200d SMA proximity."""
+    import yfinance as yf
+    try:
+        _sp_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        _sp_df  = pd.read_html(_sp_url)[0]
+        _tickers = _sp_df["Symbol"].str.replace(".", "-", regex=False).tolist()
+    except Exception as _e:
+        st.warning(f"Could not fetch S&P 500 list: {_e}")
+        return pd.DataFrame()
+
+    _data = yf.download(_tickers, period="1y", auto_adjust=True,
+                        progress=False, threads=True)
+    _closes = _data["Close"] if "Close" in _data.columns else _data.xs("Close", axis=1, level=0)
+
+    _rows = []
+    for _tk in _tickers:
+        try:
+            _s = _closes[_tk].dropna() if _tk in _closes.columns else pd.Series()
+            if len(_s) < 201:
+                continue
+            _sma = _s.rolling(200).mean()
+            _c0, _c1 = float(_s.iloc[-2]), float(_s.iloc[-1])
+            _m0, _m1 = float(_sma.iloc[-2]), float(_sma.iloc[-1])
+            _pct = (_c1 - _m1) / _m1 * 100
+            if _c0 > _m0 and _c1 <= _m1:
+                _sig = "crossunder"
+            elif _pct < 0:
+                _sig = "below"
+            elif _pct <= 2:
+                _sig = "near"
+            else:
+                _sig = "above"
+            _rows.append({"Ticker": _tk, "Close": round(_c1, 2),
+                           "200d SMA": round(_m1, 2), "% vs SMA": round(_pct, 2),
+                           "Signal": _sig})
+        except Exception:
+            continue
+
+    return pd.DataFrame(_rows).sort_values("% vs SMA") if _rows else pd.DataFrame()
+
+
+with tab_sma:
+    st.header("📉 200-Day SMA Scanner")
     st.caption(
-        "Log trades you actually placed. Enter your exact MOC fill price. "
-        "Multiple trades on the same ticker are allowed — each is tracked independently."
+        "Scan the full S&P 500 for stocks pulling back to their 200-day moving average. "
+        "Log long entries and track P&L."
     )
 
-    _on_all_trades_raw = db.load_overnight_paper_trades()
-    _on_real_all    = [t for t in _on_all_trades_raw if t.get("source") == "real"]
-    _on_real_open   = [t for t in _on_real_all if t.get("status") == "open"]
-    _on_real_closed = [t for t in _on_real_all if t.get("status") == "closed"]
+    # ── Scan controls ──────────────────────────────────────────────────────────
+    _sma_c1, _sma_c2 = st.columns([4, 1])
+    _sma_c1.markdown(
+        "Batch-downloads prices for ~500 tickers via yfinance. "
+        "Results are stored in your session — click **Run Scan** to refresh."
+    )
+    if _sma_c2.button("🔄 Run Scan", type="primary", key="sma_run_btn"):
+        with st.spinner("Scanning S&P 500 (500 tickers) — takes ~30 seconds…"):
+            st.session_state["sma_scan_df"]   = _sma_run_scan()
+            st.session_state["sma_scan_label"] = date.today().isoformat()
 
-    with st.expander("➕ Log New Real Trade", expanded=len(_on_real_open) == 0):
-        with st.form("on_real_log_form", clear_on_submit=True):
-            _orlc1, _orlc2 = st.columns(2)
-            _orl_ticker  = _orlc1.text_input("Ticker (e.g. AAPL)").upper().strip()
-            _orl_date    = _orlc2.date_input("Entry date", value=date.today())
-            _orlc3, _orlc4 = st.columns(2)
-            _orl_price   = _orlc3.number_input("Entry price — your fill ($)", min_value=0.0001,
-                                                value=100.0, step=0.01, format="%.4f")
-            _orl_dollars = _orlc4.number_input("Dollar amount to invest ($)",
-                                                min_value=1.0, value=1000.0, step=100.0)
+    if "sma_scan_df" in st.session_state and not st.session_state["sma_scan_df"].empty:
+        _sdf = st.session_state["sma_scan_df"]
+        _sma_ts = st.session_state.get("sma_scan_label", "")
+        st.caption(f"Last scan: {_sma_ts} · {len(_sdf)} tickers")
+
+        # Summary chips
+        _n_cross  = int((_sdf["Signal"] == "crossunder").sum())
+        _n_below  = int((_sdf["Signal"] == "below").sum())
+        _n_near   = int((_sdf["Signal"] == "near").sum())
+        _sm1, _sm2, _sm3 = st.columns(3)
+        _sm1.metric("🔴 Crossed below",    _n_cross)
+        _sm2.metric("🔻 Below SMA",        _n_below)
+        _sm3.metric("🟡 Within 2% above",  _n_near)
+
+        # Filter tabs
+        _sv1, _sv2, _sv3 = st.tabs([
+            f"🎯 Actionable — near or below ({_n_cross + _n_below + _n_near})",
+            "🔴 Crossed Below Today",
+            "📋 Full Universe",
+        ])
+
+        _col_cfg = {
+            "Close"    : st.column_config.NumberColumn("Close $",    format="$%.2f"),
+            "200d SMA" : st.column_config.NumberColumn("200d SMA $", format="$%.2f"),
+            "% vs SMA" : st.column_config.NumberColumn("% vs SMA",   format="%+.2f%%"),
+        }
+
+        with _sv1:
+            _near_df = _sdf[_sdf["Signal"].isin(["crossunder", "below", "near"])].copy()
+            if _near_df.empty:
+                st.info("No stocks currently at or near their 200-day SMA.")
+            else:
+                st.dataframe(_near_df, hide_index=True,
+                             use_container_width=True, column_config=_col_cfg)
+
+        with _sv2:
+            _cross_df = _sdf[_sdf["Signal"] == "crossunder"].copy()
+            if _cross_df.empty:
+                st.info("No crossunders today — no stock closed below 200d SMA for the first time.")
+            else:
+                st.dataframe(_cross_df, hide_index=True,
+                             use_container_width=True, column_config=_col_cfg)
+
+        with _sv3:
+            st.dataframe(_sdf, hide_index=True,
+                         use_container_width=True, column_config=_col_cfg)
+
+    elif "sma_scan_df" not in st.session_state:
+        st.info("Click **Run Scan** to load current SMA data for the full S&P 500.")
+
+    # ── Trade log ──────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("💼 200d SMA Trade Log")
+    st.caption("Log long entries at the 200-day SMA. P&L is computed automatically on close.")
+
+    _sma_trades_all    = db.load_sma_trades()
+    _sma_trades_open   = [t for t in _sma_trades_all if t.get("status") == "open"]
+    _sma_trades_closed = [t for t in _sma_trades_all if t.get("status") == "closed"]
+
+    with st.expander("➕ Log New Trade", expanded=len(_sma_trades_open) == 0):
+        with st.form("sma_log_form", clear_on_submit=True):
+            _slc1, _slc2 = st.columns(2)
+            _sl_ticker = _slc1.text_input("Ticker").upper().strip()
+            _sl_date   = _slc2.date_input("Entry date", value=date.today())
+            _slc3, _slc4 = st.columns(2)
+            _sl_price  = _slc3.number_input("Entry price ($)", min_value=0.0001,
+                                             value=100.0, step=0.01, format="%.4f")
+            _sl_dollars = _slc4.number_input("Dollar amount ($)",
+                                              min_value=1.0, value=1000.0, step=100.0)
+            _sl_notes  = st.text_input("Notes (optional)", placeholder="e.g. bounced off 200d with volume")
             if st.form_submit_button("💾 Log Trade", type="primary"):
-                if not _orl_ticker:
+                if not _sl_ticker:
                     st.error("Ticker is required.")
                 else:
-                    import uuid as _uuid_on
-                    _orl_shares = round(_orl_dollars / _orl_price, 4) if _orl_price > 0 else 0
-                    db.add_overnight_paper_trade({
-                        "id"         : str(_uuid_on.uuid4()),
-                        "ticker"     : _orl_ticker,
-                        "entry_date" : _orl_date.isoformat(),
-                        "entry_price": round(_orl_price, 4),
-                        "shares"     : _orl_shares,
-                        "dollars"    : round(_orl_price * _orl_shares, 2),
-                        "status"     : "open",
-                        "source"     : "real",
-                        "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                    import uuid as _sma_uuid
+                    _sl_shares = round(_sl_dollars / _sl_price, 4) if _sl_price > 0 else 0
+                    db.add_sma_trade({
+                        "id":          str(_sma_uuid.uuid4()),
+                        "ticker":      _sl_ticker,
+                        "entry_date":  _sl_date.isoformat(),
+                        "entry_price": round(_sl_price, 4),
+                        "shares":      _sl_shares,
+                        "dollars":     round(_sl_price * _sl_shares, 2),
+                        "status":      "open",
+                        "notes":       _sl_notes or None,
+                        "placed_at":   datetime.now(timezone.utc).isoformat(),
                     })
                     st.success(
-                        f"Logged: {_orl_ticker} @ ${_orl_price:.4f} · "
-                        f"{_orl_shares:.4f} shares · ${_orl_price * _orl_shares:.2f}"
+                        f"Logged: {_sl_ticker} @ ${_sl_price:.4f} · "
+                        f"{_sl_shares:.4f} shares · ${_sl_price * _sl_shares:.2f}"
                     )
                     st.rerun()
 
-    if _on_real_open:
-        st.markdown(f"**Open positions ({len(_on_real_open)})**")
-        _orl_open_rows = []
-        for _ort in _on_real_open:
-            _ort_ep = float(_ort.get("entry_price") or 0)
-            _ort_sh = float(_ort.get("shares") or 0)
-            _orl_open_rows.append({
-                "Ticker"     : _ort["ticker"],
-                "Entry Date" : _ort.get("entry_date", ""),
-                "Entry $"    : _ort_ep,
-                "Shares"     : _ort_sh,
-                "Invested $" : round(_ort_ep * _ort_sh, 2),
+    # Open positions
+    if _sma_trades_open:
+        st.markdown(f"**Open positions ({len(_sma_trades_open)})**")
+        _sma_open_rows = []
+        for _st_row in _sma_trades_open:
+            _st_ep = float(_st_row.get("entry_price") or 0)
+            _st_sh = float(_st_row.get("shares") or 0)
+            _sma_open_rows.append({
+                "Ticker"     : _st_row["ticker"],
+                "Entry Date" : _st_row.get("entry_date", ""),
+                "Entry $"    : _st_ep,
+                "Shares"     : _st_sh,
+                "Invested $" : round(_st_ep * _st_sh, 2),
+                "Notes"      : _st_row.get("notes", ""),
             })
         st.dataframe(
-            pd.DataFrame(_orl_open_rows),
+            pd.DataFrame(_sma_open_rows),
             hide_index=True, use_container_width=True,
             column_config={
                 "Entry $"   : st.column_config.NumberColumn(format="$%.4f"),
@@ -2887,58 +3155,55 @@ with tab_overnight:
                 "Invested $": st.column_config.NumberColumn(format="$%.2f"),
             },
         )
-
-        st.caption("Close a position with your actual open-price fill:")
-        for _ort in _on_real_open:
-            _ort_ep = float(_ort.get("entry_price") or 0)
+        st.caption("Close a position with your actual exit price:")
+        for _st_row in _sma_trades_open:
+            _st_ep = float(_st_row.get("entry_price") or 0)
             with st.expander(
-                f"✅ Close {_ort['ticker']} — entered ${_ort_ep:.4f} on {_ort.get('entry_date', '?')}"
+                f"✅ Close {_st_row['ticker']} — entered ${_st_ep:.4f} on {_st_row.get('entry_date', '?')}"
             ):
-                with st.form(f"on_close_real_{_ort['id']}"):
-                    _ort_exit_px = st.number_input(
-                        "Exit price — your fill ($)", min_value=0.0001,
-                        value=_ort_ep, step=0.01, format="%.4f",
+                with st.form(f"sma_close_{_st_row['id']}"):
+                    _st_exit_px = st.number_input(
+                        "Exit price ($)", min_value=0.0001,
+                        value=_st_ep, step=0.01, format="%.4f",
                     )
-                    _ort_exit_dt = st.date_input("Exit date", value=date.today())
+                    _st_exit_dt = st.date_input("Exit date", value=date.today())
                     if st.form_submit_button("Close Trade"):
                         try:
-                            db.close_overnight_real_trade(
-                                _ort["id"],
-                                round(float(_ort_exit_px), 4),
-                                _ort_exit_dt.isoformat(),
+                            db.close_sma_trade(
+                                _st_row["id"],
+                                round(float(_st_exit_px), 4),
+                                _st_exit_dt.isoformat(),
                             )
-                            _ort_pnl = (_ort_exit_px - _ort_ep) / _ort_ep * 100 if _ort_ep > 0 else 0
+                            _st_pnl = (_st_exit_px - _st_ep) / _st_ep * 100 if _st_ep > 0 else 0
                             st.success(
-                                f"Closed {_ort['ticker']} @ ${_ort_exit_px:.4f} "
-                                f"| P&L {_ort_pnl:+.3f}%"
+                                f"Closed {_st_row['ticker']} @ ${_st_exit_px:.4f} "
+                                f"| P&L {_st_pnl:+.3f}%"
                             )
                             st.rerun()
-                        except Exception as _ort_ce:
-                            st.error(f"Close failed: {_ort_ce}")
+                        except Exception as _st_ce:
+                            st.error(f"Close failed: {_st_ce}")
+    else:
+        st.info("No open SMA trades. Use the form above to log a new entry.")
 
-    if _on_real_closed:
-        _orl_cdf = pd.DataFrame(_on_real_closed)
-        _orl_total  = float((_orl_cdf["pnl_dollars"].fillna(0)).sum())
-        _orl_avgpct = float((_orl_cdf["pnl_pct"].fillna(0)).mean())
-        _orl_wins   = int((_orl_cdf["pnl_pct"].fillna(0) > 0).sum())
-        _orl_wr     = _orl_wins / len(_on_real_closed) * 100
+    # Closed positions
+    if _sma_trades_closed:
+        _sma_cdf     = pd.DataFrame(_sma_trades_closed)
+        _sma_total   = float(_sma_cdf["pnl_dollars"].fillna(0).sum())
+        _sma_avg_pct = float(_sma_cdf["pnl_pct"].fillna(0).mean())
+        _sma_wr      = float((_sma_cdf["pnl_pct"].fillna(0) > 0).mean() * 100)
 
-        _orcm1, _orcm2, _orcm3, _orcm4 = st.columns(4)
-        _orcm1.metric("Total P&L",  f"${_orl_total:+.2f}")
-        _orcm2.metric("Avg return", f"{_orl_avgpct:+.3f}%")
-        _orcm3.metric("Win rate",   f"{_orl_wr:.1f}%")
-        _orcm4.metric("Closed",     str(len(_on_real_closed)))
+        _scm1, _scm2, _scm3, _scm4 = st.columns(4)
+        _scm1.metric("Total P&L",  f"${_sma_total:+.2f}")
+        _scm2.metric("Avg return", f"{_sma_avg_pct:+.3f}%")
+        _scm3.metric("Win rate",   f"{_sma_wr:.1f}%")
+        _scm4.metric("Closed",     str(len(_sma_trades_closed)))
 
-        _orl_show = [c for c in [
+        _sma_show = [c for c in [
             "ticker", "entry_date", "entry_price", "exit_date", "exit_price",
-            "pnl_pct", "pnl_dollars",
-        ] if c in _orl_cdf.columns]
-        _orl_disp = (
-            _orl_cdf[_orl_show].sort_values("exit_date", ascending=False)
-            if "exit_date" in _orl_show else _orl_cdf[_orl_show]
-        )
+            "pnl_pct", "pnl_dollars", "notes",
+        ] if c in _sma_cdf.columns]
         st.dataframe(
-            _orl_disp,
+            _sma_cdf[_sma_show].sort_values("exit_date", ascending=False),
             hide_index=True, use_container_width=True,
             column_config={
                 "ticker"      : st.column_config.TextColumn("Ticker"),
@@ -2948,96 +3213,10 @@ with tab_overnight:
                 "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
                 "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
                 "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+                "notes"       : st.column_config.TextColumn("Notes"),
             },
         )
-    elif not _on_real_all:
-        st.info("No real trades logged yet. Use the form above after placing a MOC order.")
 
-    # ── Automated paper trades ─────────────────────────────────────────────────
-    st.divider()
-    st.subheader("📈 Automated Paper Trades")
-    st.caption(
-        "Positions opened nightly by GitHub Actions: **buy at close** (4:30 PM ET) "
-        "→ **sell at open** (10:00 AM ET next day).  "
-        "Selection criteria: t-stat ≥ 2.0 · Net Sharpe ≥ 0.30 · Win rate ≥ 52% · "
-        "Breakeven cost ≥ 3 bps/side."
-    )
-
-    _on_all_trades  = [t for t in _on_all_trades_raw if t.get("source") != "real"]
-    _on_open_trades   = [t for t in _on_all_trades if t.get("status") == "open"]
-    _on_closed_trades = [t for t in _on_all_trades if t.get("status") == "closed"]
-
-    if _on_open_trades:
-        st.markdown(f"**Open positions ({len(_on_open_trades)})**")
-        _on_open_rows = []
-        for _ot in _on_open_trades:
-            _ot_cur = _cv_live_price(_ot["ticker"])
-            _ot_ep  = float(_ot.get("entry_price") or 0)
-            _ot_sh  = float(_ot.get("shares") or 0)
-            _ot_pnl = (_ot_cur - _ot_ep) / _ot_ep * 100 if _ot_ep > 0 and _ot_cur else None
-            _on_open_rows.append({
-                "Ticker"    : _ot["ticker"],
-                "Entry $"   : _ot_ep,
-                "Entry Date": _ot.get("entry_date"),
-                "Cur $"     : round(_ot_cur, 2) if _ot_cur else None,
-                "Unrealized %": round(_ot_pnl, 2) if _ot_pnl is not None else None,
-                "Invested $": round(_ot_ep * _ot_sh, 2),
-                "Net Sharpe": _ot.get("net_sharpe"),
-                "t-stat"    : _ot.get("t_stat"),
-            })
-        st.dataframe(
-            pd.DataFrame(_on_open_rows),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Entry $"      : st.column_config.NumberColumn(format="$%.4f"),
-                "Cur $"        : st.column_config.NumberColumn(format="$%.2f"),
-                "Unrealized %" : st.column_config.NumberColumn(format="%+.2f%%"),
-                "Invested $"   : st.column_config.NumberColumn(format="$%.2f"),
-                "Net Sharpe"   : st.column_config.NumberColumn(format="%.3f"),
-                "t-stat"       : st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
-    else:
-        st.info("No open overnight positions right now.")
-
-    if _on_closed_trades:
-        _on_closed_df = pd.DataFrame(_on_closed_trades)
-        _on_total_pnl = float((_on_closed_df["pnl_dollars"].fillna(0)).sum())
-        _on_avg_pct   = float((_on_closed_df["pnl_pct"].fillna(0)).mean())
-        _on_win_count = int((_on_closed_df["pnl_pct"].fillna(0) > 0).sum())
-        _on_wr_pct    = _on_win_count / len(_on_closed_trades) * 100
-
-        _onc1, _onc2, _onc3, _onc4 = st.columns(4)
-        _onc1.metric("Total P&L",      f"${_on_total_pnl:+.2f}")
-        _onc2.metric("Avg return",     f"{_on_avg_pct:+.3f}%")
-        _onc3.metric("Win rate",       f"{_on_wr_pct:.1f}%")
-        _onc4.metric("Trades closed",  str(len(_on_closed_trades)))
-
-        st.markdown(f"**Closed trades ({len(_on_closed_trades)})**")
-        _on_show_closed = [
-            "ticker", "entry_date", "entry_price", "exit_date", "exit_price",
-            "pnl_pct", "pnl_dollars", "net_sharpe", "t_stat",
-        ]
-        _on_show_closed = [c for c in _on_show_closed if c in _on_closed_df.columns]
-        st.dataframe(
-            _on_closed_df[_on_show_closed].sort_values("exit_date", ascending=False),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "ticker"      : st.column_config.TextColumn("Ticker"),
-                "entry_date"  : st.column_config.DateColumn("Entry Date"),
-                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
-                "exit_date"   : st.column_config.DateColumn("Exit Date"),
-                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
-                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
-                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
-                "net_sharpe"  : st.column_config.NumberColumn("Net Sharpe (at entry)", format="%.3f"),
-                "t_stat"      : st.column_config.NumberColumn("t-stat (at entry)",     format="%.2f"),
-            },
-        )
-    elif not _on_open_trades:
-        st.caption("No paper trades yet — the cron runs nightly on trading days.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB

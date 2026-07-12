@@ -417,7 +417,7 @@ def upload_stock_file(filename: str, local_path: Path) -> bool:
 #       entry_price  FLOAT NOT NULL,
 #       shares       FLOAT,
 #       dollars      FLOAT,
-#       status       TEXT DEFAULT 'open',   -- 'open' | 'closed'
+#       status       TEXT DEFAULT 'open',
 #       exit_date    DATE,
 #       exit_price   FLOAT,
 #       pnl_pct      FLOAT,
@@ -459,34 +459,6 @@ def add_overnight_paper_trade(trade: dict) -> None:
     _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
 
 
-def close_overnight_real_trade(trade_id: str, exit_price: float, exit_date: str) -> None:
-    """Close a real overnight trade. Fetches entry_price/shares to compute P&L."""
-    client = _get_client()
-    rows = []
-    if client:
-        try:
-            resp = client.table("overnight_paper_trades").select("*").eq("id", trade_id).execute()
-            rows = resp.data or []
-        except Exception as e:
-            logger.warning(f"close_overnight_real_trade fetch failed: {e}")
-    if not rows:
-        rows = [t for t in _load_json(_OVERNIGHT_PAPER_TRADES_JSON) if t.get("id") == trade_id]
-    if not rows:
-        raise ValueError(f"overnight trade {trade_id} not found")
-    r = rows[0]
-    entry_price = float(r.get("entry_price") or 0)
-    shares      = float(r.get("shares") or 0)
-    pnl_pct     = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
-    pnl_dollars = round((exit_price - entry_price) * shares, 2)
-    close_overnight_paper_trade(
-        trade_id    = trade_id,
-        exit_price  = exit_price,
-        exit_date   = exit_date,
-        pnl_pct     = round(pnl_pct * 100, 4),
-        pnl_dollars = pnl_dollars,
-    )
-
-
 def close_overnight_paper_trade(trade_id: str, exit_price: float, exit_date: str,
                                  pnl_pct: float, pnl_dollars: float) -> None:
     updates = {
@@ -509,6 +481,98 @@ def close_overnight_paper_trade(trade_id: str, exit_price: float, exit_date: str
         if t.get("id") == trade_id:
             t.update(updates)
     _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
+
+
+# ── SMA trades ────────────────────────────────────────────────────────────────
+#
+# Supabase table DDL (run once):
+#
+#   CREATE TABLE IF NOT EXISTS sma_trades (
+#       id           TEXT PRIMARY KEY,
+#       ticker       TEXT NOT NULL,
+#       entry_date   DATE NOT NULL,
+#       entry_price  NUMERIC NOT NULL,
+#       shares       NUMERIC,
+#       dollars      NUMERIC,
+#       status       TEXT DEFAULT 'open',
+#       exit_date    DATE,
+#       exit_price   NUMERIC,
+#       pnl_pct      NUMERIC,
+#       pnl_dollars  NUMERIC,
+#       notes        TEXT,
+#       placed_at    TIMESTAMPTZ DEFAULT NOW(),
+#       updated_at   TIMESTAMPTZ
+#   );
+#
+_SMA_TRADES_JSON = ROOT / "sma_trades.json"
+
+
+def load_sma_trades() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = (client.table("sma_trades")
+                    .select("*")
+                    .order("placed_at", desc=False)
+                    .execute())
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_sma_trades failed: {e}")
+    return _load_json(_SMA_TRADES_JSON)
+
+
+def add_sma_trade(trade: dict) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("sma_trades").insert(trade).execute()
+            return
+        except Exception as e:
+            logger.warning(f"add_sma_trade failed: {e}")
+    trades = _load_json(_SMA_TRADES_JSON)
+    trades.append(trade)
+    _save_json(_SMA_TRADES_JSON, trades)
+
+
+def close_sma_trade(trade_id: str, exit_price: float, exit_date: str) -> None:
+    """Close an SMA trade, auto-computing P&L from the stored entry row."""
+    client = _get_client()
+    rows = []
+    if client:
+        try:
+            resp = client.table("sma_trades").select("*").eq("id", trade_id).execute()
+            rows = resp.data or []
+        except Exception as e:
+            logger.warning(f"close_sma_trade fetch failed: {e}")
+    if not rows:
+        rows = [t for t in _load_json(_SMA_TRADES_JSON) if t.get("id") == trade_id]
+    if not rows:
+        raise ValueError(f"SMA trade {trade_id} not found")
+    r = rows[0]
+    entry_price = float(r.get("entry_price") or 0)
+    shares      = float(r.get("shares") or 0)
+    pnl_pct     = (exit_price - entry_price) / entry_price * 100 if entry_price > 0 else 0.0
+    pnl_dollars = round((exit_price - entry_price) * shares, 2)
+    updates = {
+        "status":      "closed",
+        "exit_price":  round(exit_price, 4),
+        "exit_date":   exit_date,
+        "pnl_pct":     round(pnl_pct, 4),
+        "pnl_dollars": pnl_dollars,
+        "updated_at":  datetime.now(timezone.utc).isoformat(),
+    }
+    client = _get_client()
+    if client:
+        try:
+            client.table("sma_trades").update(updates).eq("id", trade_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"close_sma_trade update failed: {e}")
+    trades = _load_json(_SMA_TRADES_JSON)
+    for t in trades:
+        if t.get("id") == trade_id:
+            t.update(updates)
+    _save_json(_SMA_TRADES_JSON, trades)
 
 
 # ── Fundamental cache ──────────────────────────────────────────────────────────
