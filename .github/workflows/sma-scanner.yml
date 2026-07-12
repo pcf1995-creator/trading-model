@@ -1,0 +1,31 @@
+name: SMA Scanner — 200-Day Alert
+
+# Runs at 2:00 PM UTC Mon-Fri = 10:00 AM EDT (UTC-4, Mar-Nov).
+# In EST (UTC-5, Nov-Mar) this fires at 9:00 AM ET instead.
+# Adjust to '0 15 * * 1-5' in winter if you prefer a consistent 10 AM EST.
+
+on:
+  schedule:
+    - cron: '0 14 * * 1-5'
+  workflow_dispatch:   # allow manual trigger from the Actions tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run 200-day SMA scanner
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+        run: python stocks/sma_scanner.py
