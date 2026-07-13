@@ -2711,7 +2711,7 @@ with tab_overnight:
         "P&L compounds actual overnight returns — not buy-and-hold."
     )
 
-    _on_all      = db.load_overnight_paper_trades()
+    _on_all      = [t for t in db.load_overnight_paper_trades() if t.get("source") != "real"]
     _on_open_pos = [t for t in _on_all if t.get("status") == "open"]
     _on_cls_pos  = [t for t in _on_all if t.get("status") == "closed"]
 
@@ -2786,6 +2786,141 @@ with tab_overnight:
                 "t_stat"      : st.column_config.NumberColumn("t-stat",     format="%.2f"),
             },
         )
+
+    # ── Real Overnight Trades ─────────────────────────────────────────────────
+    st.divider()
+    st.subheader("💰 Real Overnight Trades")
+    st.caption(
+        "Log trades you actually placed based on the paper suggestions. Enter your "
+        "exact fill price on entry and exit — P&L is computed from your real prices. "
+        "Multiple trades on the same ticker are allowed — each is tracked independently."
+    )
+
+    _on_all_trades_raw = db.load_overnight_paper_trades()
+    _on_real_all    = [t for t in _on_all_trades_raw if t.get("source") == "real"]
+    _on_real_open   = [t for t in _on_real_all if t.get("status") == "open"]
+    _on_real_closed = [t for t in _on_real_all if t.get("status") == "closed"]
+
+    with st.expander("➕ Log New Real Trade", expanded=len(_on_real_open) == 0):
+        with st.form("on_real_log_form", clear_on_submit=True):
+            _orlc1, _orlc2 = st.columns(2)
+            _orl_ticker  = _orlc1.text_input("Ticker (e.g. AAPL)").upper().strip()
+            _orl_date    = _orlc2.date_input("Entry date", value=date.today())
+            _orlc3, _orlc4 = st.columns(2)
+            _orl_price   = _orlc3.number_input("Entry price — your fill ($)", min_value=0.0001,
+                                                value=100.0, step=0.01, format="%.4f")
+            _orl_dollars = _orlc4.number_input("Dollar amount to invest ($)",
+                                                min_value=1.0, value=1000.0, step=100.0)
+            if st.form_submit_button("💾 Log Trade", type="primary"):
+                if not _orl_ticker:
+                    st.error("Ticker is required.")
+                else:
+                    import uuid as _uuid_on
+                    _orl_shares = round(_orl_dollars / _orl_price, 4) if _orl_price > 0 else 0
+                    db.add_overnight_paper_trade({
+                        "id"         : str(_uuid_on.uuid4()),
+                        "ticker"     : _orl_ticker,
+                        "entry_date" : _orl_date.isoformat(),
+                        "entry_price": round(_orl_price, 4),
+                        "shares"     : _orl_shares,
+                        "dollars"    : round(_orl_price * _orl_shares, 2),
+                        "status"     : "open",
+                        "source"     : "real",
+                        "placed_at"  : datetime.now(timezone.utc).isoformat(),
+                    })
+                    st.success(
+                        f"Logged: {_orl_ticker} @ ${_orl_price:.4f} · "
+                        f"{_orl_shares:.4f} shares · ${_orl_price * _orl_shares:.2f}"
+                    )
+                    st.rerun()
+
+    if _on_real_open:
+        st.markdown(f"**Open positions ({len(_on_real_open)})**")
+        _orl_open_rows = []
+        for _ort in _on_real_open:
+            _ort_ep = float(_ort.get("entry_price") or 0)
+            _ort_sh = float(_ort.get("shares") or 0)
+            _orl_open_rows.append({
+                "Ticker"     : _ort["ticker"],
+                "Entry Date" : _ort.get("entry_date", ""),
+                "Entry $"    : _ort_ep,
+                "Shares"     : _ort_sh,
+                "Invested $" : round(_ort_ep * _ort_sh, 2),
+            })
+        st.dataframe(
+            pd.DataFrame(_orl_open_rows),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "Entry $"   : st.column_config.NumberColumn(format="$%.4f"),
+                "Shares"    : st.column_config.NumberColumn(format="%.4f"),
+                "Invested $": st.column_config.NumberColumn(format="$%.2f"),
+            },
+        )
+
+        st.caption("Close a position with your actual open-price fill:")
+        for _ort in _on_real_open:
+            _ort_ep = float(_ort.get("entry_price") or 0)
+            with st.expander(
+                f"✅ Close {_ort['ticker']} — entered ${_ort_ep:.4f} on {_ort.get('entry_date', '?')}"
+            ):
+                with st.form(f"on_close_real_{_ort['id']}"):
+                    _ort_exit_px = st.number_input(
+                        "Exit price — your fill ($)", min_value=0.0001,
+                        value=_ort_ep, step=0.01, format="%.4f",
+                    )
+                    _ort_exit_dt = st.date_input("Exit date", value=date.today())
+                    if st.form_submit_button("Close Trade"):
+                        try:
+                            db.close_overnight_real_trade(
+                                _ort["id"],
+                                round(float(_ort_exit_px), 4),
+                                _ort_exit_dt.isoformat(),
+                            )
+                            _ort_pnl = (_ort_exit_px - _ort_ep) / _ort_ep * 100 if _ort_ep > 0 else 0
+                            st.success(
+                                f"Closed {_ort['ticker']} @ ${_ort_exit_px:.4f} "
+                                f"| P&L {_ort_pnl:+.3f}%"
+                            )
+                            st.rerun()
+                        except Exception as _ort_ce:
+                            st.error(f"Close failed: {_ort_ce}")
+
+    if _on_real_closed:
+        _orl_cdf = pd.DataFrame(_on_real_closed)
+        _orl_total  = float((_orl_cdf["pnl_dollars"].fillna(0)).sum())
+        _orl_avgpct = float((_orl_cdf["pnl_pct"].fillna(0)).mean())
+        _orl_wins   = int((_orl_cdf["pnl_pct"].fillna(0) > 0).sum())
+        _orl_wr     = _orl_wins / len(_on_real_closed) * 100
+
+        _orcm1, _orcm2, _orcm3, _orcm4 = st.columns(4)
+        _orcm1.metric("Total P&L",  f"${_orl_total:+.2f}")
+        _orcm2.metric("Avg return", f"{_orl_avgpct:+.3f}%")
+        _orcm3.metric("Win rate",   f"{_orl_wr:.1f}%")
+        _orcm4.metric("Closed",     str(len(_on_real_closed)))
+
+        _orl_show = [c for c in [
+            "ticker", "entry_date", "entry_price", "exit_date", "exit_price",
+            "pnl_pct", "pnl_dollars",
+        ] if c in _orl_cdf.columns]
+        _orl_disp = (
+            _orl_cdf[_orl_show].sort_values("exit_date", ascending=False)
+            if "exit_date" in _orl_show else _orl_cdf[_orl_show]
+        )
+        st.dataframe(
+            _orl_disp,
+            hide_index=True, use_container_width=True,
+            column_config={
+                "ticker"      : st.column_config.TextColumn("Ticker"),
+                "entry_date"  : st.column_config.DateColumn("Entry Date"),
+                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
+                "exit_date"   : st.column_config.DateColumn("Exit Date"),
+                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
+                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
+                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+            },
+        )
+    elif not _on_real_all:
+        st.info("No real trades logged yet. Use the form above after placing an order.")
 
     # ── Scanner results ────────────────────────────────────────────────────────
     if "on_scan_result" in st.session_state:
