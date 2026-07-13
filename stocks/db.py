@@ -340,6 +340,8 @@ def save_conviction_positions(positions: list[dict]) -> None:
                 rows.append(known)
             if rows:
                 import math as _math
+                # Strip NaN/Inf floats before upsert — JSON serialization rejects them
+                # and the Supabase client will raise, silently falling back to local file.
                 def _clean(v):
                     if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)):
                         return None
@@ -357,7 +359,10 @@ _MODEL_CACHE_DIR = Path("/tmp/trading_models")
 
 
 def get_stock_file(filename: str, local_root: Path | None = None) -> Path | None:
-    """Return path to a stock model file, downloading from Supabase Storage if needed."""
+    """Return path to a stock model file, downloading from Supabase Storage if needed.
+
+    Priority: local_root/filename, then /tmp cache, then Supabase Storage 'stock-models'.
+    """
     if local_root:
         local_path = local_root / filename
         if local_path.exists():
@@ -476,6 +481,34 @@ def close_overnight_paper_trade(trade_id: str, exit_price: float, exit_date: str
         if t.get("id") == trade_id:
             t.update(updates)
     _save_json(_OVERNIGHT_PAPER_TRADES_JSON, trades)
+
+
+def close_overnight_real_trade(trade_id: str, exit_price: float, exit_date: str) -> None:
+    """Close a real overnight trade. Fetches entry_price/shares to compute P&L."""
+    client = _get_client()
+    rows = []
+    if client:
+        try:
+            resp = client.table("overnight_paper_trades").select("*").eq("id", trade_id).execute()
+            rows = resp.data or []
+        except Exception as e:
+            logger.warning(f"close_overnight_real_trade fetch failed: {e}")
+    if not rows:
+        rows = [t for t in _load_json(_OVERNIGHT_PAPER_TRADES_JSON) if t.get("id") == trade_id]
+    if not rows:
+        raise ValueError(f"overnight trade {trade_id} not found")
+    r = rows[0]
+    entry_price = float(r.get("entry_price") or 0)
+    shares      = float(r.get("shares") or 0)
+    pnl_pct     = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
+    pnl_dollars = round((exit_price - entry_price) * shares, 2)
+    close_overnight_paper_trade(
+        trade_id    = trade_id,
+        exit_price  = exit_price,
+        exit_date   = exit_date,
+        pnl_pct     = round(pnl_pct * 100, 4),
+        pnl_dollars = pnl_dollars,
+    )
 
 
 # ── SMA trades ────────────────────────────────────────────────────────────────
@@ -606,7 +639,10 @@ _FUND_CACHE_COLS = {
 
 
 def get_fundamental_cache(ticker: str) -> dict | None:
-    """Return cached fundamentals for ticker if within TTL, else None."""
+    """Return cached fundamentals for ticker if within TTL, else None.
+
+    Returns None on any error so callers always fall back to live fetch.
+    """
     from datetime import date as _date
     import math
     client = _get_client()
@@ -636,7 +672,11 @@ def get_fundamental_cache(ticker: str) -> dict | None:
 
 
 def upsert_fundamental_cache(ticker: str, data: dict) -> None:
-    """Write or overwrite the fundamental cache row for ticker."""
+    """Write or overwrite the fundamental cache row for ticker.
+
+    Silently skips NaN/inf/None values so the column stays NULL rather than
+    storing a sentinel that would look like real data.
+    """
     import math
     client = _get_client()
     if not client:
