@@ -2887,38 +2887,85 @@ with tab_overnight:
 
     if _on_real_closed:
         _orl_cdf = pd.DataFrame(_on_real_closed)
-        _orl_total  = float((_orl_cdf["pnl_dollars"].fillna(0)).sum())
-        _orl_avgpct = float((_orl_cdf["pnl_pct"].fillna(0)).mean())
+        # Coerce numerics (Supabase may return strings/Decimals) and derive invested $
+        for _c in ["entry_price", "exit_price", "shares", "dollars", "pnl_pct", "pnl_dollars"]:
+            if _c in _orl_cdf.columns:
+                _orl_cdf[_c] = pd.to_numeric(_orl_cdf[_c], errors="coerce")
+        if "dollars" in _orl_cdf.columns:
+            _orl_cdf["invested"] = _orl_cdf["dollars"]
+        else:
+            _orl_cdf["invested"] = float("nan")
+        _need = _orl_cdf["invested"].isna()
+        if _need.any() and {"entry_price", "shares"} <= set(_orl_cdf.columns):
+            _orl_cdf.loc[_need, "invested"] = (
+                _orl_cdf.loc[_need, "entry_price"].fillna(0) * _orl_cdf.loc[_need, "shares"].fillna(0)
+            )
+
+        _orl_total  = float(_orl_cdf["pnl_dollars"].fillna(0).sum())
+        _orl_avgpct = float(_orl_cdf["pnl_pct"].fillna(0).mean())
         _orl_wins   = int((_orl_cdf["pnl_pct"].fillna(0) > 0).sum())
         _orl_wr     = _orl_wins / len(_on_real_closed) * 100
+        _orl_inv    = float(_orl_cdf["invested"].fillna(0).sum())
 
-        _orcm1, _orcm2, _orcm3, _orcm4 = st.columns(4)
-        _orcm1.metric("Total P&L",  f"${_orl_total:+.2f}")
-        _orcm2.metric("Avg return", f"{_orl_avgpct:+.3f}%")
-        _orcm3.metric("Win rate",   f"{_orl_wr:.1f}%")
-        _orcm4.metric("Closed",     str(len(_on_real_closed)))
+        _orcm1, _orcm2, _orcm3, _orcm4, _orcm5 = st.columns(5)
+        _orcm1.metric("Total Invested", f"${_orl_inv:,.2f}")
+        _orcm2.metric("Total P&L",      f"${_orl_total:+.2f}")
+        _orcm3.metric("Avg return",     f"{_orl_avgpct:+.3f}%")
+        _orcm4.metric("Win rate",       f"{_orl_wr:.1f}%")
+        _orcm5.metric("Closed",         str(len(_on_real_closed)))
 
-        _orl_show = [c for c in [
-            "ticker", "entry_date", "entry_price", "exit_date", "exit_price",
-            "pnl_pct", "pnl_dollars",
-        ] if c in _orl_cdf.columns]
-        _orl_disp = (
-            _orl_cdf[_orl_show].sort_values("exit_date", ascending=False)
-            if "exit_date" in _orl_show else _orl_cdf[_orl_show]
-        )
+        # ── Per-ticker summary ────────────────────────────────────────────────
+        st.markdown("**History by ticker**")
+        _orl_summ_rows = []
+        for _tk, _g in _orl_cdf.groupby("ticker"):
+            _orl_summ_rows.append({
+                "Ticker"      : _tk,
+                "Trades"      : len(_g),
+                "Invested $"  : round(float(_g["invested"].fillna(0).sum()), 2),
+                "Total P&L $" : round(float(_g["pnl_dollars"].fillna(0).sum()), 2),
+                "Avg P&L %"   : round(float(_g["pnl_pct"].fillna(0).mean()), 3),
+                "Win Rate %"  : round(float((_g["pnl_pct"].fillna(0) > 0).mean() * 100), 1),
+            })
+        _orl_summ = pd.DataFrame(_orl_summ_rows).sort_values("Total P&L $", ascending=False)
         st.dataframe(
-            _orl_disp,
-            hide_index=True, use_container_width=True,
+            _orl_summ, hide_index=True, use_container_width=True,
             column_config={
-                "ticker"      : st.column_config.TextColumn("Ticker"),
-                "entry_date"  : st.column_config.DateColumn("Entry Date"),
-                "entry_price" : st.column_config.NumberColumn("Entry $",  format="$%.4f"),
-                "exit_date"   : st.column_config.DateColumn("Exit Date"),
-                "exit_price"  : st.column_config.NumberColumn("Exit $",   format="$%.4f"),
-                "pnl_pct"     : st.column_config.NumberColumn("P&L %",    format="%+.3f%%"),
-                "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
+                "Trades"      : st.column_config.NumberColumn(format="%d"),
+                "Invested $"  : st.column_config.NumberColumn(format="$%.2f"),
+                "Total P&L $" : st.column_config.NumberColumn(format="$%+.2f"),
+                "Avg P&L %"   : st.column_config.NumberColumn(format="%+.3f%%"),
+                "Win Rate %"  : st.column_config.NumberColumn(format="%.1f%%"),
             },
         )
+
+        # ── Per-ticker drill-down ─────────────────────────────────────────────
+        st.caption("Expand a ticker to see its individual trades:")
+        for _tk in _orl_summ["Ticker"]:
+            _g = _orl_cdf[_orl_cdf["ticker"] == _tk]
+            _g_pnl = float(_g["pnl_dollars"].fillna(0).sum())
+            with st.expander(
+                f"{_tk} — {len(_g)} trade{'s' if len(_g) != 1 else ''} · P&L ${_g_pnl:+.2f}"
+            ):
+                _g_show = [c for c in [
+                    "entry_date", "entry_price", "invested", "exit_date", "exit_price",
+                    "pnl_pct", "pnl_dollars",
+                ] if c in _g.columns]
+                _g_disp = (
+                    _g[_g_show].sort_values("exit_date", ascending=False)
+                    if "exit_date" in _g_show else _g[_g_show]
+                )
+                st.dataframe(
+                    _g_disp, hide_index=True, use_container_width=True,
+                    column_config={
+                        "entry_date"  : st.column_config.DateColumn("Entry Date"),
+                        "entry_price" : st.column_config.NumberColumn("Entry $",    format="$%.4f"),
+                        "invested"    : st.column_config.NumberColumn("Invested $", format="$%.2f"),
+                        "exit_date"   : st.column_config.DateColumn("Exit Date"),
+                        "exit_price"  : st.column_config.NumberColumn("Exit $",     format="$%.4f"),
+                        "pnl_pct"     : st.column_config.NumberColumn("P&L %",      format="%+.3f%%"),
+                        "pnl_dollars" : st.column_config.NumberColumn("P&L $",      format="$%+.2f"),
+                    },
+                )
     elif not _on_real_all:
         st.info("No real trades logged yet. Use the form above after placing an order.")
 
