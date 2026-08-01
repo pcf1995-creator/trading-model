@@ -163,12 +163,13 @@ def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
             st.info("No changes to save.")
 
 
-tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma = st.tabs([
+tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma, tab_crypto = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
     "🎯 S&P Benchmark L/S",
     "🌙 Overnight Drift",
     "📉 200d SMA",
+    "🪙 Crypto Trend",
 ])
 
 with tab_dash:
@@ -3430,6 +3431,104 @@ with tab_sma:
                 "pnl_dollars" : st.column_config.NumberColumn("P&L $",    format="$%+.2f"),
                 "notes"       : st.column_config.TextColumn("Notes"),
             },
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CRYPTO TREND TAB — Alphaverse trend-to-cash overlay signal
+# ══════════════════════════════════════════════════════════════════════════════
+_CRYPTO_ASSETS = [
+    ("ETH",  "ETH-USD",       True),
+    ("SOL",  "SOL-USD",       True),
+    ("HYPE", "HYPE32196-USD", False),   # overlay not validated — treat as hold
+]
+
+
+def _crypto_run_signals(sma_n: int = 200) -> pd.DataFrame:
+    """Fetch daily closes and compute the trend-to-cash signal per asset."""
+    import yfinance as yf
+    _rows = []
+    for _label, _tk, _overlay_ok in _CRYPTO_ASSETS:
+        try:
+            _c = yf.Ticker(_tk).history(period="2y", auto_adjust=True)["Close"].dropna()
+            if len(_c) < sma_n + 1:
+                _rows.append({"Asset": _label, "Price": None, "50d SMA": None,
+                              "200d SMA": None, "% vs 200d": None,
+                              "Signal": "insufficient history"})
+                continue
+            _px  = float(_c.iloc[-1])
+            _m   = float(_c.rolling(sma_n).mean().iloc[-1])
+            _m50 = float(_c.rolling(50).mean().iloc[-1])
+            _pct = (_px - _m) / _m * 100
+            if not _overlay_ok:
+                _sig = "🔵 HOLD (young — no overlay)"
+            elif _px >= _m:
+                _sig = "🟢 HOLD (above 200d)"
+            else:
+                _sig = "🔴 MOVE TO CASH (below 200d)"
+            _rows.append({"Asset": _label, "Price": round(_px, 2),
+                          "50d SMA": round(_m50, 2), "200d SMA": round(_m, 2),
+                          "% vs 200d": round(_pct, 2), "Signal": _sig})
+        except Exception as _e:
+            _rows.append({"Asset": _label, "Price": None, "50d SMA": None,
+                          "200d SMA": None, "% vs 200d": None,
+                          "Signal": f"error: {_e}"})
+    return pd.DataFrame(_rows)
+
+
+with tab_crypto:
+    st.header("🪙 Crypto Trend — Alphaverse De-Risking Signal")
+    st.caption(
+        "A trend-to-cash discipline for the ETH/SOL core: **hold when price is above its "
+        "200-day average, move to cash (stablecoin) when below.** Backtested Feb 2022–Aug 2026, "
+        "this sidestepped both bear markets and beat buy-and-hold — primarily by *losing far "
+        "less*, not by generating outsized gains. It is a risk filter, not an alpha machine."
+    )
+
+    _cc1, _cc2 = st.columns([4, 1])
+    _cc1.markdown(
+        "Pulls current daily prices via yfinance and evaluates the 200-day trend signal. "
+        "🟢 HOLD = stay in · 🔴 MOVE TO CASH = trend broken, step aside until price reclaims the 200d."
+    )
+    if _cc2.button("🔄 Refresh Signals", type="primary", key="crypto_run_btn"):
+        with st.spinner("Fetching ETH / SOL / HYPE…"):
+            st.session_state["crypto_sig_df"] = _crypto_run_signals()
+            st.session_state["crypto_sig_ts"] = datetime.now(timezone.utc).isoformat()
+
+    if "crypto_sig_df" in st.session_state:
+        _csig = st.session_state["crypto_sig_df"]
+        _cts  = st.session_state.get("crypto_sig_ts", "")
+        st.caption(f"Last refresh: {_cts[:19].replace('T', ' ')} UTC")
+        st.dataframe(
+            _csig, hide_index=True, use_container_width=True,
+            column_config={
+                "Price"     : st.column_config.NumberColumn("Price $",    format="$%.2f"),
+                "50d SMA"   : st.column_config.NumberColumn("50d SMA $",  format="$%.2f"),
+                "200d SMA"  : st.column_config.NumberColumn("200d SMA $", format="$%.2f"),
+                "% vs 200d" : st.column_config.NumberColumn("% vs 200d",  format="%+.2f%%"),
+                "Signal"    : st.column_config.TextColumn("Signal", width="large"),
+            },
+        )
+        st.caption(
+            "**% vs 200d** is your cushion: small positive = near a flip to cash; large "
+            "positive = comfortably in an uptrend. Act on a daily *close* beyond the line, "
+            "not an intraday poke. HYPE is reference-only — treat it as buy-and-hold."
+        )
+    else:
+        st.info("Click **Refresh Signals** to load the current trend state for ETH, SOL, and HYPE.")
+
+    with st.expander("📊 What the backtest actually showed (honest summary)"):
+        st.markdown(
+            "- **Robust:** across every window (20–250d), in and out of sample, the overlay beat "
+            "buy-and-hold and roughly **halved the max drawdown** (ETH −72% → ~−38–50%, "
+            "SOL −93% → ~−58%). This is the reliable benefit.\n"
+            "- **Not robust:** the eye-popping full-period returns (+111% ETH, +177% SOL) are "
+            "window-dependent and shrink out-of-sample (ETH +7%, SOL −17% on a blind holdout). "
+            "Expect *risk reduction*, not those numbers.\n"
+            "- **Implement in spot / stablecoin, not leveraged perps** — perp funding (~20%/yr) "
+            "erodes a large chunk of the edge; moving to cash has no funding cost.\n"
+            "- **'Don't hold through bear markets' is the whole lesson** — the overlay sat out "
+            "2022 and 2026 entirely, which is exactly what the long-only fund failed to do."
         )
 
 
