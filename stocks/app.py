@@ -3531,6 +3531,194 @@ with tab_crypto:
             "2022 and 2026 entirely, which is exactly what the long-only fund failed to do."
         )
 
+    # ── Paper Strategy Tracker ────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📓 Paper Strategy Tracker")
+
+    def _c_market() -> dict:
+        """Current price + 200d signal per asset."""
+        import yfinance as yf
+        _out = {}
+        for _lab, _tk, _ok in _CRYPTO_ASSETS:
+            try:
+                _c = yf.Ticker(_tk).history(period="2y", auto_adjust=True)["Close"].dropna()
+                _px = float(_c.iloc[-1])
+                _m  = float(_c.rolling(200).mean().iloc[-1]) if len(_c) >= 201 else None
+                _hold = True if not _ok else (_m is not None and _px >= _m)
+                _out[_lab] = {"price": _px, "sma200": _m, "hold": _hold, "overlay": _ok}
+            except Exception:
+                _out[_lab] = {"price": None, "sma200": None, "hold": None, "overlay": _ok}
+        return _out
+
+    def _c_sleeve_val(_sl: dict, _price, _apy: float):
+        """Current $ value of a sleeve. Cash sleeves accrue USDC yield daily."""
+        if _sl["mode"] == "coin":
+            return (_sl.get("units") or 0) * _price if _price else None
+        _since = date.fromisoformat(_sl["since"])
+        _days  = max(0, (date.today() - _since).days)
+        return (_sl.get("cash") or 0) * ((1 + _apy / 100 / 365) ** _days)
+
+    _cstrat = db.load_crypto_strategy()
+
+    if not _cstrat or not _cstrat.get("started"):
+        st.markdown(
+            "Start a **paper portfolio** that follows the 200-day signal: hold each sleeve "
+            "when it's above its 200d, or sit in **USDC (earning yield)** when below. "
+            "HYPE is always held. Positions are set from today's live signal; you log flips manually."
+        )
+        with st.form("crypto_strat_init"):
+            _si1, _si2 = st.columns(2)
+            _init_cap = _si1.number_input("Starting capital ($)", min_value=100.0, value=50000.0, step=1000.0)
+            _init_apy = _si2.number_input("USDC yield in cash (APY %)", min_value=0.0, value=5.0, step=0.5,
+                                          help="Assumed annual yield on stablecoins while a sleeve is in cash.")
+            _sw1, _sw2, _sw3 = st.columns(3)
+            _w_eth  = _sw1.number_input("ETH weight %",  min_value=0.0, max_value=100.0, value=60.0, step=5.0)
+            _w_sol  = _sw2.number_input("SOL weight %",  min_value=0.0, max_value=100.0, value=20.0, step=5.0)
+            _w_hype = _sw3.number_input("HYPE weight %", min_value=0.0, max_value=100.0, value=20.0, step=5.0)
+            st.caption("Weights must sum to 100%. Positions are set from today's live signal on start.")
+            if st.form_submit_button("🚀 Start Paper Strategy", type="primary"):
+                _wsum = _w_eth + _w_sol + _w_hype
+                if abs(_wsum - 100.0) > 0.01:
+                    st.error(f"Weights sum to {_wsum:.0f}% — must total 100%.")
+                else:
+                    with st.spinner("Fetching prices & signals…"):
+                        _mkt = _c_market()
+                    if any(_mkt[_a]["price"] is None for _a in ("ETH", "SOL", "HYPE")):
+                        st.error("Could not fetch all prices — try again in a moment.")
+                    else:
+                        _w = {"ETH": _w_eth / 100, "SOL": _w_sol / 100, "HYPE": _w_hype / 100}
+                        _today = date.today().isoformat()
+                        _sleeves, _moves, _startpx = {}, [], {}
+                        for _a in ("ETH", "SOL", "HYPE"):
+                            _px = _mkt[_a]["price"]; _doll = _init_cap * _w[_a]; _startpx[_a] = round(_px, 6)
+                            if _mkt[_a]["hold"]:
+                                _sleeves[_a] = {"mode": "coin", "units": _doll / _px, "cash": 0.0,
+                                                "entry_price": round(_px, 6), "since": _today}
+                                _moves.append({"date": _today, "asset": _a, "action": "init · hold",
+                                               "price": round(_px, 6), "value": round(_doll, 2)})
+                            else:
+                                _sleeves[_a] = {"mode": "cash", "units": 0.0, "cash": round(_doll, 2),
+                                                "entry_price": None, "since": _today}
+                                _moves.append({"date": _today, "asset": _a, "action": "init · USDC",
+                                               "price": round(_px, 6), "value": round(_doll, 2)})
+                        db.save_crypto_strategy({
+                            "started": True, "start_date": _today, "capital": _init_cap, "weights": _w,
+                            "usdc_apy": _init_apy, "start_prices": _startpx, "sleeves": _sleeves, "moves": _moves,
+                        })
+                        st.success("Paper strategy started.")
+                        st.rerun()
+    else:
+        _apy = float(_cstrat.get("usdc_apy", 5.0))
+        _cap = float(_cstrat.get("capital", 50000.0))
+        _w   = _cstrat.get("weights", {"ETH": 0.6, "SOL": 0.2, "HYPE": 0.2})
+        _spx = _cstrat.get("start_prices", {})
+        _sleeves = _cstrat["sleeves"]
+
+        _cr1, _cr2 = st.columns([4, 1])
+        _cr1.caption(
+            f"Started {_cstrat.get('start_date')} · ${_cap:,.0f} · "
+            f"{_w.get('ETH',0)*100:.0f}/{_w.get('SOL',0)*100:.0f}/{_w.get('HYPE',0)*100:.0f} "
+            f"ETH/SOL/HYPE · USDC yield {_apy:.1f}%"
+        )
+        if _cr2.button("🔄 Update", type="primary", key="crypto_strat_refresh") or "crypto_strat_mkt" not in st.session_state:
+            with st.spinner("Fetching prices…"):
+                st.session_state["crypto_strat_mkt"] = _c_market()
+        _mkt = st.session_state["crypto_strat_mkt"]
+
+        _rows, _total, _bench = [], 0.0, 0.0
+        for _a in ("ETH", "SOL", "HYPE"):
+            _sl = _sleeves[_a]; _price = _mkt.get(_a, {}).get("price")
+            _val = _c_sleeve_val(_sl, _price, _apy)
+            if _val is not None: _total += _val
+            _bv = (_cap * _w[_a] / _spx[_a] * _price) if (_spx.get(_a) and _price) else None
+            if _bv is not None: _bench += _bv
+            _hold_now = _mkt.get(_a, {}).get("hold")
+            _rows.append({
+                "Sleeve": _a,
+                "State": "🟢 Held" if _sl["mode"] == "coin" else "🏦 USDC",
+                "Units / Cash": (round(_sl.get("units") or 0, 4) if _sl["mode"] == "coin"
+                                 else round(_c_sleeve_val(_sl, None, _apy), 2)),
+                "Price": _price,
+                "Value $": round(_val, 2) if _val is not None else None,
+                "Signal now": ("HOLD" if _hold_now else "CASH") if _hold_now is not None else "—",
+            })
+
+        _ret = _total - _cap; _retpct = (_ret / _cap * 100) if _cap else 0
+        _bretpct = ((_bench - _cap) / _cap * 100) if _cap else 0
+        _mm1, _mm2, _mm3, _mm4 = st.columns(4)
+        _mm1.metric("Portfolio value", f"${_total:,.2f}", f"{_retpct:+.2f}%")
+        _mm2.metric("Total P&L", f"${_ret:+,.2f}")
+        _mm3.metric("Buy & Hold 60/20/20", f"${_bench:,.2f}", f"{_bretpct:+.2f}%")
+        _mm4.metric("Overlay vs B&H", f"${_total - _bench:+,.2f}")
+
+        st.dataframe(
+            pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+            column_config={
+                "Price":   st.column_config.NumberColumn(format="$%.2f"),
+                "Value $": st.column_config.NumberColumn(format="$%.2f"),
+            },
+        )
+
+        _todo = []
+        for _a in ("ETH", "SOL", "HYPE"):
+            if not _mkt.get(_a, {}).get("overlay"):
+                continue
+            _hold = _mkt.get(_a, {}).get("hold")
+            if _hold is None:
+                continue
+            _mode = _sleeves[_a]["mode"]
+            if _hold and _mode == "cash":
+                _todo.append(f"**{_a}**: signal is HOLD but you're in USDC → record a **buy**.")
+            if (not _hold) and _mode == "coin":
+                _todo.append(f"**{_a}**: signal is CASH but you're holding → record a **sell to USDC**.")
+        if _todo:
+            st.warning("**Action needed:**\n\n" + "\n\n".join(_todo))
+        else:
+            st.success("✅ All sleeves match their current signal — no action needed.")
+
+        st.markdown("**Record a signal flip** (editable date & price if you acted late)")
+        for _a in ("ETH", "SOL", "HYPE"):
+            _sl = _sleeves[_a]; _price = _mkt.get(_a, {}).get("price") or 0.0
+            _to_cash = _sl["mode"] == "coin"
+            with st.expander(f"{_a} → {'sell to USDC' if _to_cash else 'buy back in'}"):
+                with st.form(f"crypto_flip_{_a}"):
+                    _fp = st.number_input("Fill price ($)", min_value=0.0001,
+                                          value=float(_price) if _price else 1.0, step=0.01, format="%.4f")
+                    _fd = st.date_input("Date", value=date.today())
+                    if st.form_submit_button("Record"):
+                        _dd = _fd.isoformat()
+                        if _to_cash:
+                            _cash = (_sl.get("units") or 0) * _fp
+                            _sl.update({"mode": "cash", "cash": round(_cash, 2), "units": 0.0,
+                                        "entry_price": None, "since": _dd})
+                            _cstrat["moves"].append({"date": _dd, "asset": _a, "action": "sell → USDC",
+                                                     "price": round(_fp, 6), "value": round(_cash, 2)})
+                        else:
+                            _since = date.fromisoformat(_sl["since"]); _days = max(0, (_fd - _since).days)
+                            _cash = (_sl.get("cash") or 0) * ((1 + _apy / 100 / 365) ** _days)
+                            _sl.update({"mode": "coin", "units": (_cash / _fp if _fp > 0 else 0), "cash": 0.0,
+                                        "entry_price": round(_fp, 6), "since": _dd})
+                            _cstrat["moves"].append({"date": _dd, "asset": _a, "action": "buy",
+                                                     "price": round(_fp, 6), "value": round(_cash, 2)})
+                        db.save_crypto_strategy(_cstrat)
+                        st.success(f"Recorded {_a} {'sell' if _to_cash else 'buy'} @ ${_fp:.4f}")
+                        st.rerun()
+
+        with st.expander("📜 Moves log & reset"):
+            if _cstrat.get("moves"):
+                _mv = pd.DataFrame(_cstrat["moves"])
+                st.dataframe(
+                    _mv.sort_values("date", ascending=False), hide_index=True, use_container_width=True,
+                    column_config={
+                        "price": st.column_config.NumberColumn("Price", format="$%.4f"),
+                        "value": st.column_config.NumberColumn("Value $", format="$%.2f"),
+                    },
+                )
+            if st.button("🗑️ Reset strategy (clears everything)", key="crypto_strat_reset"):
+                db.save_crypto_strategy({"started": False})
+                st.session_state.pop("crypto_strat_mkt", None)
+                st.rerun()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE TAB
