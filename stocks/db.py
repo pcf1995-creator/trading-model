@@ -511,6 +511,46 @@ def close_overnight_real_trade(trade_id: str, exit_price: float, exit_date: str)
     )
 
 
+# ── Crypto trend paper strategy ─────────────────────────────────────────────────
+#
+# Single-row JSON state store for the ETH/SOL/HYPE 200d trend-to-cash paper
+# strategy (Crypto Trend tab). Supabase table DDL (run once):
+#
+#   CREATE TABLE IF NOT EXISTS crypto_strategy (
+#       id          TEXT PRIMARY KEY,
+#       state       JSONB NOT NULL DEFAULT '{}'::jsonb,
+#       updated_at  TIMESTAMPTZ DEFAULT NOW()
+#   );
+#
+_CRYPTO_STRATEGY_JSON = ROOT / "crypto_strategy.json"
+
+
+def load_crypto_strategy() -> dict | None:
+    client = _get_client()
+    if client:
+        try:
+            resp = client.table("crypto_strategy").select("state").eq("id", "default").execute()
+            rows = resp.data or []
+            return (rows[0].get("state") or None) if rows else None
+        except Exception as e:
+            logger.warning(f"load_crypto_strategy failed: {e}")
+    data = _load_json(_CRYPTO_STRATEGY_JSON)
+    return data or None
+
+
+def save_crypto_strategy(state: dict) -> None:
+    row = {"id": "default", "state": state,
+           "updated_at": datetime.now(timezone.utc).isoformat()}
+    client = _get_client()
+    if client:
+        try:
+            client.table("crypto_strategy").upsert(row, on_conflict="id").execute()
+            return
+        except Exception as e:
+            logger.warning(f"save_crypto_strategy failed: {e}")
+    _save_json(_CRYPTO_STRATEGY_JSON, state)
+
+
 # ── SMA trades ────────────────────────────────────────────────────────────────
 #
 # Supabase table DDL (run once):
