@@ -72,29 +72,44 @@ def load_universe() -> list[str]:
     raise RuntimeError("No scanner universe available")
 
 
-def fetch_sma_data(ticker: str) -> dict | None:
-    """Fetch 200-day SMA data for ticker. Returns None on insufficient history."""
-    try:
-        hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
-        closes = hist["Close"].dropna()
-        if len(closes) < SMA_PERIOD + 1:
-            return None
-        sma = closes.rolling(SMA_PERIOD).mean()
-        prev_close  = float(closes.iloc[-2])
-        today_close = float(closes.iloc[-1])
-        prev_sma    = float(sma.iloc[-2])
-        today_sma   = float(sma.iloc[-1])
-        return {
-            "ticker":      ticker,
-            "prev_close":  prev_close,
-            "today_close": today_close,
-            "prev_sma":    prev_sma,
-            "today_sma":   today_sma,
-            "pct_vs_sma":  (today_close - today_sma) / today_sma * 100,
-        }
-    except Exception as e:
-        print(f"[sma_scanner] {ticker} fetch failed: {e}")
-        return None
+SMA_FAST = 50
+
+
+def fetch_all_sma(tickers: list[str]) -> dict[str, dict]:
+    """Batch-download 1yr of closes for every ticker at once and compute 50/200d SMAs.
+
+    Far faster and more robust than per-ticker requests (which hang/rate-limit on
+    ~500 names and get the GitHub Actions job cancelled).
+    """
+    data = yf.download(tickers, period="1y", auto_adjust=True, progress=False, threads=True)
+    if data.empty:
+        return {}
+    closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+
+    out: dict[str, dict] = {}
+    for tk in tickers:
+        try:
+            s = closes[tk].dropna() if tk in closes.columns else None
+            if s is None or len(s) < SMA_PERIOD + 1:
+                continue
+            sma200 = s.rolling(SMA_PERIOD).mean()
+            sma50  = s.rolling(SMA_FAST).mean()
+            today_close = float(s.iloc[-1])
+            today_sma   = float(sma200.iloc[-1])
+            out[tk] = {
+                "ticker":       tk,
+                "prev_close":   float(s.iloc[-2]),
+                "today_close":  today_close,
+                "prev_sma":     float(sma200.iloc[-2]),
+                "today_sma":    today_sma,
+                "prev_sma50":   float(sma50.iloc[-2]),
+                "today_sma50":  float(sma50.iloc[-1]),
+                "pct_vs_sma":   (today_close - today_sma) / today_sma * 100,
+            }
+        except Exception as e:
+            print(f"[sma_scanner] {tk} parse failed: {e}")
+            continue
+    return out
 
 
 def _table_rows(rows: list[dict]) -> str:
@@ -112,7 +127,22 @@ def _table_rows(rows: list[dict]) -> str:
     return out
 
 
-def send_email(crossunders: list[dict], approaching: list[dict]) -> None:
+def _golden_rows(rows: list[dict]) -> str:
+    """Rows for the golden-cross table: 50d SMA, 200d SMA, close."""
+    out = ""
+    for r in rows:
+        out += (
+            f"<tr>"
+            f"<td><b>{r['ticker']}</b></td>"
+            f"<td>${r['today_close']:.2f}</td>"
+            f"<td>${r['today_sma50']:.2f}</td>"
+            f"<td>${r['today_sma']:.2f}</td>"
+            f"</tr>"
+        )
+    return out
+
+
+def send_email(golden: list[dict], crossunders: list[dict], approaching: list[dict]) -> None:
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_APP_PASSWORD", "")
     if not smtp_user or not smtp_pass:
@@ -120,15 +150,26 @@ def send_email(crossunders: list[dict], approaching: list[dict]) -> None:
         return
 
     today = date.today().isoformat()
-    n = len(crossunders)
+    g = len(golden)
     subject = (
-        f"SMA Alert {today}: {n} ticker{'s' if n != 1 else ''} crossed below 200-day SMA"
+        f"SMA Alert {today}: {g} golden cross{'es' if g != 1 else ''} 🟢"
+        if golden
+        else f"SMA Alert {today}: {len(crossunders)} crossed below 200d SMA"
         if crossunders
         else f"SMA Scan {today}: {len(approaching)} approaching 200d SMA"
         if approaching
         else f"SMA Scan {today}: No alerts"
     )
 
+    golden_section = (
+        "<p>None today.</p>"
+        if not golden
+        else f"""
+        <table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse'>
+        <tr style='background:#e6f4ea'><th>Ticker</th><th>Close</th><th>50d SMA</th><th>200d SMA</th></tr>
+        {_golden_rows(golden)}
+        </table>"""
+    )
     cross_section = (
         "<p>None today.</p>"
         if not crossunders
@@ -153,6 +194,10 @@ def send_email(crossunders: list[dict], approaching: list[dict]) -> None:
     <h2 style='margin-bottom:4px'>200-Day SMA Scanner — {today}</h2>
     <p style='color:gray;margin-top:0'>S&amp;P 500 constituents with market cap &ge; $10B</p>
 
+    <h3>🟢 Golden Cross — 50d crossed above 200d ({len(golden)})</h3>
+    <p style='color:gray;margin-top:0;font-size:12px'>Bullish trend-confirmation buy signal — the names to act on.</p>
+    {golden_section}
+
     <h3>🔴 Crossed Below 200-Day SMA ({len(crossunders)})</h3>
     {cross_section}
 
@@ -160,6 +205,7 @@ def send_email(crossunders: list[dict], approaching: list[dict]) -> None:
     {approach_section}
 
     <p style='color:gray;font-size:11px;margin-top:24px'>
+    Golden cross = 50d SMA closed at/below the 200d yesterday and above it today (first-signal only).<br>
     Crossunder = closed above 200d SMA yesterday, at/below today (first-signal only).
     </p>
     </body></html>
@@ -184,13 +230,18 @@ def main() -> None:
     universe = load_universe()
     print(f"[sma_scanner] Scanning {len(universe)} tickers…")
 
+    all_data = fetch_all_sma(universe)
+    print(f"[sma_scanner] Computed SMAs for {len(all_data)} tickers")
+
+    golden: list[dict] = []
     crossunders: list[dict] = []
     approaching: list[dict] = []
 
-    for ticker in universe:
-        data = fetch_sma_data(ticker)
-        if data is None:
-            continue
+    for ticker, data in all_data.items():
+        # Golden cross: 50d SMA closed at/below 200d yesterday, above it today
+        if data["prev_sma50"] <= data["prev_sma"] and data["today_sma50"] > data["today_sma"]:
+            golden.append(data)
+            print(f"[sma_scanner] GOLDEN CROSS {ticker}: 50d={data['today_sma50']:.2f} > 200d={data['today_sma']:.2f}")
         # First crossunder: was above SMA yesterday, at/below today
         if data["prev_close"] > data["prev_sma"] and data["today_close"] <= data["today_sma"]:
             crossunders.append(data)
@@ -200,13 +251,14 @@ def main() -> None:
             approaching.append(data)
             print(f"[sma_scanner] APPROACHING {ticker}: {data['pct_vs_sma']:+.2f}% above SMA")
 
+    golden.sort(key=lambda r: r["ticker"])
     crossunders.sort(key=lambda r: r["pct_vs_sma"])
     approaching.sort(key=lambda r: r["pct_vs_sma"])
 
-    print(f"[sma_scanner] {len(crossunders)} crossunders, {len(approaching)} approaching")
+    print(f"[sma_scanner] {len(golden)} golden crosses, {len(crossunders)} crossunders, {len(approaching)} approaching")
 
-    if crossunders or approaching:
-        send_email(crossunders, approaching)
+    if golden or crossunders or approaching:
+        send_email(golden, crossunders, approaching)
     else:
         print("[sma_scanner] No alerts — no email sent")
 
