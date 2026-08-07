@@ -116,12 +116,19 @@ def _table_rows(rows: list[dict]) -> str:
     out = ""
     for r in rows:
         color = "red" if r["pct_vs_sma"] <= 0 else "darkorange"
+        uptrend = r.get("today_sma50", 0) > r.get("today_sma", 0)
+        trend = (
+            "<span style='color:green'>🟢 dip in uptrend</span>"
+            if uptrend
+            else "<span style='color:#b00'>🔴 downtrend — avoid</span>"
+        )
         out += (
             f"<tr>"
             f"<td><b>{r['ticker']}</b></td>"
             f"<td>${r['today_close']:.2f}</td>"
             f"<td>${r['today_sma']:.2f}</td>"
             f"<td style='color:{color}'>{r['pct_vs_sma']:+.2f}%</td>"
+            f"<td>{trend}</td>"
             f"</tr>"
         )
     return out
@@ -175,7 +182,7 @@ def send_email(golden: list[dict], crossunders: list[dict], approaching: list[di
         if not crossunders
         else f"""
         <table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse'>
-        <tr style='background:#f0f0f0'><th>Ticker</th><th>Close</th><th>200d SMA</th><th>vs SMA</th></tr>
+        <tr style='background:#f0f0f0'><th>Ticker</th><th>Close</th><th>200d SMA</th><th>vs SMA</th><th>50d vs 200d</th></tr>
         {_table_rows(crossunders)}
         </table>"""
     )
@@ -184,7 +191,7 @@ def send_email(golden: list[dict], crossunders: list[dict], approaching: list[di
         if not approaching
         else f"""
         <table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse'>
-        <tr style='background:#f0f0f0'><th>Ticker</th><th>Close</th><th>200d SMA</th><th>vs SMA</th></tr>
+        <tr style='background:#f0f0f0'><th>Ticker</th><th>Close</th><th>200d SMA</th><th>vs SMA</th><th>50d vs 200d</th></tr>
         {_table_rows(approaching)}
         </table>"""
     )
@@ -198,15 +205,19 @@ def send_email(golden: list[dict], crossunders: list[dict], approaching: list[di
     <p style='color:gray;margin-top:0;font-size:12px'>Bullish trend-confirmation buy signal — the names to act on.</p>
     {golden_section}
 
-    <h3>🔴 Crossed Below 200-Day SMA ({len(crossunders)})</h3>
+    <h3>🔴 Crossed Below 200-Day SMA ({len(crossunders)}) — watch list, not a buy</h3>
+    <p style='color:gray;margin-top:0;font-size:12px'>Only a dip-buy candidate when the 50d is still
+    above the 200d (🟢). If the 50d is below the 200d (🔴), it's a downtrend — likely a falling knife.</p>
     {cross_section}
 
     <h3>🟡 Approaching 200-Day SMA — within 2% above ({len(approaching)})</h3>
     {approach_section}
 
     <p style='color:gray;font-size:11px;margin-top:24px'>
-    Golden cross = 50d SMA closed at/below the 200d yesterday and above it today (first-signal only).<br>
-    Crossunder = closed above 200d SMA yesterday, at/below today (first-signal only).
+    <b>Golden cross</b> = 50d SMA closed at/below the 200d yesterday and above it today (first-signal only) —
+    the evidence-backed buy.<br>
+    <b>Crossunder / approaching</b> = price at the 200d. On its own this is buying into weakness; treat it as a
+    watch list, and only as a buy when the 50d is above the 200d (a pullback within an uptrend).
     </p>
     </body></html>
     """
