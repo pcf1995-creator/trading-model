@@ -74,6 +74,16 @@ def load_universe() -> list[str]:
 
 SMA_FAST = 50
 
+# ── Personal holdings watch (Fidelity + Interactive Brokers) ────────────────────
+# PTJ 200-day rule applied to real positions: a LONG that closes below its 200d,
+# or a SHORT that closes back above its 200d, is a "get out / play defense" alert.
+# Edit these two lists as your positions change. (Options e.g. NUAI calls excluded.)
+HOLDINGS_LONG = [
+    "AAPL", "AMD", "AMZN", "DDFD", "DDOG", "EXE", "GOOG", "HON", "HONA", "INTC",
+    "KRKNF", "MEOH", "META", "MU", "NEE", "NOC", "PLTR", "QCOM", "ROKU", "SHMD", "TEAM",
+]
+HOLDINGS_SHORT = ["MSTR", "RBLX"]
+
 
 def fetch_all_sma(tickers: list[str]) -> dict[str, dict]:
     """Batch-download 1yr of closes for every ticker at once and compute 50/200d SMAs.
@@ -109,6 +119,49 @@ def fetch_all_sma(tickers: list[str]) -> dict[str, dict]:
         except Exception as e:
             print(f"[sma_scanner] {tk} parse failed: {e}")
             continue
+    return out
+
+
+def scan_holdings() -> tuple[list[dict], list[dict], list[str]]:
+    """Apply the 200d get-out rule to personal holdings.
+
+    Returns (longs_below_200d, shorts_above_200d, not_evaluated_tickers).
+    A 'fresh' flag marks positions that crossed the line today.
+    """
+    tickers = HOLDINGS_LONG + HOLDINGS_SHORT
+    data = fetch_all_sma(tickers)
+
+    long_below, short_above = [], []
+    for tk in HOLDINGS_LONG:
+        d = data.get(tk)
+        if d and d["today_close"] < d["today_sma"]:
+            d = {**d, "fresh": d["prev_close"] >= d["prev_sma"]}
+            long_below.append(d)
+    for tk in HOLDINGS_SHORT:
+        d = data.get(tk)
+        if d and d["today_close"] > d["today_sma"]:
+            d = {**d, "fresh": d["prev_close"] <= d["prev_sma"]}
+            short_above.append(d)
+
+    skipped = [tk for tk in tickers if tk not in data]
+    long_below.sort(key=lambda r: (not r["fresh"], r["pct_vs_sma"]))
+    short_above.sort(key=lambda r: (not r["fresh"], -r["pct_vs_sma"]))
+    return long_below, short_above, skipped
+
+
+def _holdings_rows(rows: list[dict], is_short: bool) -> str:
+    out = ""
+    for r in rows:
+        tag = " <b style='color:#b00'>🆕 today</b>" if r.get("fresh") else ""
+        arrow = "above" if is_short else "below"
+        out += (
+            f"<tr>"
+            f"<td><b>{r['ticker']}</b>{tag}</td>"
+            f"<td>${r['today_close']:.2f}</td>"
+            f"<td>${r['today_sma']:.2f}</td>"
+            f"<td style='color:#b00'>{r['pct_vs_sma']:+.2f}% {arrow}</td>"
+            f"</tr>"
+        )
     return out
 
 
@@ -149,17 +202,27 @@ def _golden_rows(rows: list[dict]) -> str:
     return out
 
 
-def send_email(golden: list[dict], crossunders: list[dict], approaching: list[dict]) -> None:
+def send_email(golden: list[dict], crossunders: list[dict], approaching: list[dict],
+               hold_long_below: list[dict] | None = None,
+               hold_short_above: list[dict] | None = None,
+               hold_skipped: list[str] | None = None) -> None:
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_APP_PASSWORD", "")
     if not smtp_user or not smtp_pass:
         print("[sma_scanner] SMTP credentials not configured — skipping email")
         return
 
+    hold_long_below  = hold_long_below or []
+    hold_short_above = hold_short_above or []
+    hold_skipped     = hold_skipped or []
+    n_hold = len(hold_long_below) + len(hold_short_above)
+
     today = date.today().isoformat()
     g = len(golden)
     subject = (
-        f"SMA Alert {today}: {g} golden cross{'es' if g != 1 else ''} 🟢"
+        f"⚠️ SMA Alert {today}: {n_hold} HOLDING{'S' if n_hold != 1 else ''} below 200d — get out"
+        if n_hold
+        else f"SMA Alert {today}: {g} golden cross{'es' if g != 1 else ''} 🟢"
         if golden
         else f"SMA Alert {today}: {len(crossunders)} crossed below 200d SMA"
         if crossunders
@@ -167,6 +230,31 @@ def send_email(golden: list[dict], crossunders: list[dict], approaching: list[di
         if approaching
         else f"SMA Scan {today}: No alerts"
     )
+
+    def _hold_table(rows, is_short):
+        if not rows:
+            return "<p style='color:green;margin:2px 0'>None — all clear. ✅</p>"
+        return f"""
+        <table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse'>
+        <tr style='background:#fdecea'><th>Ticker</th><th>Close</th><th>200d SMA</th><th>vs 200d</th></tr>
+        {_holdings_rows(rows, is_short)}
+        </table>"""
+
+    skipped_note = (
+        f"<p style='color:gray;font-size:11px'>Not evaluated (insufficient history / no data): "
+        f"{', '.join(hold_skipped)}</p>" if hold_skipped else ""
+    )
+    holdings_block = f"""
+    <div style='border:2px solid #b00; padding:10px 14px; border-radius:6px; background:#fff8f8'>
+    <h3 style='margin:0 0 4px'>🚨 Your Holdings — 200-Day Get-Out Rule ({n_hold})</h3>
+    <p style='color:gray;margin:0 0 8px;font-size:12px'>Paul Tudor Jones defense rule: exit anything that closes below its 200-day.</p>
+    <b>Longs closed BELOW their 200d — consider exiting ({len(hold_long_below)}):</b>
+    {_hold_table(hold_long_below, False)}
+    <b style='display:block;margin-top:10px'>Shorts closed ABOVE their 200d — consider covering ({len(hold_short_above)}):</b>
+    {_hold_table(hold_short_above, True)}
+    {skipped_note}
+    </div>
+    """
 
     golden_section = (
         "<p>None today.</p>"
@@ -200,6 +288,8 @@ def send_email(golden: list[dict], crossunders: list[dict], approaching: list[di
     <html><body style='font-family:sans-serif'>
     <h2 style='margin-bottom:4px'>200-Day SMA Scanner — {today}</h2>
     <p style='color:gray;margin-top:0'>S&amp;P 500 constituents with market cap &ge; $10B</p>
+
+    {holdings_block}
 
     <h3>🟢 Golden Cross — 50d crossed above 200d ({len(golden)})</h3>
     <p style='color:gray;margin-top:0;font-size:12px'>Bullish trend-confirmation buy signal — the names to act on.</p>
@@ -266,10 +356,16 @@ def main() -> None:
     crossunders.sort(key=lambda r: r["pct_vs_sma"])
     approaching.sort(key=lambda r: r["pct_vs_sma"])
 
+    # Personal holdings get-out check (PTJ 200d rule)
+    hold_long_below, hold_short_above, hold_skipped = scan_holdings()
+    print(f"[sma_scanner] holdings: {len(hold_long_below)} longs below 200d, "
+          f"{len(hold_short_above)} shorts above 200d, {len(hold_skipped)} not evaluated")
+
     print(f"[sma_scanner] {len(golden)} golden crosses, {len(crossunders)} crossunders, {len(approaching)} approaching")
 
-    if golden or crossunders or approaching:
-        send_email(golden, crossunders, approaching)
+    if golden or crossunders or approaching or hold_long_below or hold_short_above:
+        send_email(golden, crossunders, approaching,
+                   hold_long_below, hold_short_above, hold_skipped)
     else:
         print("[sma_scanner] No alerts — no email sent")
 
