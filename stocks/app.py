@@ -47,6 +47,43 @@ def color_pnl(val: str) -> str:
     return ""
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _trend_flag_map(tickers: tuple) -> dict:
+    """Batch 200-day SMA per ticker → {tk: {'price', 'sma200', 'above'}}. Cached 1h."""
+    import yfinance as yf
+    out: dict = {}
+    if not tickers:
+        return out
+    try:
+        data = yf.download(list(tickers), period="1y", auto_adjust=True,
+                           progress=False, threads=True)
+        closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+        for tk in tickers:
+            try:
+                s = closes[tk].dropna() if tk in closes.columns else None
+                if s is None or len(s) < 201:
+                    continue
+                px = float(s.iloc[-1]); m = float(s.rolling(200).mean().iloc[-1])
+                out[tk] = {"price": px, "sma200": m, "above": px >= m}
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _trend_badge(ticker: str, side: str, fmap: dict) -> str:
+    """Green if the position aligns with its 200d trend, red if against it (PTJ rule)."""
+    f = fmap.get(ticker)
+    if not f:
+        return "⚪ 200d n/a"
+    above = f["above"]
+    with_trend = above if side == "LONG" else (not above)
+    where = "above" if above else "below"
+    return (f"🟢 with 200d trend ({where})" if with_trend
+            else f"🔴 against 200d trend ({where}) — PTJ: stay out")
+
+
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Stocks Dashboard", layout="wide")
 st.title("Stocks Dashboard")
@@ -1009,6 +1046,8 @@ with tab_lt:
                 # LONG recommendations
                 _lt_longs  = _lt_df[_lt_df["direction"] == "LONG"]
                 _lt_shorts = _lt_df[_lt_df["direction"] == "SHORT"]
+                _lt_flags  = _trend_flag_map(tuple(sorted(_lt_df["ticker"].astype(str).tolist())))
+                st.caption("🟢 = model pick agrees with the 200-day trend · 🔴 = against the trend (PTJ says stay out)")
 
                 st.subheader("LONG Recommendations")
                 _existing_lt_tickers = {p["ticker"] for p in _lt_open}
@@ -1029,7 +1068,8 @@ with tab_lt:
                             f"**{_tk}** · Score {_lr['composite_score']:.3f} · "
                             f"${_lr['current_price']} · "
                             f"**Invest: ${_per_long:,.2f}** ({_shares} shares) · "
-                            f"Mom(12-1): {_mom_str} · 1m: {_m1_str} · ROE: {_roe_str}"
+                            f"Mom(12-1): {_mom_str} · 1m: {_m1_str} · ROE: {_roe_str}  \n"
+                            f"{_trend_badge(_tk, 'LONG', _lt_flags)}"
                         )
                     with _col2:
                         if _already:
@@ -1080,7 +1120,8 @@ with tab_lt:
                             f"**{_tk}** · Score {_sr['composite_score']:.3f} · "
                             f"${_sr['current_price']} · "
                             f"**Invest: ${_per_short:,.2f}** ({_shares} shares) · "
-                            f"Mom(12-1): {_mom_str} · 1m: {_m1_str}"
+                            f"Mom(12-1): {_mom_str} · 1m: {_m1_str}  \n"
+                            f"{_trend_badge(_tk, 'SHORT', _lt_flags)}"
                         )
                     with _col2:
                         if _already:
@@ -1661,6 +1702,7 @@ with tab_conviction:
 
                 _cv_longs  = _cv_df[_cv_df["direction"] == "LONG"]
                 _cv_shorts = _cv_df[_cv_df["direction"] == "SHORT"]
+                _cv_flags  = _trend_flag_map(tuple(sorted(_cv_df["ticker"].astype(str).tolist())))
 
                 # Macro regime info bar
                 _cv_regime    = _cv_df["regime"].iloc[0] if "regime" in _cv_df.columns else "—"
@@ -1833,7 +1875,7 @@ with tab_conviction:
                             _pfc_l_str  = f" ({_pfc_l:+.2f}%{_pfc_l_warn})" if abs(_pfc_l) >= 0.05 else ""
                             _close_str_l = f" | close ${_prior_cl_l}" if _prior_cl_l else ""
                             st.markdown(f"**{_tk}** @ ${_lr['current_price']}{_pfc_l_str}{_close_str_l}  —  {_score_breakdown}{_earn_note}")
-                            st.caption(f"{_shares:.4f} shares · ${_per_long:,.0f} allocation")
+                            st.caption(f"{_shares:.4f} shares · ${_per_long:,.0f} allocation · {_trend_badge(_tk, 'LONG', _cv_flags)}")
                         with _col2:
                             # Paper button: hidden if already held in paper.
                             if _in_paper:
@@ -1943,7 +1985,7 @@ with tab_conviction:
                             _pfc_s_str  = f" ({_pfc_s:+.2f}%{_pfc_s_warn})" if abs(_pfc_s) >= 0.05 else ""
                             _close_str_s = f" | close ${_prior_cl_s}" if _prior_cl_s else ""
                             st.markdown(f"**{_tk}** @ ${_sr['current_price']}{_pfc_s_str}{_close_str_s}  —  {_score_breakdown}{_earn_note}")
-                            st.caption(f"{_shares:.4f} shares · ${_per_short:,.0f} allocation")
+                            st.caption(f"{_shares:.4f} shares · ${_per_short:,.0f} allocation · {_trend_badge(_tk, 'SHORT', _cv_flags)}")
                         with _col2:
                             if _in_paper:
                                 st.caption("📉 Paper held")
