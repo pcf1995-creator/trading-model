@@ -112,12 +112,30 @@ def _last_prices(tickers: tuple) -> dict:
     return out
 
 
+def _edgar_filer_type(cik: str, headers: dict) -> str:
+    """Classify a filer: a true spin-co is a brand-new registrant (no prior periodic
+    reports); an uplister/existing public co already has 10-K/10-Q history."""
+    import requests
+    if not cik:
+        return "❓ unknown"
+    try:
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json",
+                         headers=headers, timeout=15)
+        r.raise_for_status()
+        forms = r.json().get("filings", {}).get("recent", {}).get("form", [])
+        has_periodic = any(f in ("10-K", "10-Q", "10-K/A", "10-Q/A", "20-F", "40-F") for f in forms)
+        return ("🟡 existing filer (likely uplisting)" if has_periodic
+                else "🟢 new registrant (likely spin-off)")
+    except Exception:
+        return "❓ unknown"
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _spinoff_edgar(query: str, days: int) -> list:
     """Recent SEC Form 10-12B (spin-off registration) filings via EDGAR full-text search.
 
-    Paginates several pages and de-duplicates to one row per company (a single
-    filing returns many exhibit hits), keeping that company's latest filing.
+    Paginates several pages, de-duplicates to one row per company, and flags each
+    filer as a likely spin-off (new registrant) vs a likely uplisting (existing filer).
     """
     import requests
     end = date.today(); start = end - timedelta(days=days)
@@ -140,16 +158,20 @@ def _spinoff_edgar(query: str, days: int) -> list:
             cik = (s.get("ciks") or [""])[0]
             fd  = s.get("file_date") or ""
             key = cik or (names[0] if names else fd)
-            row = {
-                "Filed":  fd,
-                "Spin-Co / Filer": names[0] if names else "—",
-                "Form":   s.get("form") or s.get("file_type") or "10-12B",
-                "Filing": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-12B&count=40",
-            }
-            # one row per company — keep the most recent filing date
             if key not in seen or fd > (seen[key]["Filed"] or ""):
-                seen[key] = row
-    return sorted(seen.values(), key=lambda r: r["Filed"] or "", reverse=True)
+                seen[key] = {
+                    "Filed":  fd,
+                    "Spin-Co / Filer": names[0] if names else "—",
+                    "Type":   "",
+                    "Form":   s.get("form") or s.get("file_type") or "10-12B",
+                    "_cik":   cik,
+                    "Filing": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-12B&count=40",
+                }
+    for row in seen.values():
+        row["Type"] = _edgar_filer_type(row.pop("_cik"), headers)
+    rows = sorted(seen.values(), key=lambda r: r["Filed"] or "", reverse=True)   # date desc
+    rows.sort(key=lambda r: 0 if r["Type"].startswith("🟢") else 1)              # spin-offs first
+    return rows
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -3868,12 +3890,17 @@ with tab_spinoffs:
     _sp_rows = st.session_state.get("spin_edgar")
     if _sp_rows:
         _sp_from = (date.today() - timedelta(days=int(_sp_days))).isoformat()
+        _sp_cols = [c for c in ["Filed", "Spin-Co / Filer", "Type", "Form", "Filing"]
+                    if c in _sp_rows[0]]
         st.dataframe(
-            pd.DataFrame(_sp_rows), hide_index=True, use_container_width=True,
+            pd.DataFrame(_sp_rows)[_sp_cols], hide_index=True, use_container_width=True,
             column_config={"Filing": st.column_config.LinkColumn("EDGAR", display_text="open ↗")},
         )
-        st.caption(f"{len(_sp_rows)} companies (deduped), filed {_sp_from} → {date.today().isoformat()}, newest first. "
-                   "Add the ones you want to track below.")
+        st.caption(
+            f"{len(_sp_rows)} companies (deduped), filed {_sp_from} → {date.today().isoformat()}. "
+            "🟢 = new registrant (likely a real spin-off) · 🟡 = existing filer (likely an uplisting like PBAM, not a spin-off). "
+            "Likely spin-offs listed first."
+        )
     elif _sp_rows == []:
         st.info("No 10-12B filings matched. Try a broader phrase (e.g. 'separation') or a longer lookback.")
     else:
