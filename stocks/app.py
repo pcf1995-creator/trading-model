@@ -84,6 +84,63 @@ def _trend_badge(ticker: str, side: str, fmap: dict) -> str:
             else f"🔴 against 200d trend ({where}) — PTJ: stay out")
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def _last_prices(tickers: tuple) -> dict:
+    """Latest close per ticker (works for young/just-spun names — short history)."""
+    import yfinance as yf
+    out: dict = {}
+    if not tickers:
+        return out
+    try:
+        data = yf.download(list(tickers), period="5d", auto_adjust=True,
+                           progress=False, threads=True)
+        closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+        if isinstance(closes, pd.Series):
+            s = closes.dropna()
+            if len(s):
+                out[list(tickers)[0]] = float(s.iloc[-1])
+        else:
+            for tk in tickers:
+                try:
+                    s = closes[tk].dropna() if tk in closes.columns else None
+                    if s is not None and len(s):
+                        out[tk] = float(s.iloc[-1])
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _spinoff_edgar(query: str, days: int) -> list:
+    """Recent SEC Form 10-12B (spin-off registration) filings via EDGAR full-text search."""
+    import requests
+    end = date.today(); start = end - timedelta(days=days)
+    r = requests.get(
+        "https://efts.sec.gov/LATEST/search-index",
+        params={"q": f'"{query}"', "forms": "10-12B",
+                "startdt": start.isoformat(), "enddt": end.isoformat()},
+        headers={"User-Agent": "Hyperspace Ventures research pf@hyperspaceventures.com"},
+        timeout=25,
+    )
+    r.raise_for_status()
+    hits = r.json().get("hits", {}).get("hits", [])
+    rows = []
+    for h in hits:
+        s = h.get("_source", {})
+        names = s.get("display_names") or []
+        cik = (s.get("ciks") or [""])[0]
+        rows.append({
+            "Filed":  s.get("file_date"),
+            "Spin-Co / Filer": names[0] if names else "—",
+            "Form":   s.get("form") or s.get("file_type") or "10-12B",
+            "Filing": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-12B&count=40",
+        })
+    rows.sort(key=lambda r: r["Filed"] or "", reverse=True)
+    return rows
+
+
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Stocks Dashboard", layout="wide")
 st.title("Stocks Dashboard")
@@ -200,13 +257,14 @@ def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
             st.info("No changes to save.")
 
 
-tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma, tab_crypto = st.tabs([
+tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma, tab_crypto, tab_spinoffs = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
     "🎯 S&P Benchmark L/S",
     "🌙 Overnight Drift",
     "📉 200d SMA",
     "🪙 Crypto Trend",
+    "🍴 Spin-offs",
 ])
 
 with tab_dash:
@@ -3760,6 +3818,143 @@ with tab_crypto:
                 db.save_crypto_strategy({"started": False})
                 st.session_state.pop("crypto_strat_mkt", None)
                 st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SPIN-OFFS TAB
+# ══════════════════════════════════════════════════════════════════════════════
+_SPIN_STATUSES = ["upcoming", "when-issued", "spun — watching dip", "bought", "passed"]
+
+with tab_spinoffs:
+    st.header("🍴 Spin-offs")
+    st.caption(
+        "Spin-offs have historically outperformed — often *after* an initial drop, as index funds and "
+        "institutions are forced to sell the small new entity they can't hold. Track upcoming spin-offs "
+        "(SEC Form 10-12B registrations) and time entries after that forced-selling dip."
+    )
+
+    # ── Upcoming — SEC EDGAR ──────────────────────────────────────────────────
+    st.subheader("📄 Upcoming — SEC Form 10-12B filings")
+    st.caption(
+        "A **Form 10-12B** is the registration a subsidiary files weeks-to-months before it's spun off — "
+        "the earliest authoritative 'a spin-off is coming' signal. Data: SEC EDGAR full-text search."
+    )
+    _spc1, _spc2, _spc3 = st.columns([2, 1, 1])
+    _sp_q    = _spc1.text_input("Search phrase", value="spin-off",
+                                help="Phrase to match within 10-12B filings (try 'separation' too).")
+    _sp_days = _spc2.number_input("Lookback (days)", min_value=7, max_value=365, value=120, step=30)
+    if _spc3.button("🔄 Fetch filings", type="primary", key="spin_fetch"):
+        with st.spinner("Querying SEC EDGAR…"):
+            try:
+                st.session_state["spin_edgar"] = _spinoff_edgar(_sp_q.strip() or "spin-off", int(_sp_days))
+                st.session_state["spin_edgar_err"] = None
+            except Exception as _spe:
+                st.session_state["spin_edgar"] = []
+                st.session_state["spin_edgar_err"] = str(_spe)
+
+    if st.session_state.get("spin_edgar_err"):
+        st.error(f"EDGAR fetch failed: {st.session_state['spin_edgar_err']}")
+    _sp_rows = st.session_state.get("spin_edgar")
+    if _sp_rows:
+        st.dataframe(
+            pd.DataFrame(_sp_rows), hide_index=True, use_container_width=True,
+            column_config={"Filing": st.column_config.LinkColumn("EDGAR", display_text="open ↗")},
+        )
+        st.caption(f"{len(_sp_rows)} filings. Add the ones you want to track below.")
+    elif _sp_rows == []:
+        st.info("No 10-12B filings matched. Try a broader phrase (e.g. 'separation') or a longer lookback.")
+    else:
+        st.info("Click **Fetch filings** to pull recent Form 10-12B registrations from SEC EDGAR.")
+
+    # ── Watchlist & tracker ───────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📋 Spin-off Watchlist & Tracker")
+
+    with st.expander("➕ Add a spin-off to track"):
+        with st.form("spin_add", clear_on_submit=True):
+            _sa1, _sa2 = st.columns(2)
+            _sa_parent = _sa1.text_input("Parent company")
+            _sa_spinco = _sa2.text_input("Spin-off name")
+            _sa3, _sa4, _sa5 = st.columns(3)
+            _sa_ticker = _sa3.text_input("Ticker (once known)").upper().strip()
+            _sa_date   = _sa4.date_input("Expected / actual spin date", value=date.today())
+            _sa_status = _sa5.selectbox("Status", _SPIN_STATUSES, index=0)
+            _sa_notes  = st.text_input("Notes", placeholder="thesis, ratio, when-issued date…")
+            if st.form_submit_button("Add", type="primary"):
+                if not (_sa_parent or _sa_spinco or _sa_ticker):
+                    st.error("Enter at least a parent, spin-off name, or ticker.")
+                else:
+                    import uuid as _spin_uuid
+                    db.add_spinoff({
+                        "id":        str(_spin_uuid.uuid4()),
+                        "parent":    _sa_parent.strip() or None,
+                        "spinco":    _sa_spinco.strip() or None,
+                        "ticker":    _sa_ticker or None,
+                        "status":    _sa_status,
+                        "spin_date": _sa_date.isoformat(),
+                        "notes":     _sa_notes.strip() or None,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                    st.success("Added.")
+                    st.rerun()
+
+    _spins = db.load_spinoffs()
+    if not _spins:
+        st.info("No spin-offs tracked yet. Fetch EDGAR filings above or add one manually.")
+    else:
+        _spin_tks = tuple(sorted({s["ticker"] for s in _spins if s.get("ticker")}))
+        _spin_px  = _last_prices(_spin_tks) if _spin_tks else {}
+        _rows = []
+        for _s in _spins:
+            _tk = _s.get("ticker"); _cur = _spin_px.get(_tk)
+            _ep = float(_s["entry_price"]) if _s.get("entry_price") else None
+            _ret = ((_cur - _ep) / _ep * 100) if (_cur and _ep) else None
+            _rows.append({
+                "Parent":   _s.get("parent") or "—",
+                "Spin-off": _s.get("spinco") or "—",
+                "Ticker":   _tk or "—",
+                "Status":   _s.get("status") or "—",
+                "Spin date": _s.get("spin_date") or "—",
+                "Entry $":  _ep,
+                "Price $":  _cur,
+                "Return %": round(_ret, 2) if _ret is not None else None,
+                "Notes":    _s.get("notes") or "",
+            })
+        st.dataframe(
+            pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+            column_config={
+                "Entry $":  st.column_config.NumberColumn(format="$%.2f"),
+                "Price $":  st.column_config.NumberColumn(format="$%.2f"),
+                "Return %": st.column_config.NumberColumn(format="%+.2f%%"),
+            },
+        )
+
+        st.caption("Update status / entry price or remove an entry:")
+        for _s in _spins:
+            _lbl = f"{_s.get('ticker') or _s.get('spinco') or _s.get('parent') or _s['id'][:6]} — {_s.get('status')}"
+            with st.expander(_lbl):
+                with st.form(f"spin_edit_{_s['id']}"):
+                    _e1, _e2, _e3 = st.columns(3)
+                    _e_ticker = _e1.text_input("Ticker", value=_s.get("ticker") or "").upper().strip()
+                    _e_status = _e2.selectbox("Status", _SPIN_STATUSES,
+                                              index=_SPIN_STATUSES.index(_s["status"]) if _s.get("status") in _SPIN_STATUSES else 0)
+                    _e_entry  = _e3.number_input("Entry price ($, when you buy)", min_value=0.0,
+                                                 value=float(_s["entry_price"]) if _s.get("entry_price") else 0.0,
+                                                 step=0.01, format="%.2f")
+                    _e_notes  = st.text_input("Notes", value=_s.get("notes") or "")
+                    _ec1, _ec2 = st.columns(2)
+                    if _ec1.form_submit_button("💾 Save"):
+                        db.update_spinoff(_s["id"], {
+                            "ticker":      _e_ticker or None,
+                            "status":      _e_status,
+                            "entry_price": _e_entry or None,
+                            "notes":       _e_notes.strip() or None,
+                        })
+                        st.success("Updated.")
+                        st.rerun()
+                    if _ec2.form_submit_button("🗑️ Delete"):
+                        db.delete_spinoff(_s["id"])
+                        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

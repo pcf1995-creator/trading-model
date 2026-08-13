@@ -551,6 +551,78 @@ def save_crypto_strategy(state: dict) -> None:
     _save_json(_CRYPTO_STRATEGY_JSON, state)
 
 
+# ── Spin-off watchlist ──────────────────────────────────────────────────────────
+#
+# Supabase table DDL (run once):
+#
+#   CREATE TABLE IF NOT EXISTS spinoff_watch (
+#       id          TEXT PRIMARY KEY,
+#       parent      TEXT,
+#       spinco      TEXT,
+#       ticker      TEXT,
+#       status      TEXT DEFAULT 'upcoming',
+#       spin_date   DATE,
+#       entry_price NUMERIC,
+#       notes       TEXT,
+#       created_at  TIMESTAMPTZ DEFAULT NOW(),
+#       updated_at  TIMESTAMPTZ
+#   );
+#
+_SPINOFF_JSON = ROOT / "spinoff_watch.json"
+
+
+def load_spinoffs() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = client.table("spinoff_watch").select("*").order("created_at", desc=False).execute()
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_spinoffs failed: {e}")
+    return _load_json(_SPINOFF_JSON)
+
+
+def add_spinoff(row: dict) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("spinoff_watch").insert(row).execute()
+            return
+        except Exception as e:
+            logger.warning(f"add_spinoff failed: {e}")
+    rows = _load_json(_SPINOFF_JSON)
+    rows.append(row)
+    _save_json(_SPINOFF_JSON, rows)
+
+
+def update_spinoff(spin_id: str, updates: dict) -> None:
+    updates = {**updates, "updated_at": datetime.now(timezone.utc).isoformat()}
+    client = _get_client()
+    if client:
+        try:
+            client.table("spinoff_watch").update(updates).eq("id", spin_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"update_spinoff failed: {e}")
+    rows = _load_json(_SPINOFF_JSON)
+    for r in rows:
+        if r.get("id") == spin_id:
+            r.update(updates)
+    _save_json(_SPINOFF_JSON, rows)
+
+
+def delete_spinoff(spin_id: str) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("spinoff_watch").delete().eq("id", spin_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"delete_spinoff failed: {e}")
+    rows = [r for r in _load_json(_SPINOFF_JSON) if r.get("id") != spin_id]
+    _save_json(_SPINOFF_JSON, rows)
+
+
 # ── SMA trades ────────────────────────────────────────────────────────────────
 #
 # Supabase table DDL (run once):
