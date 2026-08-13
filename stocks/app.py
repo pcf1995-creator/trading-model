@@ -114,31 +114,42 @@ def _last_prices(tickers: tuple) -> dict:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _spinoff_edgar(query: str, days: int) -> list:
-    """Recent SEC Form 10-12B (spin-off registration) filings via EDGAR full-text search."""
+    """Recent SEC Form 10-12B (spin-off registration) filings via EDGAR full-text search.
+
+    Paginates several pages and de-duplicates to one row per company (a single
+    filing returns many exhibit hits), keeping that company's latest filing.
+    """
     import requests
     end = date.today(); start = end - timedelta(days=days)
-    r = requests.get(
-        "https://efts.sec.gov/LATEST/search-index",
-        params={"q": f'"{query}"', "forms": "10-12B",
-                "startdt": start.isoformat(), "enddt": end.isoformat()},
-        headers={"User-Agent": "Hyperspace Ventures research pf@hyperspaceventures.com"},
-        timeout=25,
-    )
-    r.raise_for_status()
-    hits = r.json().get("hits", {}).get("hits", [])
-    rows = []
-    for h in hits:
-        s = h.get("_source", {})
-        names = s.get("display_names") or []
-        cik = (s.get("ciks") or [""])[0]
-        rows.append({
-            "Filed":  s.get("file_date"),
-            "Spin-Co / Filer": names[0] if names else "—",
-            "Form":   s.get("form") or s.get("file_type") or "10-12B",
-            "Filing": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-12B&count=40",
-        })
-    rows.sort(key=lambda r: r["Filed"] or "", reverse=True)
-    return rows
+    headers = {"User-Agent": "Hyperspace Ventures research pf@hyperspaceventures.com"}
+    seen: dict = {}
+    for _from in (0, 10, 20, 30, 40):          # up to 5 pages (~50 hits)
+        r = requests.get(
+            "https://efts.sec.gov/LATEST/search-index",
+            params={"q": f'"{query}"', "forms": "10-12B",
+                    "startdt": start.isoformat(), "enddt": end.isoformat(), "from": _from},
+            headers=headers, timeout=25,
+        )
+        r.raise_for_status()
+        hits = r.json().get("hits", {}).get("hits", [])
+        if not hits:
+            break
+        for h in hits:
+            s = h.get("_source", {})
+            names = s.get("display_names") or []
+            cik = (s.get("ciks") or [""])[0]
+            fd  = s.get("file_date") or ""
+            key = cik or (names[0] if names else fd)
+            row = {
+                "Filed":  fd,
+                "Spin-Co / Filer": names[0] if names else "—",
+                "Form":   s.get("form") or s.get("file_type") or "10-12B",
+                "Filing": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-12B&count=40",
+            }
+            # one row per company — keep the most recent filing date
+            if key not in seen or fd > (seen[key]["Filed"] or ""):
+                seen[key] = row
+    return sorted(seen.values(), key=lambda r: r["Filed"] or "", reverse=True)
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -3856,11 +3867,13 @@ with tab_spinoffs:
         st.error(f"EDGAR fetch failed: {st.session_state['spin_edgar_err']}")
     _sp_rows = st.session_state.get("spin_edgar")
     if _sp_rows:
+        _sp_from = (date.today() - timedelta(days=int(_sp_days))).isoformat()
         st.dataframe(
             pd.DataFrame(_sp_rows), hide_index=True, use_container_width=True,
             column_config={"Filing": st.column_config.LinkColumn("EDGAR", display_text="open ↗")},
         )
-        st.caption(f"{len(_sp_rows)} filings. Add the ones you want to track below.")
+        st.caption(f"{len(_sp_rows)} companies (deduped), filed {_sp_from} → {date.today().isoformat()}, newest first. "
+                   "Add the ones you want to track below.")
     elif _sp_rows == []:
         st.info("No 10-12B filings matched. Try a broader phrase (e.g. 'separation') or a longer lookback.")
     else:
