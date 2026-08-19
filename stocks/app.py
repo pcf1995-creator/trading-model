@@ -2150,7 +2150,19 @@ with tab_conviction:
                 # ── Portfolio Actions ─────────────────────────────────────────
                 # For each open paper position that fell off the scan
                 # recommendations, surface a Replace or Resize action.
-                if _cv_open:
+                # Only act on paper positions that correspond to something actually
+                # held (a real trade) — a paper-only idea you never bought has
+                # nothing to "replace"; it just stays a candidate in the
+                # Recommendations lists above if it's still buy-worthy.
+                _real_held = {
+                    (r["ticker"], "SHORT" if r.get("side") == "short" else "LONG")
+                    for r in db.load_stock_real_trades() if r.get("status") == "open"
+                }
+                _cv_open_real = [
+                    p for p in _cv_open if (p["ticker"], p["direction"]) in _real_held
+                ]
+
+                if _cv_open_real:
                     _pa_score_map = (
                         dict(zip(_cv_df["ticker"], _cv_df["composite_score"]))
                         if "composite_score" in _cv_df.columns else {}
@@ -2166,7 +2178,7 @@ with tab_conviction:
 
                     _pa_replace = []
                     _pa_resize  = []
-                    for _p in _cv_open:
+                    for _p in _cv_open_real:
                         _ptk       = _p["ticker"]
                         _pdir      = _p["direction"]
                         _psc_entry = float(_p.get("score_at_entry") or _p.get("composite_score") or 0)
