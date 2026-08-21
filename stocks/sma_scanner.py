@@ -114,6 +114,10 @@ def fetch_all_sma(tickers: list[str]) -> dict[str, dict]:
                 "today_sma":    today_sma,
                 "prev_sma50":   float(sma50.iloc[-2]),
                 "today_sma50":  float(sma50.iloc[-1]),
+                # 50d value from ~2 weeks ago, to judge SLOPE not just level — a
+                # single day-over-day diff on a 50-day average is too noisy to mean
+                # anything; this tells us whether the 50d is actually rising or rolling over.
+                "sma50_10d_ago": float(sma50.iloc[-11]),
                 "pct_vs_sma":   (today_close - today_sma) / today_sma * 100,
             }
         except Exception as e:
@@ -169,12 +173,18 @@ def _table_rows(rows: list[dict]) -> str:
     out = ""
     for r in rows:
         color = "red" if r["pct_vs_sma"] <= 0 else "darkorange"
-        uptrend = r.get("today_sma50", 0) > r.get("today_sma", 0)
-        trend = (
-            "<span style='color:green'>🟢 dip in uptrend</span>"
-            if uptrend
-            else "<span style='color:#b00'>🔴 downtrend — avoid</span>"
-        )
+        # Level AND slope: being above the 200d right now says nothing about
+        # direction — a 50d that's above the 200d but falling is rolling toward
+        # a death cross, not a healthy uptrend. Require the 50d to also be
+        # rising (vs. ~2 weeks ago) before calling it a genuine uptrend.
+        _above200  = r.get("today_sma50", 0) > r.get("today_sma", 0)
+        _sma50_up  = r.get("today_sma50", 0) > r.get("sma50_10d_ago", r.get("today_sma50", 0))
+        if _above200 and _sma50_up:
+            trend = "<span style='color:green'>🟢 dip in uptrend</span>"
+        elif _above200 and not _sma50_up:
+            trend = "<span style='color:#b8860b'>🟡 above 200d but rolling over</span>"
+        else:
+            trend = "<span style='color:#b00'>🔴 downtrend — avoid</span>"
         out += (
             f"<tr>"
             f"<td><b>{r['ticker']}</b></td>"
@@ -307,7 +317,9 @@ def send_email(golden: list[dict], crossunders: list[dict], approaching: list[di
     <b>Golden cross</b> = 50d SMA closed at/below the 200d yesterday and above it today (first-signal only) —
     the evidence-backed buy.<br>
     <b>Crossunder / approaching</b> = price at the 200d. On its own this is buying into weakness; treat it as a
-    watch list, and only as a buy when the 50d is above the 200d (a pullback within an uptrend).
+    watch list. 🟢 dip in uptrend = 50d is above the 200d AND still rising — a genuine pullback within an uptrend.
+    🟡 above 200d but rolling over = 50d is above the 200d but falling — it's turning toward a death cross, not a
+    dip to buy. Level alone doesn't tell you direction; the slope does.
     </p>
     </body></html>
     """
