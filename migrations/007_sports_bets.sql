@@ -29,7 +29,7 @@ create table if not exists sports_bets (
 
 -- Prevent double-saving the same recommendation from the same scan run
 create unique index if not exists sports_bets_dedup
-  on sports_bets (game_id, market, side, scanned_at::date);
+  on sports_bets (game_id, market, side, date(scanned_at));
 
 -- Fast lookups for open bets and settlement
 create index if not exists sports_bets_status on sports_bets (status);
