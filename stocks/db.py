@@ -623,6 +623,61 @@ def delete_spinoff(spin_id: str) -> None:
     _save_json(_SPINOFF_JSON, rows)
 
 
+# ── Idea watchlist ───────────────────────────────────────────────────────────────
+#
+# Just a log of tickers you're considering — not paper trades, not tied to any
+# real position. Ticker, when you added it, price at that time, notes.
+#
+# Supabase table DDL (run once):
+#
+#   CREATE TABLE IF NOT EXISTS idea_watchlist (
+#       id           TEXT PRIMARY KEY,
+#       ticker       TEXT NOT NULL,
+#       added_date   DATE NOT NULL,
+#       added_price  NUMERIC,
+#       notes        TEXT,
+#       created_at   TIMESTAMPTZ DEFAULT NOW()
+#   );
+#
+_WATCHLIST_JSON = ROOT / "idea_watchlist.json"
+
+
+def load_watchlist() -> list[dict]:
+    client = _get_client()
+    if client:
+        try:
+            resp = client.table("idea_watchlist").select("*").order("created_at", desc=False).execute()
+            return resp.data or []
+        except Exception as e:
+            logger.warning(f"load_watchlist failed: {e}")
+    return _load_json(_WATCHLIST_JSON)
+
+
+def add_watchlist_item(row: dict) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("idea_watchlist").insert(row).execute()
+            return
+        except Exception as e:
+            logger.warning(f"add_watchlist_item failed: {e}")
+    rows = _load_json(_WATCHLIST_JSON)
+    rows.append(row)
+    _save_json(_WATCHLIST_JSON, rows)
+
+
+def delete_watchlist_item(item_id: str) -> None:
+    client = _get_client()
+    if client:
+        try:
+            client.table("idea_watchlist").delete().eq("id", item_id).execute()
+            return
+        except Exception as e:
+            logger.warning(f"delete_watchlist_item failed: {e}")
+    rows = [r for r in _load_json(_WATCHLIST_JSON) if r.get("id") != item_id]
+    _save_json(_WATCHLIST_JSON, rows)
+
+
 # ── SMA trades ────────────────────────────────────────────────────────────────
 #
 # Supabase table DDL (run once):
