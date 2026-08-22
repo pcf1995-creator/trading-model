@@ -290,7 +290,7 @@ def _closed_trade_editor(closed_rows, trade_ids, editor_key, save_key):
             st.info("No changes to save.")
 
 
-tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma, tab_crypto, tab_spinoffs = st.tabs([
+tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma, tab_crypto, tab_spinoffs, tab_watchlist = st.tabs([
     "📊 Dashboard",
     "📈 Absolute Return L/S",
     "🎯 S&P Benchmark L/S",
@@ -298,6 +298,7 @@ tab_dash, tab_lt, tab_conviction, tab_overnight, tab_sma, tab_crypto, tab_spinof
     "📉 200d SMA",
     "🪙 Crypto Trend",
     "🍴 Spin-offs",
+    "💡 Idea Watchlist",
 ])
 
 with tab_dash:
@@ -4007,6 +4008,74 @@ with tab_spinoffs:
                     if _ec2.form_submit_button("🗑️ Delete"):
                         db.delete_spinoff(_s["id"])
                         st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# IDEA WATCHLIST TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_watchlist:
+    st.header("💡 Idea Watchlist")
+    st.caption("Tickers you're considering from outside research. Not a paper trade, not tied to your holdings — just logging what you're watching and its price.")
+
+    with st.form("watchlist_add", clear_on_submit=True):
+        _wa1, _wa2 = st.columns([1, 3])
+        _wa_ticker = _wa1.text_input("Ticker").upper().strip()
+        _wa_notes  = _wa2.text_input("Notes (optional)", placeholder="why you're watching it")
+        if st.form_submit_button("➕ Add", type="primary"):
+            if not _wa_ticker:
+                st.error("Enter a ticker.")
+            else:
+                _wa_px = _last_prices((_wa_ticker,)).get(_wa_ticker)
+                if not _wa_px:
+                    st.error(f"Couldn't fetch a price for {_wa_ticker} — check the ticker.")
+                else:
+                    import uuid as _wa_uuid
+                    db.add_watchlist_item({
+                        "id":          str(_wa_uuid.uuid4()),
+                        "ticker":      _wa_ticker,
+                        "added_date":  date.today().isoformat(),
+                        "added_price": round(_wa_px, 4),
+                        "notes":       _wa_notes.strip() or None,
+                        "created_at":  datetime.now(timezone.utc).isoformat(),
+                    })
+                    st.success(f"Added {_wa_ticker} @ ${_wa_px:.2f}")
+                    st.rerun()
+
+    _watch = db.load_watchlist()
+    if not _watch:
+        st.info("Nothing on the watchlist yet. Add a ticker above.")
+    else:
+        _wtks = tuple(sorted({w["ticker"] for w in _watch}))
+        _wpx  = _last_prices(_wtks)
+        _wrows = []
+        for w in _watch:
+            _cur = _wpx.get(w["ticker"])
+            _ap  = float(w["added_price"]) if w.get("added_price") else None
+            _chg = ((_cur - _ap) / _ap * 100) if (_cur and _ap) else None
+            _wrows.append({
+                "Ticker":      w["ticker"],
+                "Added":       w.get("added_date") or "—",
+                "Added $":     _ap,
+                "Current $":   _cur,
+                "% Chg":       round(_chg, 2) if _chg is not None else None,
+                "Notes":       w.get("notes") or "",
+                "_id":         w["id"],
+            })
+        _wdf = pd.DataFrame(_wrows)
+        st.dataframe(
+            _wdf.drop(columns=["_id"]), hide_index=True, use_container_width=True,
+            column_config={
+                "Added $":   st.column_config.NumberColumn(format="$%.2f"),
+                "Current $": st.column_config.NumberColumn(format="$%.2f"),
+                "% Chg":     st.column_config.NumberColumn(format="%+.2f%%"),
+            },
+        )
+        with st.expander("🗑️ Remove a ticker"):
+            _wdel = st.selectbox("Ticker to remove", [w["ticker"] for w in _watch], key="watch_del_sel")
+            if st.button("Remove", key="watch_del_btn"):
+                _match = next(w for w in _watch if w["ticker"] == _wdel)
+                db.delete_watchlist_item(_match["id"])
+                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
