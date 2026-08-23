@@ -3,6 +3,9 @@ name: SMA Scanner — 200-Day Alert
 # Runs at 2:00 PM UTC Mon-Fri = 10:00 AM EDT (UTC-4, Mar-Nov).
 # In EST (UTC-5, Nov-Mar) this fires at 9:00 AM ET instead.
 # Adjust to '0 15 * * 1-5' in winter if you prefer a consistent 10 AM EST.
+#
+# Also runs the Idea Watchlist catalyst scanner on the same schedule (reuses
+# this workflow's existing secrets rather than standing up a second cron).
 
 on:
   schedule:
@@ -30,3 +33,11 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
         run: python stocks/sma_scanner.py
+
+      - name: Run Idea Watchlist catalyst scanner
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+        run: python stocks/watchlist_catalyst_scanner.py
