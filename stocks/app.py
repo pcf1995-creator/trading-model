@@ -4018,9 +4018,12 @@ with tab_watchlist:
     st.caption("Tickers you're considering from outside research. Not a paper trade, not tied to your holdings — just logging what you're watching and its price.")
 
     with st.form("watchlist_add", clear_on_submit=True):
-        _wa1, _wa2 = st.columns([1, 3])
-        _wa_ticker = _wa1.text_input("Ticker").upper().strip()
-        _wa_notes  = _wa2.text_input("Notes (optional)", placeholder="why you're watching it")
+        _wa_ticker = st.text_input("Ticker").upper().strip()
+        _wa_notes  = st.text_area(
+            "Notes / research (optional)", height=120,
+            placeholder="Paste the full thesis, catalysts, dates, whatever you're working from — "
+                        "the catalyst scanner reads this for upcoming dates.",
+        )
         if st.form_submit_button("➕ Add", type="primary"):
             if not _wa_ticker:
                 st.error("Enter a ticker.")
@@ -4049,27 +4052,35 @@ with tab_watchlist:
         _wpx  = _last_prices(_wtks)
         _wrows = []
         for w in _watch:
-            _cur = _wpx.get(w["ticker"])
-            _ap  = float(w["added_price"]) if w.get("added_price") else None
-            _chg = ((_cur - _ap) / _ap * 100) if (_cur and _ap) else None
+            _cur   = _wpx.get(w["ticker"])
+            _ap    = float(w["added_price"]) if w.get("added_price") else None
+            _chg   = ((_cur - _ap) / _ap * 100) if (_cur and _ap) else None
+            _notes = w.get("notes") or ""
+            _rows_summary = (_notes[:80] + "…") if len(_notes) > 80 else _notes
             _wrows.append({
                 "Ticker":      w["ticker"],
                 "Added":       w.get("added_date") or "—",
                 "Added $":     _ap,
                 "Current $":   _cur,
                 "% Chg":       round(_chg, 2) if _chg is not None else None,
-                "Notes":       w.get("notes") or "",
-                "_id":         w["id"],
+                "Notes":       _rows_summary,
             })
         _wdf = pd.DataFrame(_wrows)
         st.dataframe(
-            _wdf.drop(columns=["_id"]), hide_index=True, use_container_width=True,
+            _wdf, hide_index=True, use_container_width=True,
             column_config={
                 "Added $":   st.column_config.NumberColumn(format="$%.2f"),
                 "Current $": st.column_config.NumberColumn(format="$%.2f"),
                 "% Chg":     st.column_config.NumberColumn(format="%+.2f%%"),
+                "Notes":     st.column_config.TextColumn(width="large"),
             },
         )
+        with st.expander("📄 Full notes / research per ticker"):
+            for w in _watch:
+                if w.get("notes"):
+                    st.markdown(f"**{w['ticker']}**")
+                    st.text(w["notes"])
+                    st.divider()
         with st.expander("🗑️ Remove a ticker"):
             _wdel = st.selectbox("Ticker to remove", [w["ticker"] for w in _watch], key="watch_del_sel")
             if st.button("Remove", key="watch_del_btn"):
