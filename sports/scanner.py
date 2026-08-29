@@ -244,22 +244,29 @@ def run_scan(sport: str = "both",
         # Build ratings once per sport
         logger.info("Building team efficiency ratings...")
         ratings = build_ratings(year, through_week=week, nfl=nfl)
-        if len(ratings) == 0:
-            logger.warning(f"No ratings data for {sp} {year} — check CFBD_API_KEY")
-            raise RuntimeError(
-                "No team ratings data loaded. Check that CFBD_API_KEY is set correctly."
-            )
 
-        # Guard: if every team shows 0 games of in-season data AND 0 S&P+ prior,
-        # the model is running on empty — all predictions collapse to league average
-        # and every market looks exploitable. Refuse to scan rather than emit noise.
-        sample = [ratings.get(t) for t in ratings.teams()[:20]]
-        all_zero = all(r["sp_off"] == 0 and r["sp_def"] == 0 for r in sample)
-        if all_zero:
-            raise RuntimeError(
-                "Team ratings are all zero — CFBD API key may be invalid or the "
-                "API returned no data. Verify your CFBD_API_KEY and try again."
-            )
+        if nfl:
+            # CFBD does not cover the NFL — ratings will always be empty from
+            # this source until an NFL-specific data feed (nfl_client.py) is
+            # integrated. Skip gracefully rather than raising an error.
+            if len(ratings) == 0:
+                logger.warning("NFL ratings unavailable from CFBD (expected — NFL data source not yet integrated). Skipping NFL.")
+                continue
+        else:
+            # For NCAAF, empty or all-zero ratings means the CFBD key is missing
+            # or the API returned nothing. Refuse to scan rather than emit noise.
+            if len(ratings) == 0:
+                raise RuntimeError(
+                    "No NCAAF ratings loaded — CFBD_API_KEY is missing or the API "
+                    "returned no data. Check that CFBD_API_KEY is set in Streamlit secrets."
+                )
+            sample = [ratings.get(t) for t in ratings.teams()[:20]]
+            all_zero = all(r["sp_off"] == 0 and r["sp_def"] == 0 for r in sample)
+            if all_zero:
+                raise RuntimeError(
+                    "NCAAF ratings are all zero — CFBD_API_KEY may be invalid or "
+                    "the API returned no data for this year. Verify your key and try again."
+                )
 
         # Fetch odds
         logger.info("Fetching market odds...")
