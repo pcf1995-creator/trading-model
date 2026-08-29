@@ -71,11 +71,92 @@ def load_sports_bets(status: str | None = None) -> list[dict]:
     return []
 
 
-def save_bets(recs: list[dict], bankroll: float) -> int:
+# ── Display formatting ────────────────────────────────────────────────────────
+DISPLAY_COLS = ["Market", "Side", "Game", "Kickoff", "Odds", "Line",
+                "Mdl %", "Mkt %", "Edge", "EV", "Kelly %", "Bet $",
+                "∆ pts", "Book"]
+
+
+ET = "America/New_York"
+
+
+def _fmt_et(values, fmt: str = "%a %-m/%-d %-I:%M%p ET") -> pd.Series:
+    """
+    Format ISO timestamps in Eastern Time — kickoff times are what the user
+    actually reasons about, and every US sportsbook quotes them in ET.
+    Falls back to UTC if the tz database isn't available.
+    """
+    ts = pd.to_datetime(values, utc=True, errors="coerce")
+    try:
+        return ts.dt.tz_convert(ET).dt.strftime(fmt)
+    except Exception:
+        return ts.dt.strftime(fmt.replace(" ET", " UTC"))
+
+
+def _fmt_line(market: str, line) -> str:
+    """
+    Totals are a magnitude (47.5 points), not a direction — a leading +/- on
+    them is meaningless. Spreads are directional and keep their sign.
+    Moneylines have no line at all.
+    """
+    if line is None or pd.isna(line):
+        return "—"
+    if market == "total":
+        return f"{float(line):.1f}"
+    return f"{float(line):+.1f}"
+
+
+def build_display_df(recs: list[dict], bankroll: float) -> pd.DataFrame:
+    df = pd.DataFrame(recs)
+    df["Game"]    = df["away"] + " @ " + df["home"]
+    df["Kickoff"] = _fmt_et(df["commence"])
+    df["Market"]  = df["market"].str.capitalize()
+    df["Side"]    = df["side"]
+    df["Odds"]    = df["odds"].apply(lambda x: f"{x:+d}")
+    df["Line"]    = [_fmt_line(m, l) for m, l in zip(df["market"], df["line"])]
+    df["Mdl %"]   = (df["model_prob"]  * 100).round(1).astype(str) + "%"
+    df["Mkt %"]   = (df["market_prob"] * 100).round(1).astype(str) + "%"
+    df["Edge"]    = (df["edge"] * 100).round(1).apply(lambda x: f"{x:+.1f}pp")
+    df["EV"]      = df["ev"].round(3).apply(lambda x: f"{x:+.3f}")
+    df["Kelly %"] = df["kelly_pct"].round(2).astype(str) + "%"
+    df["Bet $"]   = (bankroll * df["kelly_pct"] / 100).round(2).apply(
+                        lambda x: f"${x:.2f}")
+    df["Book"]    = df["book"]
+    df["∆ pts"]   = df["model_vs_market"].apply(lambda x: f"{x:+.1f}")
+    return df
+
+
+def save_bets(recs: list[dict], bankroll: float) -> tuple[int, int]:
+    """
+    Persist selected recommendations as open paper trades.
+
+    Returns (saved, skipped). Skips anything already open for the same
+    game/market/side so re-scanning and re-placing doesn't double-count a
+    position — there is no unique constraint on the table to lean on.
+    """
     client = _get_db_client()
     if not client:
         st.warning("No Supabase connection — bets not saved.")
-        return 0
+        return 0, 0
+
+    existing: set[tuple] = set()
+    try:
+        game_ids = list({r["game_id"] for r in recs})
+        prior = (client.table("sports_bets")
+                 .select("game_id,market,side,status")
+                 .in_("game_id", game_ids).eq("status", "open")
+                 .execute().data or [])
+        existing = {(p["game_id"], p["market"], p["side"]) for p in prior}
+    except Exception as e:
+        st.warning(f"Could not check for existing bets ({e}) — placing anyway.")
+
+    fresh = [r for r in recs
+             if (r["game_id"], r["market"], r["side"]) not in existing]
+    skipped = len(recs) - len(fresh)
+    recs = fresh
+    if not recs:
+        return 0, skipped
+
     now = datetime.now(timezone.utc).isoformat()
     rows = []
     for r in recs:
@@ -102,10 +183,10 @@ def save_bets(recs: list[dict], bankroll: float) -> int:
         })
     try:
         client.table("sports_bets").insert(rows).execute()
-        return len(rows)
+        return len(rows), skipped
     except Exception as e:
         st.error(f"Save failed: {e}")
-        return 0
+        return 0, skipped
 
 
 def settle_bet(bet_id: int, result: str, pnl: float) -> None:
@@ -140,8 +221,6 @@ with tab_scan:
             "Bankroll ($)", min_value=100, max_value=50_000,
             value=500, step=100,
         )
-        save_to_db = st.checkbox("Save recommendations to Supabase", value=False)
-
     with col_run:
         st.write("")
         st.write("")
@@ -157,13 +236,14 @@ with tab_scan:
 
         with st.spinner("Fetching odds and building efficiency ratings…"):
             try:
-                from scanner import run_scan as _run_scan
+                from scanner import run_scan as _run_scan, LAST_SCAN_STATS
                 recs = _run_scan(
                     sport=sport_key,
                     min_ev=min_ev_input,
                     bankroll=bankroll,
-                    save=False,   # handle save below
+                    save=False,   # placing bets is an explicit action below
                 )
+                st.session_state["scan_stats"] = dict(LAST_SCAN_STATS)
             except RuntimeError as e:
                 st.error(f"⚠️ {e}")
                 st.info(
@@ -175,11 +255,15 @@ with tab_scan:
                 st.error(f"Scan failed: {e}")
                 recs = []
 
-        # Scan diagnostics — how much of the slate was actually modelled
-        try:
-            from scanner import LAST_SCAN_STATS as _stats
-        except Exception:
-            _stats = {}
+        # Results must survive the rerun that any later button click triggers.
+        st.session_state["scan_recs"] = recs
+        st.session_state.pop("placed_msg", None)
+
+    # Render whatever the last scan produced (persists across reruns)
+    recs   = st.session_state.get("scan_recs")
+    _stats = st.session_state.get("scan_stats", {})
+
+    if recs is not None:
         if _stats:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Games with odds", _stats.get("games", 0))
@@ -200,41 +284,58 @@ with tab_scan:
         else:
             st.success(f"Found **{len(recs)}** recommendation{'s' if len(recs) != 1 else ''}")
 
-            df = pd.DataFrame(recs)
-            df["Game"]     = df["away"] + " @ " + df["home"]
-            df["Kickoff"]  = pd.to_datetime(df["commence"], utc=True, errors="coerce") \
-                               .dt.strftime("%a %-m/%-d %-I:%M%p UTC")
-            df["Market"]   = df["market"].str.capitalize()
-            df["Side"]     = df["side"]
-            df["Odds"]     = df["odds"].apply(lambda x: f"{x:+d}")
-            # Moneylines have no line; pandas turns those Nones into NaN
-            df["Line"]     = df["line"].apply(
-                lambda x: "—" if x is None or pd.isna(x) else f"{float(x):+.1f}")
-            df["Mdl %"]    = (df["model_prob"]  * 100).round(1).astype(str) + "%"
-            df["Mkt %"]    = (df["market_prob"] * 100).round(1).astype(str) + "%"
-            df["Edge"]     = (df["edge"] * 100).round(1).apply(lambda x: f"{x:+.1f}pp")
-            df["EV"]       = df["ev"].round(3).apply(lambda x: f"{x:+.3f}")
-            df["Kelly %"]  = df["kelly_pct"].round(2).astype(str) + "%"
-            df["Bet $"]    = (bankroll * df["kelly_pct"] / 100).round(2).apply(
-                                lambda x: f"${x:.2f}")
-            df["Book"]     = df["book"]
-            df["∆ pts"]    = df["model_vs_market"].apply(lambda x: f"{x:+.1f}")
+            if st.session_state.get("placed_msg"):
+                st.success(st.session_state["placed_msg"])
 
-            display_cols = ["Market", "Side", "Game", "Kickoff", "Odds", "Line",
-                            "Mdl %", "Mkt %", "Edge", "EV", "Kelly %", "Bet $",
-                            "∆ pts", "Book"]
-            st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+            df = build_display_df(recs, bankroll)
 
-            if save_to_db:
-                n = save_bets(recs, bankroll)
-                st.success(f"Saved {n} bets to Supabase.")
+            st.caption("Tick **Bet** on the rows you want to paper trade, then place them below.")
+            edit_df = df[DISPLAY_COLS].copy()
+            edit_df.insert(0, "Bet", False)
+
+            edited = st.data_editor(
+                edit_df,
+                hide_index=True,
+                use_container_width=True,
+                disabled=DISPLAY_COLS,          # only the Bet checkbox is editable
+                column_config={
+                    "Bet": st.column_config.CheckboxColumn(
+                        "Bet", help="Select to place as a paper trade", default=False,
+                    ),
+                },
+                key="scan_editor",
+            )
+
+            picked = [recs[i] for i, on in
+                      enumerate(edited["Bet"].fillna(False).tolist()) if on]
+            stake  = sum(bankroll * r["kelly_pct"] / 100 for r in picked)
+
+            c_btn, c_info = st.columns([1, 3])
+            with c_btn:
+                place = st.button(
+                    f"📝 Place {len(picked)} paper trade{'' if len(picked) == 1 else 's'}",
+                    type="primary", use_container_width=True,
+                    disabled=not picked,
+                )
+            with c_info:
+                if picked:
+                    st.caption(f"Total stake: **${stake:,.2f}** "
+                               f"({stake / bankroll * 100:.1f}% of bankroll)")
+
+            if place and picked:
+                saved, skipped = save_bets(picked, bankroll)
+                msg = f"Placed {saved} paper trade{'' if saved == 1 else 's'}."
+                if skipped:
+                    msg += f" Skipped {skipped} already open."
+                st.session_state["placed_msg"] = msg
+                st.rerun()
 
             # Per-market breakdown
             for mkt in ["total", "spread", "moneyline"]:
                 sub = df[df["market"] == mkt]
                 if not sub.empty:
                     with st.expander(f"{mkt.capitalize()}s ({len(sub)})"):
-                        st.dataframe(sub[display_cols], use_container_width=True,
+                        st.dataframe(sub[DISPLAY_COLS], use_container_width=True,
                                      hide_index=True)
 
     else:
@@ -260,26 +361,23 @@ with tab_open:
     open_bets = load_sports_bets(status="open")
 
     if not open_bets:
-        st.info("No open bets. Run a scan and save recommendations first.")
+        st.info("No open bets. Run a scan, tick **Bet** on the rows you want, "
+                "then click **Place paper trades**.")
     else:
         df_open = pd.DataFrame(open_bets)
         df_open["Game"]   = df_open["away"] + " @ " + df_open["home"]
-        df_open["Kickoff"] = pd.to_datetime(
-            df_open["commence"], utc=True, errors="coerce"
-        ).dt.strftime("%a %-m/%-d %-I%p UTC")
+        df_open["Kickoff"] = _fmt_et(df_open["commence"])
         df_open["Market"] = df_open["market"].str.capitalize()
         df_open["Odds"]   = df_open["odds"].apply(lambda x: f"{x:+d}")
-        df_open["Line"]   = df_open["line"].apply(
-            lambda x: f"{float(x):+.1f}" if x is not None else "—")
+        df_open["Line"]   = [_fmt_line(m, l)
+                             for m, l in zip(df_open["market"], df_open["line"])]
         df_open["Edge"]   = (df_open["edge"] * 100).round(1).apply(
             lambda x: f"{x:+.1f}pp")
         df_open["EV"]     = df_open["ev"].round(3).apply(lambda x: f"{x:+.3f}")
         df_open["Bet $"]  = df_open["bet_dollars"].apply(
             lambda x: f"${float(x):.2f}" if x else "—")
         df_open["Book"]   = df_open["book"]
-        df_open["Saved"]  = pd.to_datetime(
-            df_open["scanned_at"], utc=True, errors="coerce"
-        ).dt.strftime("%-m/%-d %H:%M")
+        df_open["Saved"]  = _fmt_et(df_open["scanned_at"], "%-m/%-d %-I:%M%p")
 
         display = ["Game", "Kickoff", "Market", "side", "Odds", "Line",
                    "Edge", "EV", "Bet $", "Book", "Saved"]
@@ -387,9 +485,7 @@ with tab_pnl:
             df_s["P&L"]    = df_s["pnl_dollars"].apply(lambda x: f"${x:+.2f}")
             df_s["Bet $"]  = df_s["bet_dollars"].apply(lambda x: f"${x:.2f}")
             df_s["Result"] = df_s["result"].str.upper()
-            df_s["Date"]   = pd.to_datetime(df_s["settled_at"],
-                                             utc=True, errors="coerce") \
-                               .dt.strftime("%-m/%-d")
+            df_s["Date"]   = _fmt_et(df_s["settled_at"], "%-m/%-d")
             st.dataframe(
                 df_s[["Date","Game","market","side","Odds","Bet $","Result","P&L"]]
                     .rename(columns={"market":"Market","side":"Side"}),
