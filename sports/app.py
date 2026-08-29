@@ -164,6 +164,13 @@ with tab_scan:
                     bankroll=bankroll,
                     save=False,   # handle save below
                 )
+            except RuntimeError as e:
+                st.error(f"⚠️ {e}")
+                st.info(
+                    "**To fix:** Add `CFBD_API_KEY` to this app's Streamlit secrets "
+                    "(Settings → Secrets). Get a free key at collegefootballdata.com/key"
+                )
+                recs = []
             except Exception as e:
                 st.error(f"Scan failed: {e}")
                 recs = []
@@ -191,7 +198,7 @@ with tab_scan:
             df["Book"]     = df["book"]
             df["∆ pts"]    = df["model_vs_market"].apply(lambda x: f"{x:+.1f}")
 
-            display_cols = ["Game", "Kickoff", "Market", "Side", "Odds", "Line",
+            display_cols = ["Market", "Side", "Game", "Kickoff", "Odds", "Line",
                             "Mdl %", "Mkt %", "Edge", "EV", "Kelly %", "Bet $",
                             "∆ pts", "Book"]
             st.dataframe(df[display_cols], use_container_width=True, hide_index=True)

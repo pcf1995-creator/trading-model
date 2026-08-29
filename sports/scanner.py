@@ -246,12 +246,34 @@ def run_scan(sport: str = "both",
         ratings = build_ratings(year, through_week=week, nfl=nfl)
         if len(ratings) == 0:
             logger.warning(f"No ratings data for {sp} {year} — check CFBD_API_KEY")
-            continue
+            raise RuntimeError(
+                "No team ratings data loaded. Check that CFBD_API_KEY is set correctly."
+            )
+
+        # Guard: if every team shows 0 games of in-season data AND 0 S&P+ prior,
+        # the model is running on empty — all predictions collapse to league average
+        # and every market looks exploitable. Refuse to scan rather than emit noise.
+        sample = [ratings.get(t) for t in ratings.teams()[:20]]
+        all_zero = all(r["sp_off"] == 0 and r["sp_def"] == 0 for r in sample)
+        if all_zero:
+            raise RuntimeError(
+                "Team ratings are all zero — CFBD API key may be invalid or the "
+                "API returned no data. Verify your CFBD_API_KEY and try again."
+            )
 
         # Fetch odds
         logger.info("Fetching market odds...")
         games = get_parsed_odds(sp)
         logger.info(f"  {len(games)} games with odds found")
+
+        # Deduplicate games by id (Odds API occasionally returns duplicates)
+        seen_ids: set[str] = set()
+        unique_games = []
+        for g in games:
+            if g["id"] not in seen_ids:
+                seen_ids.add(g["id"])
+                unique_games.append(g)
+        games = unique_games
 
         for game in games:
             recs = score_game(game, ratings, year, nfl=nfl)
