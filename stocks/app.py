@@ -3342,6 +3342,8 @@ def _sma_run_scan() -> pd.DataFrame:
             _pct = (_c1 - _m1) / _m1 * 100
             if _c0 > _m0 and _c1 <= _m1:
                 _sig = "crossunder"
+            elif _c0 <= _m0 and _c1 > _m1:
+                _sig = "crossover"
             elif _pct < 0:
                 _sig = "below"
             elif _pct <= 2:
@@ -3372,8 +3374,8 @@ def _sma_run_scan() -> pd.DataFrame:
 with tab_sma:
     st.header("📉 200-Day SMA Scanner")
     st.caption(
-        "Scan the full S&P 500 for stocks pulling back to their 200-day moving average. "
-        "Log long entries and track P&L."
+        "Scan the full S&P 500 for stocks reclaiming their 200-day moving average — "
+        "crossing back above from below. Log long entries and track P&L."
     )
 
     # ── Scan controls ──────────────────────────────────────────────────────────
@@ -3393,13 +3395,13 @@ with tab_sma:
         st.caption(f"Last scan: {_sma_ts} · {len(_sdf)} tickers")
 
         # Summary chips
-        _n_cross  = int((_sdf["Signal"] == "crossunder").sum())
-        _n_below  = int((_sdf["Signal"] == "below").sum())
-        _n_near   = int((_sdf["Signal"] == "near").sum())
+        _n_crossover = int((_sdf["Signal"] == "crossover").sum())
+        _n_cross     = int((_sdf["Signal"] == "crossunder").sum())
+        _n_near      = int((_sdf["Signal"] == "near").sum())
         _sm1, _sm2, _sm3 = st.columns(3)
-        _sm1.metric("🔴 Crossed below",    _n_cross)
-        _sm2.metric("🔻 Below SMA",        _n_below)
-        _sm3.metric("🟡 Within 2% above",  _n_near)
+        _sm1.metric("🟢 Crossed above today", _n_crossover)
+        _sm2.metric("🟡 Within 2% above",      _n_near)
+        _sm3.metric("🔴 Crossed below today",  _n_cross)
 
         # Sector filter
         if "Sector" in _sdf.columns:
@@ -3412,8 +3414,9 @@ with tab_sma:
                 _sdf = _sdf[_sdf["Sector"].isin(_sel_sectors)]
 
         # Filter tabs
-        _sv1, _sv2, _sv3 = st.tabs([
-            f"🎯 Actionable — near or below ({_n_cross + _n_below + _n_near})",
+        _sv1, _sv2, _sv3, _sv4 = st.tabs([
+            f"🎯 Actionable — crossed/near above ({_n_crossover + _n_near})",
+            "🟢 Crossed Above Today",
             "🔴 Crossed Below Today",
             "📋 Full Universe",
         ])
@@ -3428,14 +3431,22 @@ with tab_sma:
         }
 
         with _sv1:
-            _near_df = _sdf[_sdf["Signal"].isin(["crossunder", "below", "near"])].copy()
+            _near_df = _sdf[_sdf["Signal"].isin(["crossover", "near"])].copy()
             if _near_df.empty:
-                st.info("No stocks currently at or near their 200-day SMA.")
+                st.info("No stocks currently crossing or sitting near their 200-day SMA from below.")
             else:
                 st.dataframe(_near_df, hide_index=True,
                              use_container_width=True, column_config=_col_cfg)
 
         with _sv2:
+            _crossover_df = _sdf[_sdf["Signal"] == "crossover"].copy()
+            if _crossover_df.empty:
+                st.info("No crossovers today — no stock closed above its 200d SMA for the first time.")
+            else:
+                st.dataframe(_crossover_df, hide_index=True,
+                             use_container_width=True, column_config=_col_cfg)
+
+        with _sv3:
             _cross_df = _sdf[_sdf["Signal"] == "crossunder"].copy()
             if _cross_df.empty:
                 st.info("No crossunders today — no stock closed below 200d SMA for the first time.")
@@ -3443,7 +3454,7 @@ with tab_sma:
                 st.dataframe(_cross_df, hide_index=True,
                              use_container_width=True, column_config=_col_cfg)
 
-        with _sv3:
+        with _sv4:
             st.dataframe(_sdf, hide_index=True,
                          use_container_width=True, column_config=_col_cfg)
 
