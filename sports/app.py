@@ -175,6 +175,26 @@ with tab_scan:
                 st.error(f"Scan failed: {e}")
                 recs = []
 
+        # Scan diagnostics — how much of the slate was actually modelled
+        try:
+            from scanner import LAST_SCAN_STATS as _stats
+        except Exception:
+            _stats = {}
+        if _stats:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Games with odds", _stats.get("games", 0))
+            c2.metric("Modelled",        _stats.get("scored", 0))
+            c3.metric("Skipped (FCS)",   _stats.get("skipped_unrated", 0),
+                      help="No S&P+ coverage — not modelled rather than guessed at")
+            c4.metric("Unmatched names", _stats.get("skipped_unknown", 0),
+                      help="Team name in the odds feed couldn't be matched to CFBD")
+            if _stats.get("skipped_nfl"):
+                st.caption("NFL skipped — CFBD is college-only; no NFL data source wired up yet.")
+            if _stats.get("unknown_names"):
+                with st.expander(f"Unmatched team names ({_stats.get('skipped_unknown', 0)})"):
+                    for n in _stats["unknown_names"]:
+                        st.text(n)
+
         if not recs:
             st.info("No bets cleared the edge threshold for this slate.")
         else:
@@ -187,7 +207,9 @@ with tab_scan:
             df["Market"]   = df["market"].str.capitalize()
             df["Side"]     = df["side"]
             df["Odds"]     = df["odds"].apply(lambda x: f"{x:+d}")
-            df["Line"]     = df["line"].apply(lambda x: f"{x:+.1f}" if x is not None else "—")
+            # Moneylines have no line; pandas turns those Nones into NaN
+            df["Line"]     = df["line"].apply(
+                lambda x: "—" if x is None or pd.isna(x) else f"{float(x):+.1f}")
             df["Mdl %"]    = (df["model_prob"]  * 100).round(1).astype(str) + "%"
             df["Mkt %"]    = (df["market_prob"] * 100).round(1).astype(str) + "%"
             df["Edge"]     = (df["edge"] * 100).round(1).apply(lambda x: f"{x:+.1f}pp")

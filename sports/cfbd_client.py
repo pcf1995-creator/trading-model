@@ -65,6 +65,27 @@ def get_upcoming_games(week: int | None = None) -> list[dict]:
     return get_games(date.today().year, week=week)
 
 
+# ── Team directory (name resolution) ────────────────────────────────────────
+
+def get_teams(year: int | None = None) -> list[dict]:
+    """
+    All teams (FBS + FCS) with their canonical school name, mascot, and
+    alternate names.
+
+    This is what lets us map odds-feed names onto CFBD names: The Odds API
+    returns "Syracuse Orange" (school + mascot) while CFBD keys everything on
+    "Syracuse" (school only).  Without this mapping every rating lookup misses
+    and the model silently falls back to league-average for every game.
+
+    Keys: id, school, mascot, abbreviation, conference,
+          alternateNames / alt_name1..3 (varies by API version)
+    """
+    params: dict[str, Any] = {}
+    if year is not None:
+        params["year"] = year
+    return _get("/teams", params)
+
+
 # ── Per-game EPA (the primary signal) ──────────────────────────────────────
 
 def get_game_ppa(year: int, week: int | None = None,
