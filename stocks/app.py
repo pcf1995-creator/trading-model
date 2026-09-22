@@ -112,16 +112,59 @@ def _last_prices(tickers: tuple) -> dict:
     return out
 
 
-def _edgar_filer_type(cik: str, headers: dict) -> str:
+_SEC_HEADERS = {"User-Agent": "Hyperspace Ventures research pf@hyperspaceventures.com"}
+
+# SEC fair-access asks for no more than 10 requests/second and throttles or
+# 500s callers who burst past it. One request every 150ms keeps us well under.
+_SEC_MIN_INTERVAL = 0.15
+_sec_last_request = 0.0
+
+
+def _sec_get(url: str, params: dict | None = None, timeout: int = 25,
+             retries: int = 2):
+    """
+    GET against an SEC endpoint, rate-limited and retried.
+
+    EDGAR returns 500 (not a clean error body) for transient overload as well
+    as for genuinely bad requests, so transient 5xx/429 responses are retried
+    with backoff before giving up.
+    """
+    import time
+    import requests
+
+    global _sec_last_request
+    last_exc = None
+    for attempt in range(retries + 1):
+        wait = _SEC_MIN_INTERVAL - (time.monotonic() - _sec_last_request)
+        if wait > 0:
+            time.sleep(wait)
+        _sec_last_request = time.monotonic()
+        try:
+            r = requests.get(url, params=params, headers=_SEC_HEADERS,
+                             timeout=timeout)
+            if r.status_code in (429, 500, 502, 503, 504) and attempt < retries:
+                last_exc = requests.HTTPError(f"{r.status_code} from {url}")
+                time.sleep(0.8 * (2 ** attempt))
+                continue
+            r.raise_for_status()
+            return r
+        except Exception as e:                     # network error / timeout
+            last_exc = e
+            if attempt < retries:
+                time.sleep(0.8 * (2 ** attempt))
+                continue
+            raise
+    raise last_exc
+
+
+def _edgar_filer_type(cik: str, headers: dict | None = None) -> str:
     """Classify a filer: a true spin-co is a brand-new registrant (no prior periodic
     reports); an uplister/existing public co already has 10-K/10-Q history."""
-    import requests
     if not cik:
         return "❓ unknown"
     try:
-        r = requests.get(f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json",
-                         headers=headers, timeout=15)
-        r.raise_for_status()
+        r = _sec_get(f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json",
+                     timeout=15)
         forms = r.json().get("filings", {}).get("recent", {}).get("form", [])
         has_periodic = any(f in ("10-K", "10-Q", "10-K/A", "10-Q/A", "20-F", "40-F") for f in forms)
         return ("🟡 existing filer (likely uplisting)" if has_periodic
@@ -131,27 +174,52 @@ def _edgar_filer_type(cik: str, headers: dict) -> str:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _spinoff_edgar(query: str, days: int) -> list:
+def _spinoff_edgar(query: str, days: int) -> tuple[list, str | None]:
     """Recent SEC Form 10-12B (spin-off registration) filings via EDGAR full-text search.
 
-    Paginates several pages, de-duplicates to one row per company, and flags each
-    filer as a likely spin-off (new registrant) vs a likely uplisting (existing filer).
+    Paginates, de-duplicates to one row per company, and flags each filer as a
+    likely spin-off (new registrant) vs a likely uplisting (existing filer).
+
+    Returns (rows, warning). EDGAR answers 500 — not an empty result set — when
+    `from` runs past the number of matching filings, so pagination stops at the
+    reported total rather than probing blindly. A page that still fails after
+    the first one is treated as the end of the data: the rows already collected
+    are returned with a warning, instead of the whole search erroring out.
     """
-    import requests
     end = date.today(); start = end - timedelta(days=days)
-    headers = {"User-Agent": "Hyperspace Ventures research pf@hyperspaceventures.com"}
+    page_size, max_pages = 10, 5
     seen: dict = {}
-    for _from in (0, 10, 20, 30, 40):          # up to 5 pages (~50 hits)
-        r = requests.get(
-            "https://efts.sec.gov/LATEST/search-index",
-            params={"q": f'"{query}"', "forms": "10-12B",
-                    "startdt": start.isoformat(), "enddt": end.isoformat(), "from": _from},
-            headers=headers, timeout=25,
-        )
-        r.raise_for_status()
-        hits = r.json().get("hits", {}).get("hits", [])
+    total = None
+    warning = None
+
+    for page in range(max_pages):
+        offset = page * page_size
+        if total is not None and offset >= total:
+            break
+        try:
+            r = _sec_get(
+                "https://efts.sec.gov/LATEST/search-index",
+                params={"q": f'"{query}"', "forms": "10-12B",
+                        "dateRange": "custom",
+                        "startdt": start.isoformat(), "enddt": end.isoformat(),
+                        "from": offset},
+            )
+            payload = r.json()
+        except Exception as e:
+            if page == 0:
+                raise                       # nothing retrieved at all — real failure
+            warning = (f"EDGAR stopped responding after {len(seen)} results "
+                       f"(page {page + 1}): {e}. Showing what was retrieved.")
+            break
+
+        if total is None:
+            t = (payload.get("hits") or {}).get("total")
+            total = t.get("value") if isinstance(t, dict) else t
+
+        hits = (payload.get("hits") or {}).get("hits") or []
         if not hits:
             break
+
         for h in hits:
             s = h.get("_source", {})
             names = s.get("display_names") or []
@@ -167,11 +235,12 @@ def _spinoff_edgar(query: str, days: int) -> list:
                     "_cik":   cik,
                     "Filing": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-12B&count=40",
                 }
+
     for row in seen.values():
-        row["Type"] = _edgar_filer_type(row.pop("_cik"), headers)
+        row["Type"] = _edgar_filer_type(row.pop("_cik"))
     rows = sorted(seen.values(), key=lambda r: r["Filed"] or "", reverse=True)   # date desc
     rows.sort(key=lambda r: 0 if r["Type"].startswith("🟢") else 1)              # spin-offs first
-    return rows
+    return rows, warning
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -3903,14 +3972,24 @@ with tab_spinoffs:
     if _spc3.button("🔄 Fetch filings", type="primary", key="spin_fetch"):
         with st.spinner("Querying SEC EDGAR…"):
             try:
-                st.session_state["spin_edgar"] = _spinoff_edgar(_sp_q.strip() or "spin-off", int(_sp_days))
-                st.session_state["spin_edgar_err"] = None
+                _rows, _warn = _spinoff_edgar(_sp_q.strip() or "spin-off", int(_sp_days))
+                st.session_state["spin_edgar"]      = _rows
+                st.session_state["spin_edgar_err"]  = None
+                st.session_state["spin_edgar_warn"] = _warn
             except Exception as _spe:
-                st.session_state["spin_edgar"] = []
-                st.session_state["spin_edgar_err"] = str(_spe)
+                st.session_state["spin_edgar"]      = []
+                st.session_state["spin_edgar_err"]  = str(_spe)
+                st.session_state["spin_edgar_warn"] = None
 
     if st.session_state.get("spin_edgar_err"):
         st.error(f"EDGAR fetch failed: {st.session_state['spin_edgar_err']}")
+        st.info(
+            "SEC EDGAR rate-limits and occasionally 500s under load. Wait a few "
+            "seconds and try again; if it persists, check "
+            "[EDGAR full-text search](https://www.sec.gov/edgar/search/) directly."
+        )
+    if st.session_state.get("spin_edgar_warn"):
+        st.warning(st.session_state["spin_edgar_warn"])
     _sp_rows = st.session_state.get("spin_edgar")
     if _sp_rows:
         _sp_from = (date.today() - timedelta(days=int(_sp_days))).isoformat()
